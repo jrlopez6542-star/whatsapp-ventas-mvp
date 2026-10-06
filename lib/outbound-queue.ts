@@ -112,7 +112,7 @@ async function acquireDistributedLock(
             RETURNING owner`,
       args: [conversationKey, owner, now + leaseMs, now, owner],
     });
-    if (result.rows.some((row) => String(row.owner) === owner)) return true;
+    if (result.rows.some((row: any) => String(row.owner) === owner)) return true;
     await sleep(LOCK_POLL_MS);
   }
   return false;

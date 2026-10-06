@@ -4,7 +4,7 @@ import {
   getReplyDelayConfig,
   randomReplyDelayMs,
   runSerializedConversation,
-} from "./lib/outbound-queue";
+} from "./outbound-queue";
 
 test("reply delay defaults to 2.5–5.5 seconds", () => {
   assert.deepEqual(getReplyDelayConfig({}), { minMs: 2500, maxMs: 5500 });
