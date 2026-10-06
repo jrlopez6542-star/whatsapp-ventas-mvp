@@ -30,6 +30,10 @@ interface Product {
 interface Order {
   id: string;
   conversationId: string;
+  customerName?: string;
+  deliveryAddress?: string;
+  paymentMethod?: string;
+  itemsSummary?: string;
   status: "pending" | "confirmed" | "cancelled";
   total: number;
   createdAt: number;
@@ -55,6 +59,67 @@ interface QrStatus {
     number?: string;
   } | null;
   instance: string;
+}
+
+export function formatPhoneDisplay(raw: string): string {
+  if (!raw) return "Cliente WhatsApp";
+  let str = raw.trim();
+  // Decode base64 if needed (e.g. d2hhdHNhcHA6KzU3... -> whatsapp:+57...)
+  if (/^[A-Za-z0-9+/=]{20,}$/.test(str) && (str.startsWith("d2hh") || str.length % 4 === 0)) {
+    try {
+      const decoded = typeof window !== "undefined" ? atob(str) : "";
+      if (decoded.includes("whatsapp:") || decoded.includes("@") || /^\+?\d+$/.test(decoded)) {
+        str = decoded;
+      }
+    } catch {}
+  }
+
+  // Handle LID privacy
+  if (str.includes("lid:") || str.includes("@lid")) {
+    const digits = str.replace(/[^0-9]/g, "");
+    return `Cliente WhatsApp (...${digits.slice(-4)})`;
+  }
+
+  // Clean prefixes and domains
+  str = str.replace(/^whatsapp:/i, "");
+  str = str.replace(/@s\.whatsapp\.net$/i, "");
+  str = str.replace(/@c\.us$/i, "");
+
+  // Format Colombia mobile (+57 3XX XXX XXXX)
+  const cleanDigits = str.replace(/\D/g, "");
+  if (cleanDigits.length === 12 && cleanDigits.startsWith("573")) {
+    return `+57 ${cleanDigits.slice(2, 5)} ${cleanDigits.slice(5, 8)} ${cleanDigits.slice(8)}`;
+  }
+  if (cleanDigits.length === 10 && cleanDigits.startsWith("3")) {
+    return `+57 ${cleanDigits.slice(0, 3)} ${cleanDigits.slice(3, 6)} ${cleanDigits.slice(6)}`;
+  }
+
+  return str.startsWith("+") ? str : `+${str}`;
+}
+
+export function formatDateDisplay(ts: number | string | undefined): { time: string; date: string } {
+  if (!ts) return { time: "Reciente", date: "Hoy" };
+  let num = typeof ts === "number" ? ts : Number(ts);
+  if (isNaN(num) || num <= 86400000) {
+    if (typeof ts === "string") {
+      const parsed = Date.parse(ts);
+      if (!isNaN(parsed) && parsed > 86400000) {
+        num = parsed;
+      } else {
+        return { time: "Reciente", date: "Hoy" };
+      }
+    } else {
+      return { time: "Reciente", date: "Hoy" };
+    }
+  }
+  if (num < 10000000000) {
+    num *= 1000;
+  }
+  const d = new Date(num);
+  return {
+    time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    date: d.toLocaleDateString(),
+  };
 }
 
 export default function PanelDashboard() {
@@ -246,13 +311,27 @@ export default function PanelDashboard() {
     } catch {}
   };
 
-  // Poll conversations every 10s
+  // Refresh data when switching tabs
+  useEffect(() => {
+    if (tab === "chats") {
+      loadConversations();
+    } else if (tab === "orders") {
+      loadOrders();
+    } else if (tab === "catalog") {
+      loadProducts();
+    } else if (tab === "settings") {
+      loadSettings();
+    }
+  }, [tab]);
+
+  // Periodic polling every 4s for real-time updates in chats and orders
   useEffect(() => {
     const timer = setInterval(() => {
-      loadConversations();
-    }, 10000);
+      if (tab === "chats") loadConversations();
+      if (tab === "orders") loadOrders();
+    }, 4000);
     return () => clearInterval(timer);
-  }, []);
+  }, [tab]);
 
   // Load messages when conversation selected
   useEffect(() => {
@@ -268,7 +347,7 @@ export default function PanelDashboard() {
       } catch {}
     };
     loadMessages();
-    const timer = setInterval(loadMessages, 5000);
+    const timer = setInterval(loadMessages, 3000);
     return () => clearInterval(timer);
   }, [selectedConvId]);
 
@@ -280,6 +359,18 @@ export default function PanelDashboard() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: nextStatus }),
       });
+      loadConversations();
+    } catch {}
+  };
+
+  const handleDeleteConversation = async (convId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!confirm("¿Deseas eliminar esta conversación del panel?")) return;
+    try {
+      await fetch(`/api/panel/conversations/${encodeURIComponent(convId)}`, {
+        method: "DELETE",
+      });
+      if (selectedConvId === convId) setSelectedConvId(null);
       loadConversations();
     } catch {}
   };
@@ -703,22 +794,40 @@ export default function PanelDashboard() {
                       }}
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
-                        <span style={{ fontWeight: 600, fontSize: "0.95rem" }}>{c.phone}</span>
-                        <span
-                          style={{
-                            fontSize: "0.75rem",
-                            padding: "0.2rem 0.5rem",
-                            borderRadius: 4,
-                            background: c.status === "human" ? "rgba(239,68,68,0.2)" : "rgba(37,211,102,0.2)",
-                            color: c.status === "human" ? "#f87171" : "var(--primary)",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {c.status.toUpperCase()}
+                        <span style={{ fontWeight: 600, fontSize: "0.95rem" }}>
+                          {formatPhoneDisplay(c.phone)}
                         </span>
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                          <span
+                            style={{
+                              fontSize: "0.75rem",
+                              padding: "0.2rem 0.5rem",
+                              borderRadius: 4,
+                              background: c.status === "human" ? "rgba(239,68,68,0.2)" : "rgba(37,211,102,0.2)",
+                              color: c.status === "human" ? "#f87171" : "var(--primary)",
+                              fontWeight: 600,
+                            }}
+                          >
+                            {c.status.toUpperCase()}
+                          </span>
+                          <button
+                            onClick={(e) => handleDeleteConversation(c.id, e)}
+                            title="Eliminar conversación"
+                            style={{
+                              background: "transparent",
+                              border: "none",
+                              color: "var(--text-muted)",
+                              cursor: "pointer",
+                              padding: "0.2rem",
+                              fontSize: "0.85rem",
+                            }}
+                          >
+                            🗑️
+                          </button>
+                        </div>
                       </div>
                       <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                        {new Date(c.updatedAt).toLocaleTimeString()} · {new Date(c.updatedAt).toLocaleDateString()}
+                        {formatDateDisplay(c.updatedAt).time} · {formatDateDisplay(c.updatedAt).date}
                       </div>
                     </div>
                   ))
@@ -732,18 +841,30 @@ export default function PanelDashboard() {
                 <>
                   <div style={{ padding: "1rem 1.5rem", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div>
-                      <h3 style={{ fontSize: "1.05rem" }}>{selectedConv.phone}</h3>
+                      <h3 style={{ fontSize: "1.05rem", margin: 0 }}>
+                        {formatPhoneDisplay(selectedConv.phone)}
+                      </h3>
                       <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
                         Modo actual: <strong>{selectedConv.status}</strong>
                       </span>
                     </div>
-                    <button
-                      onClick={() => handleToggleStatus(selectedConv.id, selectedConv.status)}
-                      className={`lp-btn ${selectedConv.status === "human" ? "lp-btn-primary" : "lp-btn-secondary"}`}
-                      style={{ fontSize: "0.85rem", padding: "0.4rem 0.9rem" }}
-                    >
-                      {selectedConv.status === "human" ? "Devolver al Bot" : "Tomar Control (Humano)"}
-                    </button>
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                      <button
+                        onClick={() => handleToggleStatus(selectedConv.id, selectedConv.status)}
+                        className={`lp-btn ${selectedConv.status === "human" ? "lp-btn-primary" : "lp-btn-secondary"}`}
+                        style={{ fontSize: "0.85rem", padding: "0.4rem 0.9rem" }}
+                      >
+                        {selectedConv.status === "human" ? "Devolver al Bot" : "Tomar Control (Humano)"}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteConversation(selectedConv.id)}
+                        className="lp-btn lp-btn-secondary"
+                        style={{ fontSize: "0.85rem", padding: "0.4rem 0.7rem", color: "#f87171" }}
+                        title="Eliminar conversación"
+                      >
+                        🗑️ Eliminar
+                      </button>
+                    </div>
                   </div>
 
                   {/* Messages Bubble Area */}
@@ -763,7 +884,7 @@ export default function PanelDashboard() {
                           }}
                         >
                           <div style={{ fontSize: "0.75rem", opacity: 0.7, marginBottom: "0.2rem" }}>
-                            {m.role === "user" ? "Cliente" : "Asistente / Humano"} · {new Date(m.createdAt).toLocaleTimeString()}
+                            {m.role === "user" ? "Cliente" : "Asistente / Humano"} · {formatDateDisplay(m.createdAt).time}
                           </div>
                           <div>{m.content}</div>
                         </div>
@@ -802,42 +923,99 @@ export default function PanelDashboard() {
         )}
 
         {/* ========================================================= */}
-        {/* TAB 2: PEDIDOS                                            */}
+        {/* ========================================================= */}
+        {/* TAB 2: PEDIDOS (SECCIÓN APARTE)                           */}
         {/* ========================================================= */}
         {tab === "orders" && (
           <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "1.5rem" }}>
-            <h2 style={{ fontSize: "1.25rem", marginBottom: "1rem" }}>Pedidos Registrados</h2>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+              <div>
+                <h2 style={{ fontSize: "1.35rem", fontWeight: 700, margin: 0 }}>📦 Pedidos de Buñuelos Confirmados</h2>
+                <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: "0.25rem 0 0" }}>
+                  Aquí se registran automáticamente los pedidos cerrados por la IA con dirección y medio de pago.
+                </p>
+              </div>
+              <button
+                onClick={loadOrders}
+                className="lp-btn lp-btn-secondary"
+                style={{ fontSize: "0.85rem", padding: "0.4rem 0.8rem" }}
+              >
+                🔄 Actualizar lista
+              </button>
+            </div>
+
             {orders.length === 0 ? (
-              <p style={{ color: "var(--text-muted)" }}>No hay pedidos registrados todavía.</p>
+              <div style={{ textAlign: "center", padding: "3rem 1rem", color: "var(--text-muted)" }}>
+                <span style={{ fontSize: "2.5rem", display: "block", marginBottom: "0.5rem" }}>🥟</span>
+                <p style={{ fontWeight: 600 }}>No hay pedidos confirmados todavía.</p>
+                <p style={{ fontSize: "0.85rem" }}>Cuando un cliente confirme por WhatsApp con su dirección, aparecerá aquí inmediatamente.</p>
+              </div>
             ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left", color: "var(--text-muted)" }}>
-                    <th style={{ padding: "0.75rem" }}>ID</th>
-                    <th style={{ padding: "0.75rem" }}>Cliente</th>
-                    <th style={{ padding: "0.75rem" }}>Estado</th>
-                    <th style={{ padding: "0.75rem" }}>Total (COP)</th>
-                    <th style={{ padding: "0.75rem" }}>Fecha</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orders.map((o) => (
-                    <tr key={o.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ padding: "0.75rem", fontFamily: "monospace" }}>#{o.id.slice(0, 8)}</td>
-                      <td style={{ padding: "0.75rem" }}>{o.conversationId}</td>
-                      <td style={{ padding: "0.75rem" }}>
-                        <span className="lp-pill" style={{ background: "rgba(56,189,248,0.2)", color: "var(--accent)" }}>
-                          {o.status.toUpperCase()}
-                        </span>
-                      </td>
-                      <td style={{ padding: "0.75rem", fontWeight: 600 }}>${o.total.toLocaleString("es-CO")}</td>
-                      <td style={{ padding: "0.75rem", color: "var(--text-muted)" }}>
-                        {new Date(o.createdAt).toLocaleString()}
-                      </td>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left", color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase" }}>
+                      <th style={{ padding: "0.75rem" }}>ID</th>
+                      <th style={{ padding: "0.75rem" }}>Cliente / Teléfono</th>
+                      <th style={{ padding: "0.75rem" }}>Productos</th>
+                      <th style={{ padding: "0.75rem" }}>📍 Dirección de Entrega</th>
+                      <th style={{ padding: "0.75rem" }}>💵 Pago</th>
+                      <th style={{ padding: "0.75rem" }}>Total (COP)</th>
+                      <th style={{ padding: "0.75rem" }}>Estado</th>
+                      <th style={{ padding: "0.75rem" }}>Fecha</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {orders.map((o) => (
+                      <tr key={o.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                        <td style={{ padding: "0.75rem", fontFamily: "monospace", fontWeight: 700, color: "var(--primary)" }}>
+                          #{o.id.slice(0, 8)}
+                        </td>
+                        <td style={{ padding: "0.75rem" }}>
+                          <div style={{ fontWeight: 600 }}>{o.customerName || "Cliente"}</div>
+                          <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{formatPhoneDisplay(o.conversationId)}</div>
+                        </td>
+                        <td style={{ padding: "0.75rem" }}>
+                          <span style={{ background: "rgba(255,255,255,0.06)", padding: "0.25rem 0.5rem", borderRadius: 4, fontSize: "0.85rem" }}>
+                            {o.itemsSummary || "Buñuelos"}
+                          </span>
+                        </td>
+                        <td style={{ padding: "0.75rem", maxWidth: 220, wordBreak: "break-word" }}>
+                          <span style={{ color: "#fef08a", fontWeight: 500 }}>
+                            {o.deliveryAddress || "Por confirmar"}
+                          </span>
+                        </td>
+                        <td style={{ padding: "0.75rem" }}>
+                          <span style={{ background: "rgba(16,185,129,0.15)", color: "#34d399", padding: "0.2rem 0.5rem", borderRadius: 4, fontWeight: 600, fontSize: "0.8rem" }}>
+                            {o.paymentMethod || "Efectivo"}
+                          </span>
+                        </td>
+                        <td style={{ padding: "0.75rem", fontWeight: 700, fontSize: "1rem", color: "#38bdf8" }}>
+                          ${o.total.toLocaleString("es-CO")}
+                        </td>
+                        <td style={{ padding: "0.75rem" }}>
+                          <span
+                            className="lp-pill"
+                            style={{
+                              background: o.status === "confirmed" ? "rgba(34,197,94,0.2)" : "rgba(56,189,248,0.2)",
+                              color: o.status === "confirmed" ? "#4ade80" : "var(--accent)",
+                              fontWeight: 600,
+                              fontSize: "0.75rem",
+                            }}
+                          >
+                            {o.status.toUpperCase()}
+                          </span>
+                        </td>
+                        <td style={{ padding: "0.75rem", color: "var(--text-muted)", fontSize: "0.8rem" }}>
+                          {formatDateDisplay(o.createdAt).time}
+                          <br />
+                          {formatDateDisplay(o.createdAt).date}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         )}

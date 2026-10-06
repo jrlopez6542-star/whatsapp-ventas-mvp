@@ -110,8 +110,10 @@ export async function POST(request: NextRequest) {
     const fromKey = parsed.from;
     const conv = await getOrCreateConversation(fromKey);
 
+    // Guardar el mensaje del usuario de inmediato en el historial de chat del panel
+    await appendMessage(fromKey, "user", text);
+
     if (conv.status === "human") {
-      await appendMessage(fromKey, "user", text);
       console.log("[evolution] human mode — skip AI", { from: fromKey });
       return jsonOk({ mode: "human" });
     }
@@ -120,7 +122,7 @@ export async function POST(request: NextRequest) {
       await setConversationStatus(fromKey, "bot");
     }
 
-    const { reply, mode } = await handleSalesMessage(fromKey, text);
+    const { reply, mode } = await handleSalesMessage(fromKey, text, parsed.pushName);
     const replyTo = replyTargetFromParsed(parsed);
     console.log("[evolution reply]", {
       from: fromKey,

@@ -71,6 +71,10 @@ export async function ensureTursoReady(): Promise<void> {
         `CREATE TABLE IF NOT EXISTS orders (
           id TEXT PRIMARY KEY,
           conversation_id TEXT NOT NULL,
+          customer_name TEXT,
+          delivery_address TEXT,
+          payment_method TEXT,
+          items_summary TEXT,
           status TEXT NOT NULL DEFAULT 'pending',
           total INTEGER NOT NULL,
           created_at INTEGER NOT NULL
@@ -89,6 +93,72 @@ export async function ensureTursoReady(): Promise<void> {
       ],
       "write"
     );
+
+    // Safely apply alterations for existing databases individually
+    const alterOrders = [
+      "customer_name TEXT",
+      "delivery_address TEXT",
+      "payment_method TEXT",
+      "items_summary TEXT",
+      "total INTEGER DEFAULT 0",
+      "status TEXT DEFAULT 'confirmed'",
+      "created_at INTEGER DEFAULT 0",
+      "conversation_id TEXT",
+    ];
+    for (const col of alterOrders) {
+      try {
+        await client.execute(`ALTER TABLE orders ADD COLUMN ${col};`);
+      } catch {
+        // Ignored if column already exists
+      }
+    }
+
+    const alterConversations = [
+      "phone TEXT",
+      "from_wa TEXT",
+      "status TEXT DEFAULT 'bot'",
+      "created_at INTEGER DEFAULT 0",
+      "updated_at INTEGER DEFAULT 0",
+    ];
+    for (const col of alterConversations) {
+      try {
+        await client.execute(`ALTER TABLE conversations ADD COLUMN ${col};`);
+      } catch {}
+    }
+
+    const alterMessages = [
+      "conversation_id TEXT",
+      "role TEXT",
+      "content TEXT",
+      "created_at INTEGER DEFAULT 0",
+    ];
+    for (const col of alterMessages) {
+      try {
+        await client.execute(`ALTER TABLE messages ADD COLUMN ${col};`);
+      } catch {}
+    }
+
+    // Data repair for legacy databases (fix 0/epoch-1969 dates and null phone columns)
+    try {
+      const nowMs = Date.now();
+      await client.execute(`UPDATE conversations SET updated_at = ${nowMs} WHERE updated_at IS NULL OR updated_at <= 86400000;`);
+      await client.execute(`UPDATE conversations SET created_at = updated_at WHERE created_at IS NULL OR created_at <= 86400000;`);
+      await client.execute(`UPDATE messages SET created_at = ${nowMs} WHERE created_at IS NULL OR created_at <= 86400000;`);
+      await client.execute(`UPDATE orders SET created_at = ${nowMs} WHERE created_at IS NULL OR created_at <= 86400000;`);
+      await client.execute(`UPDATE conversations SET phone = from_wa WHERE (phone IS NULL OR phone = '') AND from_wa IS NOT NULL;`);
+      await client.execute(`UPDATE conversations SET from_wa = phone WHERE (from_wa IS NULL OR from_wa = '') AND phone IS NOT NULL;`);
+    } catch (repairErr) {
+      console.warn("[db data repair notice]", repairErr);
+    }
+
+    try {
+      const cRows = (await client.execute("PRAGMA table_info(conversations);")).rows;
+      const mRows = (await client.execute("PRAGMA table_info(messages);")).rows;
+      const oRows = (await client.execute("PRAGMA table_info(orders);")).rows;
+      console.log("[db schema conversations]", JSON.stringify(cRows));
+      console.log("[db schema messages]", JSON.stringify(mRows));
+      console.log("[db schema orders]", JSON.stringify(oRows));
+    } catch {}
   })().catch((err: unknown) => {
     initializedPromise = null;
     throw err;

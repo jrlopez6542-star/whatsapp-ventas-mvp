@@ -38,6 +38,10 @@ export interface OrderItem {
 export interface Order {
   id: string;
   conversationId: string;
+  customerName?: string;
+  deliveryAddress?: string;
+  paymentMethod?: string;
+  itemsSummary?: string;
   status: "pending" | "confirmed" | "cancelled";
   total: number;
   items?: OrderItem[];
@@ -52,35 +56,71 @@ export interface OrgSettings {
 }
 
 const DEFAULT_SETTINGS: OrgSettings = {
-  name: "Mi Tienda",
-  tone: "amable, comercial y conciso",
-  welcomeMessage: "¡Hola! 👋 Bienvenido. ¿En qué producto estás interesado hoy?",
-  rules: "Solo cotiza productos del catálogo activo en pesos colombianos (COP). Si el usuario pide hablar con una persona, escala a humano.",
+  name: "BUÑUELANDIA",
+  tone: "amable, alegre, antojador y vendedor",
+  welcomeMessage: "¡Hola! 🤤 Bienvenido a *BUÑUELANDIA*. Los mejores buñuelos frescos, crujientes y calienticos recién hechos. ¿Te gustaría ver nuestro menú de buñuelos y cajas?",
+  rules: "Ofrece el catálogo oficial de BUÑUELANDIA. Para pedidos confirma: productos y cantidades, nombre completo del cliente, dirección exacta de entrega y medio de pago (Nequi, Daviplata o Efectivo contra entrega). Si solicitan hablar con una persona, escala a humano.",
 };
 
 const SEED_PRODUCTS: Product[] = [
   {
-    sku: "KIT-INI-01",
-    name: "Kit Inicial Emprendedor",
-    price: 45000,
+    sku: "BM",
+    name: "Buñuelo Mora",
+    price: 4500,
     active: true,
-    description: "Kit básico para iniciar ventas",
+    description: "Buñuelo caliente relleno con dulce de mora artesanal",
   },
   {
-    sku: "BOLSAS-KRAFT-M",
-    name: "Bolsas Kraft Medianas (x50)",
-    price: 28000,
+    sku: "BA",
+    name: "Buñuelo Arequipe",
+    price: 4500,
     active: true,
-    description: "Paquete de 50 bolsas kraft tamaño mediano",
+    description: "Buñuelo caliente relleno de exquisito arequipe",
   },
   {
-    sku: "BOLSAS-KRAFT-G",
-    name: "Bolsas Kraft Grandes (x50)",
-    price: 38000,
+    sku: "BQ",
+    name: "Buñuelo Queso",
+    price: 4500,
     active: true,
-    description: "Paquete de 50 bolsas kraft tamaño grande",
+    description: "Buñuelo caliente relleno con queso derretido",
+  },
+  {
+    sku: "BC",
+    name: "Buñuelo Costeño",
+    price: 4500,
+    active: true,
+    description: "Buñuelo tradicional con auténtico queso costeño",
+  },
+  {
+    sku: "C4T",
+    name: "CAJA x4 Tradicional",
+    price: 16000,
+    active: true,
+    description: "Caja de 4 buñuelos tradicionales dorados y crujientes",
+  },
+  {
+    sku: "C8T",
+    name: "CAJA x8 Tradicional",
+    price: 32000,
+    active: true,
+    description: "Caja familiar de 8 buñuelos tradicionales",
+  },
+  {
+    sku: "C4S",
+    name: "CAJA x4 Surtida",
+    price: 18000,
+    active: true,
+    description: "Caja de 4 buñuelos surtidos rellenos a elección (Mora, Arequipe, Queso)",
+  },
+  {
+    sku: "C8S",
+    name: "CAJA x8 Surtida",
+    price: 36000,
+    active: true,
+    description: "Caja de 8 buñuelos surtidos rellenos a elección",
   },
 ];
+
 
 // --- In-Memory Store Fallback ---
 class MemoryStore {
@@ -116,6 +156,11 @@ class MemoryStore {
     c.updatedAt = Date.now();
   }
 
+  deleteConversation(id: string): void {
+    this.conversations.delete(id);
+    this.messages = this.messages.filter((m) => m.conversationId !== id);
+  }
+
   appendMessage(conversationId: string, role: "user" | "assistant" | "system", content: string): Message {
     const c = this.getOrCreateConversation(conversationId);
     c.updatedAt = Date.now();
@@ -147,11 +192,20 @@ class MemoryStore {
     this.products.set(product.sku, product);
   }
 
-  createOrder(conversationId: string, items: OrderItem[], total: number): Order {
+  createOrder(
+    conversationId: string,
+    items: OrderItem[],
+    total: number,
+    details?: { customerName?: string; deliveryAddress?: string; paymentMethod?: string; itemsSummary?: string }
+  ): Order {
     const order: Order = {
       id: randomUUID(),
       conversationId,
-      status: "pending",
+      customerName: details?.customerName,
+      deliveryAddress: details?.deliveryAddress,
+      paymentMethod: details?.paymentMethod,
+      itemsSummary: details?.itemsSummary,
+      status: "confirmed",
       total,
       items,
       createdAt: Date.now(),
@@ -187,6 +241,40 @@ function getMemoryStore(): MemoryStore {
 
 // --- Store Exports with Turso / Memory dispatch ---
 
+export function parseTimestamp(raw: unknown): number {
+  if (raw == null) return Date.now();
+  if (typeof raw === "number") {
+    if (raw <= 86400000) return Date.now(); // 0 or epoch 1970
+    if (raw < 10000000000) return raw * 1000; // was in unix seconds
+    return raw;
+  }
+  const str = String(raw).trim();
+  if (!str || str === "0") return Date.now();
+  const num = Number(str);
+  if (!isNaN(num)) {
+    if (num <= 86400000) return Date.now();
+    if (num < 10000000000) return num * 1000;
+    return num;
+  }
+  const parsed = Date.parse(str);
+  if (!isNaN(parsed) && parsed > 86400000) return parsed;
+  return Date.now();
+}
+
+export function decodeWhatsappIdentifier(val: string): string {
+  if (!val) return "";
+  let s = String(val).trim();
+  if (/^[A-Za-z0-9+/=]{20,}$/.test(s) && (s.startsWith("d2hh") || s.length % 4 === 0)) {
+    try {
+      const decoded = Buffer.from(s, "base64").toString("utf8");
+      if (decoded.startsWith("whatsapp:") || decoded.startsWith("+") || /^\d+$/.test(decoded)) {
+        return decoded;
+      }
+    } catch {}
+  }
+  return s;
+}
+
 export async function getConversation(id: string): Promise<Conversation | null> {
   if (!isTursoConfigured()) {
     return getMemoryStore().getConversation(id);
@@ -194,18 +282,25 @@ export async function getConversation(id: string): Promise<Conversation | null> 
   try {
     await ensureTursoReady();
     const client = getTursoClient();
+    const decoded = decodeWhatsappIdentifier(id);
+    const encoded = Buffer.from(id).toString("base64");
+    const bare = id.replace(/^whatsapp:/i, "");
+    const candidates = Array.from(new Set([id, decoded, encoded, bare])).filter(Boolean);
+    const placeholders = candidates.map(() => "?").join(",");
+
     const res = await client.execute({
-      sql: "SELECT id, phone, status, created_at, updated_at FROM conversations WHERE id = ? LIMIT 1",
-      args: [id],
+      sql: `SELECT * FROM conversations WHERE id IN (${placeholders}) OR phone IN (${placeholders}) OR from_wa IN (${placeholders}) ORDER BY updated_at DESC LIMIT 1`,
+      args: [...candidates, ...candidates, ...candidates],
     });
     if (!res.rows.length) return null;
     const r = res.rows[0];
+    const rawPhone = String(r.phone || r.from_wa || r.id);
     return {
       id: String(r.id),
-      phone: String(r.phone),
+      phone: decodeWhatsappIdentifier(rawPhone) || rawPhone,
       status: (r.status as ConversationStatus) || "bot",
-      createdAt: Number(r.created_at),
-      updatedAt: Number(r.updated_at),
+      createdAt: parseTimestamp(r.created_at),
+      updatedAt: parseTimestamp(r.updated_at),
     };
   } catch {
     return getMemoryStore().getConversation(id);
@@ -217,7 +312,9 @@ export async function getOrCreateConversation(id: string): Promise<Conversation>
   if (existing) return existing;
 
   const now = Date.now();
-  const c: Conversation = { id, phone: id, status: "bot", createdAt: now, updatedAt: now };
+  const decoded = decodeWhatsappIdentifier(id);
+  const phoneVal = decoded || id;
+  const c: Conversation = { id, phone: phoneVal, status: "bot", createdAt: now, updatedAt: now };
 
   if (!isTursoConfigured()) {
     getMemoryStore().conversations.set(id, c);
@@ -227,16 +324,53 @@ export async function getOrCreateConversation(id: string): Promise<Conversation>
   try {
     await ensureTursoReady();
     const client = getTursoClient();
-    await client.execute({
-      sql: `INSERT INTO conversations (id, phone, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
-      args: [id, id, "bot", now, now],
-    });
+    try {
+      await client.execute({
+        sql: `INSERT INTO conversations (id, phone, from_wa, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, phone = excluded.phone, from_wa = excluded.from_wa`,
+        args: [id, phoneVal, phoneVal, "bot", now, now],
+      });
+    } catch {
+      await client.execute({
+        sql: `INSERT INTO conversations (id, phone, status, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?)
+              ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at, phone = excluded.phone`,
+        args: [id, phoneVal, "bot", now, now],
+      });
+    }
     return c;
-  } catch {
+  } catch (err) {
+    console.error("[store] getOrCreateConversation Turso error:", err);
     return getMemoryStore().getOrCreateConversation(id);
   }
+}
+
+export async function deleteConversation(id: string): Promise<boolean> {
+  getMemoryStore().deleteConversation(id);
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      const decoded = decodeWhatsappIdentifier(id);
+      const encoded = Buffer.from(id).toString("base64");
+      const bare = id.replace(/^whatsapp:/i, "");
+      const candidates = Array.from(new Set([id, decoded, encoded, bare])).filter(Boolean);
+      const placeholders = candidates.map(() => "?").join(",");
+      await client.execute({
+        sql: `DELETE FROM messages WHERE conversation_id IN (${placeholders})`,
+        args: candidates,
+      }).catch(() => {});
+      await client.execute({
+        sql: `DELETE FROM conversations WHERE id IN (${placeholders}) OR phone IN (${placeholders}) OR from_wa IN (${placeholders})`,
+        args: [...candidates, ...candidates, ...candidates],
+      }).catch(() => {});
+      return true;
+    } catch (err) {
+      console.error("[store] deleteConversation Turso error:", err);
+    }
+  }
+  return true;
 }
 
 export async function setConversationStatus(id: string, status: ConversationStatus): Promise<void> {
@@ -249,8 +383,8 @@ export async function setConversationStatus(id: string, status: ConversationStat
         sql: "UPDATE conversations SET status = ?, updated_at = ? WHERE id = ?",
         args: [status, Date.now(), id],
       });
-    } catch {
-      // fallback handled
+    } catch (err) {
+      console.error("[store] setConversationStatus Turso error:", err);
     }
   }
 }
@@ -265,17 +399,32 @@ export async function appendMessage(
     try {
       await ensureTursoReady();
       const client = getTursoClient();
-      await client.execute({
-        sql: `INSERT INTO messages (id, conversation_id, role, content, created_at)
-              VALUES (?, ?, ?, ?, ?)`,
-        args: [memoryMsg.id, conversationId, role, content, memoryMsg.createdAt],
-      });
+      try {
+        await client.execute({
+          sql: `INSERT INTO messages (id, conversation_id, role, content, created_at)
+                VALUES (?, ?, ?, ?, ?)`,
+          args: [memoryMsg.id, conversationId, role, content, memoryMsg.createdAt],
+        });
+      } catch {
+        // Fallback if id is auto-increment integer or created_at is text
+        await client.execute({
+          sql: `INSERT INTO messages (conversation_id, role, content, created_at)
+                VALUES (?, ?, ?, ?)`,
+          args: [conversationId, role, content, new Date(memoryMsg.createdAt).toISOString()],
+        }).catch(async () => {
+          await client.execute({
+            sql: `INSERT INTO messages (conversation_id, role, content, created_at)
+                  VALUES (?, ?, ?, ?)`,
+            args: [conversationId, role, content, memoryMsg.createdAt],
+          });
+        });
+      }
       await client.execute({
         sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
         args: [Date.now(), conversationId],
-      });
-    } catch {
-      // fallback handled
+      }).catch(() => {});
+    } catch (err) {
+      console.error("[store] appendMessage Turso error:", err);
     }
   }
   return memoryMsg;
@@ -288,18 +437,24 @@ export async function getMessages(conversationId: string): Promise<Message[]> {
   try {
     await ensureTursoReady();
     const client = getTursoClient();
+    const decoded = decodeWhatsappIdentifier(conversationId);
+    const encoded = Buffer.from(conversationId).toString("base64");
+    const bare = conversationId.replace(/^whatsapp:/i, "");
+    const candidates = Array.from(new Set([conversationId, decoded, encoded, bare])).filter(Boolean);
+    const placeholders = candidates.map(() => "?").join(",");
     const res = await client.execute({
-      sql: "SELECT id, conversation_id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
-      args: [conversationId],
+      sql: `SELECT * FROM messages WHERE conversation_id IN (${placeholders}) ORDER BY rowid ASC`,
+      args: candidates,
     });
     return res.rows.map((r: any) => ({
-      id: String(r.id),
-      conversationId: String(r.conversation_id),
-      role: r.role as "user" | "assistant" | "system",
-      content: String(r.content),
-      createdAt: Number(r.created_at),
+      id: String(r.id || r.rowid || randomUUID()),
+      conversationId: String(r.conversation_id || conversationId),
+      role: (r.role as "user" | "assistant" | "system") || "user",
+      content: String(r.content || ""),
+      createdAt: parseTimestamp(r.created_at),
     }));
-  } catch {
+  } catch (err) {
+    console.error("[store] getMessages Turso error:", err);
     return getMemoryStore().getMessages(conversationId);
   }
 }
@@ -373,25 +528,41 @@ export async function upsertProduct(product: Product): Promise<void> {
 export async function createOrder(
   conversationId: string,
   items: OrderItem[],
-  total: number
+  total: number,
+  details?: { customerName?: string; deliveryAddress?: string; paymentMethod?: string; itemsSummary?: string }
 ): Promise<Order> {
-  const memOrder = getMemoryStore().createOrder(conversationId, items, total);
+  const memOrder = getMemoryStore().createOrder(conversationId, items, total, details);
   if (isTursoConfigured()) {
     try {
       await ensureTursoReady();
       const client = getTursoClient();
       await client.execute({
-        sql: "INSERT INTO orders (id, conversation_id, status, total, created_at) VALUES (?, ?, ?, ?, ?)",
-        args: [memOrder.id, conversationId, memOrder.status, total, memOrder.createdAt],
+        sql: `INSERT INTO orders (id, conversation_id, customer_name, delivery_address, payment_method, items_summary, status, total, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          memOrder.id,
+          conversationId,
+          details?.customerName || null,
+          details?.deliveryAddress || null,
+          details?.paymentMethod || null,
+          details?.itemsSummary || null,
+          memOrder.status,
+          total,
+          memOrder.createdAt,
+        ],
       });
-      for (const it of items) {
-        await client.execute({
-          sql: "INSERT INTO order_items (id, order_id, sku, quantity, unit_price) VALUES (?, ?, ?, ?, ?)",
-          args: [randomUUID(), memOrder.id, it.sku, it.quantity, it.unitPrice],
-        });
+      try {
+        for (const it of items) {
+          await client.execute({
+            sql: "INSERT INTO order_items (id, order_id, sku, quantity, unit_price) VALUES (?, ?, ?, ?, ?)",
+            args: [randomUUID(), memOrder.id, it.sku, it.quantity, it.unitPrice],
+          });
+        }
+      } catch (itemErr) {
+        console.warn("[store] order_items insert warning:", itemErr);
       }
-    } catch {
-      // fallback
+    } catch (err) {
+      console.error("[store] createOrder Turso error:", err);
     }
   }
   return memOrder;
@@ -404,15 +575,22 @@ export async function getOrders(): Promise<Order[]> {
   try {
     await ensureTursoReady();
     const client = getTursoClient();
-    const res = await client.execute("SELECT id, conversation_id, status, total, created_at FROM orders ORDER BY created_at DESC");
+    const res = await client.execute(
+      "SELECT * FROM orders ORDER BY created_at DESC"
+    );
     return res.rows.map((r: any) => ({
       id: String(r.id),
-      conversationId: String(r.conversation_id),
-      status: (r.status as Order["status"]) || "pending",
-      total: Number(r.total),
-      createdAt: Number(r.created_at),
+      conversationId: String(r.conversation_id || r.conversationId || ""),
+      customerName: r.customer_name ? String(r.customer_name) : undefined,
+      deliveryAddress: r.delivery_address ? String(r.delivery_address) : undefined,
+      paymentMethod: r.payment_method ? String(r.payment_method) : undefined,
+      itemsSummary: r.items_summary ? String(r.items_summary) : undefined,
+      status: (r.status as Order["status"]) || "confirmed",
+      total: Number(r.total ?? r.amount ?? 0),
+      createdAt: Number(r.created_at || Date.now()),
     }));
-  } catch {
+  } catch (err) {
+    console.error("[store] getOrders Turso query failed:", err);
     return getMemoryStore().getOrders();
   }
 }
