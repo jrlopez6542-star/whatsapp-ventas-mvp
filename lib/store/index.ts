@@ -413,8 +413,8 @@ export async function appendMessage(
           args: [conversationId, role, content, new Date(memoryMsg.createdAt).toISOString()],
         }).catch(async () => {
           await client.execute({
-            sql: `INSERT INTO messages (conversation_id, role, content, created_at)
-                  VALUES (?, ?, ?, ?)`,
+            sql: `INSERT INTO messages (conversation_id, role, content, created_at, at)
+                  VALUES (?, ?, ?, ?, "")`,
             args: [conversationId, role, content, memoryMsg.createdAt],
           });
         });
