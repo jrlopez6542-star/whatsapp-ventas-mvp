@@ -399,26 +399,10 @@ export async function appendMessage(
     try {
       await ensureTursoReady();
       const client = getTursoClient();
-      try {
-        await client.execute({
-          sql: `INSERT INTO messages (id, conversation_id, role, content, created_at)
-                VALUES (?, ?, ?, ?, ?)`,
-          args: [memoryMsg.id, conversationId, role, content, memoryMsg.createdAt],
-        });
-      } catch {
-        // Fallback if id is auto-increment integer or created_at is text
-        await client.execute({
-          sql: `INSERT INTO messages (conversation_id, role, content, created_at)
-                VALUES (?, ?, ?, ?)`,
-          args: [conversationId, role, content, new Date(memoryMsg.createdAt).toISOString()],
-        }).catch(async () => {
-          await client.execute({
-            sql: `INSERT INTO messages (conversation_id, role, content, created_at, at)
-                  VALUES (?, ?, ?, ?, "")`,
-            args: [conversationId, role, content, memoryMsg.createdAt],
-          });
-        });
-      }
+      await client.execute({
+        sql: `INSERT INTO messages (conversation_id, role, content, at, created_at) VALUES (?, ?, ?, "", ?)`,
+        args: [conversationId, role, content, memoryMsg.createdAt],
+      });
       await client.execute({
         sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
         args: [Date.now(), conversationId],
