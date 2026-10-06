@@ -1,73 +1,78 @@
-1
 import assert from "node:assert/strict";
-2
 import test from "node:test";
-3
 import {
-4
   getReplyDelayConfig,
-5
   randomReplyDelayMs,
-6
   runSerializedConversation,
-7
 } from "./outbound-queue";
-8
 
-
-9
 test("reply delay defaults to 2.5–5.5 seconds", () => {
-10
   assert.deepEqual(getReplyDelayConfig({}), { minMs: 2500, maxMs: 5500 });
-11
 });
-12
 
-
-13
 test("reply delay config clamps and sorts bounds", () => {
-14
   assert.deepEqual(
-15
     getReplyDelayConfig({
-16
       WHATSAPP_REPLY_DELAY_MIN_MS: "9000",
-17
       WHATSAPP_REPLY_DELAY_MAX_MS: "1000",
-18
     }),
-19
     { minMs: 1000, maxMs: 9000 }
-20
   );
-21
   assert.deepEqual(
-22
     getReplyDelayConfig({
-23
       WHATSAPP_REPLY_DELAY_MIN_MS: "invalid",
-24
       WHATSAPP_REPLY_DELAY_MAX_MS: "999999",
-25
     }),
-26
     { minMs: 2500, maxMs: 30000 }
-27
   );
-28
 });
-29
 
-
-30
 test("random delay includes both configured endpoints", () => {
-31
   const config = { minMs: 2500, maxMs: 5500 };
-32
   assert.equal(randomReplyDelayMs(config, () => 0), 2500);
-33
   assert.equal(randomReplyDelayMs(config, () => 1), 5500);
-34
   for (let i = 0; i < 100; i += 1) {
-35
     const value = randomReplyDelayMs(config);
+    assert.ok(value >= 2500 && value <= 5500);
+  }
+});
+
+test("tasks for one conversation never overlap and remain FIFO", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const order: string[] = [];
+  const task = (label: string, wait: number) =>
+    runSerializedConversation("whatsapp:+57000", async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      order.push(`start:${label}`);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      order.push(`end:${label}`);
+      active -= 1;
+    });
+
+  await Promise.all([task("a", 20), task("b", 1), task("c", 1)]);
+  assert.equal(maxActive, 1);
+  assert.deepEqual(order, [
+    "start:a",
+    "end:a",
+    "start:b",
+    "end:b",
+    "start:c",
+    "end:c",
+  ]);
+});
+
+test("different conversations may proceed concurrently", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const task = (key: string) =>
+    runSerializedConversation(key, async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+    });
+  await Promise.all([task("one"), task("two")]);
+  assert.equal(maxActive, 2);
+});
