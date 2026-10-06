@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 interface Conversation {
@@ -42,9 +42,32 @@ interface OrgSettings {
   rules: string;
 }
 
+interface QrStatus {
+  connected: boolean;
+  state: string;
+  base64?: string | null;
+  pairingCode?: string | null;
+  count?: number;
+  profile?: {
+    ownerJid?: string;
+    profileName?: string;
+    profilePicUrl?: string;
+    number?: string;
+  } | null;
+  instance: string;
+}
+
 export default function PanelDashboard() {
-  const [tab, setTab] = useState<"chats" | "orders" | "catalog" | "settings">("chats");
+  const [tab, setTab] = useState<"whatsapp_qr" | "chats" | "orders" | "catalog" | "settings">("whatsapp_qr");
   const [health, setHealth] = useState<any>(null);
+
+  // WhatsApp Web QR state
+  const [qrStatus, setQrStatus] = useState<QrStatus | null>(null);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [qrError, setQrError] = useState("");
+  const [secondsRemaining, setSecondsRemaining] = useState(30);
+  const [isRenewing, setIsRenewing] = useState(false);
+  const [selectedInstance, setSelectedInstance] = useState("bot_whatsapp_mvp");
 
   // Conversations & Chat
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -74,7 +97,7 @@ export default function PanelDashboard() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
-  // Load initial data
+  // Load initial health and data
   const loadHealth = async () => {
     try {
       const res = await fetch("/api/health");
@@ -115,13 +138,113 @@ export default function PanelDashboard() {
     } catch {}
   };
 
+  // Fetch QR Code and Connection Status
+  const fetchQrStatus = async (forceRenew = false) => {
+    try {
+      if (forceRenew) {
+        setIsRenewing(true);
+        await fetch("/api/panel/whatsapp-qr", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "restart", instance: selectedInstance }),
+        });
+      }
+
+      const res = await fetch(`/api/panel/whatsapp-qr?instance=${encodeURIComponent(selectedInstance)}`, {
+        cache: "no-store",
+      });
+      const data = await res.json();
+
+      if (data.ok) {
+        setQrStatus(data);
+        setQrError("");
+        if (!data.connected) {
+          setSecondsRemaining(30);
+        }
+      } else {
+        setQrError(data.error || "No se pudo obtener el código QR");
+      }
+    } catch (err) {
+      setQrError("Error conectando con el servicio de WhatsApp");
+    } finally {
+      setIsRenewing(false);
+      setQrLoading(false);
+    }
+  };
+
+  // Initial load
   useEffect(() => {
     loadHealth();
     loadConversations();
     loadOrders();
     loadProducts();
     loadSettings();
+    setQrLoading(true);
+    fetchQrStatus();
   }, []);
+
+  // When changing instance
+  useEffect(() => {
+    setQrLoading(true);
+    fetchQrStatus();
+  }, [selectedInstance]);
+
+  // QR Polling & Auto-Renewal Countdown
+  useEffect(() => {
+    if (tab !== "whatsapp_qr") return;
+
+    // Countdown timer for renewal
+    const countdownTimer = setInterval(() => {
+      setSecondsRemaining((prev) => {
+        if (prev <= 1) {
+          // Time expired, auto-renew QR!
+          fetchQrStatus();
+          return 30;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    // Fast status check every 3.5s to see if user scanned and is now connected
+    const statusCheckTimer = setInterval(() => {
+      fetch(`/api/panel/whatsapp-qr?instance=${encodeURIComponent(selectedInstance)}`, { cache: "no-store" })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.ok) {
+            setQrStatus((prev) => {
+              if (prev && !prev.connected && data.connected) {
+                // Just connected!
+                return data;
+              }
+              // If base64 updated
+              if (data.base64 && prev?.base64 !== data.base64) {
+                return data;
+              }
+              return { ...prev, ...data };
+            });
+          }
+        })
+        .catch(() => {});
+    }, 3500);
+
+    return () => {
+      clearInterval(countdownTimer);
+      clearInterval(statusCheckTimer);
+    };
+  }, [tab, selectedInstance]);
+
+  // Handle Logout / Disconnect WhatsApp
+  const handleDisconnectWhatsapp = async () => {
+    if (!confirm("¿Seguro que deseas desconectar la sesión de WhatsApp?")) return;
+    try {
+      await fetch("/api/panel/whatsapp-qr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "logout", instance: selectedInstance }),
+      });
+      fetchQrStatus(true);
+    } catch {}
+  };
 
   // Poll conversations every 10s
   useEffect(() => {
@@ -172,7 +295,6 @@ export default function PanelDashboard() {
         body: JSON.stringify({ body: replyText }),
       });
       setReplyText("");
-      // Refresh messages & convs
       const res = await fetch(`/api/panel/conversations/${encodeURIComponent(selectedConvId)}/messages`);
       const data = await res.json();
       if (data.ok) setMessages(data.messages || []);
@@ -250,15 +372,15 @@ export default function PanelDashboard() {
       {/* Top Navbar */}
       <header style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-card)", padding: "0.75rem 1.5rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-          <Link href="/" style={{ color: "var(--text)", textDecoration: "none", fontWeight: 700, fontSize: "1.1rem" }}>
-            WhatsApp Ventas
+          <Link href="/" style={{ color: "var(--text)", textDecoration: "none", fontWeight: 700, fontSize: "1.1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <span style={{ color: "#25d366", fontSize: "1.3rem" }}>💬</span> WhatsApp Ventas
           </Link>
           <span style={{ color: "var(--border)" }}>|</span>
           <span style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>Panel Administrativo</span>
           {health && (
             <div style={{ display: "flex", gap: "0.5rem" }}>
-              <span className="lp-pill" style={{ background: health.channel !== "none" ? "rgba(37,211,102,0.15)" : "rgba(239,68,68,0.15)", color: health.channel !== "none" ? "var(--primary)" : "#ef4444" }}>
-                Canal: {health.channel.toUpperCase()}
+              <span className="lp-pill" style={{ background: qrStatus?.connected ? "rgba(37,211,102,0.15)" : "rgba(234,179,8,0.15)", color: qrStatus?.connected ? "var(--primary)" : "#eab308" }}>
+                {qrStatus?.connected ? "● WhatsApp Conectado" : "○ WhatsApp Desconectado"}
               </span>
               <span className="lp-pill" style={{ background: health.tursoConfigured ? "rgba(56,189,248,0.15)" : "rgba(148,163,184,0.15)", color: health.tursoConfigured ? "var(--accent)" : "var(--text-muted)" }}>
                 DB: {health.tursoConfigured ? "Turso" : "Memoria"}
@@ -273,32 +395,270 @@ export default function PanelDashboard() {
         </div>
       </header>
 
-      {/* Tabs */}
+      {/* Navigation Tabs */}
       <div style={{ display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--border)", padding: "0 1.5rem", background: "var(--bg-card)" }}>
-        {(["chats", "orders", "catalog", "settings"] as const).map((t) => (
+        {[
+          { id: "whatsapp_qr", label: "📱 Vincular WhatsApp (QR)" },
+          { id: "chats", label: "💬 Bandeja de Entrada" },
+          { id: "orders", label: "📦 Pedidos" },
+          { id: "catalog", label: "🏷️ Catálogo" },
+          { id: "settings", label: "⚙️ Configuración" },
+        ].map((t) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
+            key={t.id}
+            onClick={() => setTab(t.id as any)}
             style={{
-              padding: "0.75rem 1.25rem",
+              padding: "0.85rem 1.25rem",
               background: "transparent",
               border: "none",
-              borderBottom: tab === t ? "2px solid var(--primary)" : "2px solid transparent",
-              color: tab === t ? "var(--text)" : "var(--text-muted)",
-              fontWeight: tab === t ? 600 : 400,
+              borderBottom: tab === t.id ? "3px solid var(--primary)" : "3px solid transparent",
+              color: tab === t.id ? "var(--text)" : "var(--text-muted)",
+              fontWeight: tab === t.id ? 700 : 500,
               cursor: "pointer",
               fontSize: "0.95rem",
-              textTransform: "capitalize",
+              transition: "all 0.2s ease",
             }}
           >
-            {t === "chats" ? "Bandeja de Entrada" : t === "orders" ? "Pedidos" : t === "catalog" ? "Catálogo" : "Configuración"}
+            {t.label}
           </button>
         ))}
       </div>
 
       {/* Content Area */}
       <main style={{ flex: 1, padding: "1.5rem", maxWidth: 1200, width: "100%", margin: "0 auto" }}>
-        {/* TAB 1: BANDEJA DE CHATS */}
+        
+        {/* ========================================================= */}
+        {/* TAB: WHATSAPP WEB STYLE QR CODE                           */}
+        {/* ========================================================= */}
+        {tab === "whatsapp_qr" && (
+          <div style={{ maxWidth: 960, margin: "1rem auto" }}>
+            {/* WhatsApp Web Banner Header */}
+            <div style={{ background: "#00a884", borderRadius: "16px 16px 0 0", padding: "1.25rem 2rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#ffffff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.3rem" }}>
+                  📱
+                </div>
+                <div>
+                  <h2 style={{ fontSize: "1.25rem", fontWeight: 700, color: "#ffffff", margin: 0 }}>
+                    WhatsApp Web · Vinculación Oficial
+                  </h2>
+                  <p style={{ fontSize: "0.85rem", color: "#e6fffa", margin: 0 }}>
+                    Conecta tu número comercial con el motor de Inteligencia Artificial
+                  </p>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                <span style={{ fontSize: "0.85rem", color: "#ffffff" }}>Instancia:</span>
+                <select
+                  value={selectedInstance}
+                  onChange={(e) => setSelectedInstance(e.target.value)}
+                  style={{
+                    background: "rgba(0,0,0,0.25)",
+                    border: "1px solid rgba(255,255,255,0.4)",
+                    color: "#ffffff",
+                    borderRadius: 6,
+                    padding: "0.3rem 0.6rem",
+                    fontSize: "0.85rem",
+                    cursor: "pointer",
+                  }}
+                >
+                  <option value="bot_whatsapp_mvp">bot_whatsapp_mvp (Por escanear)</option>
+                  <option value="ventas2">ventas2 (Línea existente)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Main Card */}
+            <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderTop: "none", borderRadius: "0 0 16px 16px", padding: "2.5rem 2rem", boxShadow: "0 20px 40px rgba(0,0,0,0.5)" }}>
+              {qrStatus?.connected ? (
+                /* STATE: CONNECTED */
+                <div style={{ textAlign: "center", padding: "2rem 1rem" }}>
+                  <div style={{ width: 80, height: 80, borderRadius: "50%", background: "rgba(37,211,102,0.15)", border: "2px solid #25d366", margin: "0 auto 1.5rem", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "2.5rem" }}>
+                    ✅
+                  </div>
+                  <h2 style={{ fontSize: "1.75rem", fontWeight: 700, marginBottom: "0.5rem" }}>
+                    ¡WhatsApp Conectado con Éxito!
+                  </h2>
+                  <p style={{ color: "var(--text-muted)", fontSize: "1.05rem", maxWidth: 500, margin: "0 auto 1.5rem" }}>
+                    Tu línea de WhatsApp está sincronizada y respondiendo automáticamente cotizaciones y pedidos con IA.
+                  </p>
+
+                  <div style={{ display: "inline-flex", flexDirection: "column", gap: "0.75rem", background: "#0b141a", border: "1px solid var(--border)", borderRadius: 12, padding: "1.25rem 2rem", textAlign: "left", marginBottom: "2rem", minWidth: 320 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+                      <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>Instancia activa:</span>
+                      <strong style={{ color: "#25d366", fontSize: "0.9rem" }}>{qrStatus.instance}</strong>
+                    </div>
+                    {qrStatus.profile?.ownerJid && (
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+                        <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>Número conectado:</span>
+                        <strong style={{ fontSize: "0.9rem" }}>{qrStatus.profile.ownerJid.replace("@s.whatsapp.net", "")}</strong>
+                      </div>
+                    )}
+                    {qrStatus.profile?.profileName && (
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+                        <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>Nombre del perfil:</span>
+                        <strong style={{ fontSize: "0.9rem" }}>{qrStatus.profile.profileName}</strong>
+                      </div>
+                    )}
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+                      <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>Estado de sesión:</span>
+                      <span className="lp-pill" style={{ background: "rgba(37,211,102,0.2)", color: "#25d366", margin: 0 }}>
+                        EN LÍNEA (OPEN)
+                      </span>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: "1rem", justifyContent: "center" }}>
+                    <button
+                      onClick={() => setTab("chats")}
+                      className="lp-btn lp-btn-primary"
+                      style={{ fontSize: "1rem", padding: "0.75rem 1.75rem" }}
+                    >
+                      Ir a la Bandeja de Mensajes →
+                    </button>
+                    <button
+                      onClick={handleDisconnectWhatsapp}
+                      className="lp-btn lp-btn-secondary"
+                      style={{ fontSize: "1rem", padding: "0.75rem 1.75rem", color: "#f87171" }}
+                    >
+                      Desconectar WhatsApp
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* STATE: CONNECTING / QR DISPLAY */
+                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: "3rem", alignItems: "center" }}>
+                  {/* Left Column: Instructions estilo WhatsApp Web */}
+                  <div>
+                    <h2 style={{ fontSize: "1.6rem", fontWeight: 700, marginBottom: "1rem" }}>
+                      Inicia sesión con tu WhatsApp
+                    </h2>
+                    <ol style={{ paddingLeft: "1.25rem", display: "flex", flexDirection: "column", gap: "1rem", color: "var(--text)", fontSize: "1.05rem", lineHeight: 1.5 }}>
+                      <li>
+                        Abre <strong>WhatsApp</strong> en tu teléfono móvil.
+                      </li>
+                      <li>
+                        Toca el menú de <strong>tres puntos ⋮</strong> (Android) o ve a <strong>Ajustes ⚙️</strong> (iPhone).
+                      </li>
+                      <li>
+                        Selecciona <strong>Dispositivos vinculados</strong> y luego toca en <strong>Vincular un dispositivo</strong>.
+                      </li>
+                      <li>
+                        Apunta tu teléfono hacia esta pantalla para <strong>escanear el código QR</strong>.
+                      </li>
+                    </ol>
+
+                    <div style={{ marginTop: "2rem", padding: "1rem", background: "rgba(56,189,248,0.1)", border: "1px solid rgba(56,189,248,0.3)", borderRadius: 8 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "var(--accent)", fontSize: "0.9rem", fontWeight: 600 }}>
+                        <span>⚡</span> Renovación automática activa
+                      </div>
+                      <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: "0.25rem 0 0" }}>
+                        Si el código vence, la pantalla solicitará automáticamente una nueva clave a Docker Evolution para que nunca se quede congelada.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Right Column: QR Code Container */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                    <div
+                      style={{
+                        background: "#ffffff",
+                        padding: "1.25rem",
+                        borderRadius: 16,
+                        boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
+                        position: "relative",
+                        minWidth: 280,
+                        minHeight: 280,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      {qrLoading || isRenewing ? (
+                        <div style={{ textAlign: "center", color: "#0b141a" }}>
+                          <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>⏳</div>
+                          <strong style={{ fontSize: "0.95rem" }}>Generando código QR...</strong>
+                          <div style={{ fontSize: "0.8rem", color: "#64748b" }}>Conectando con Docker...</div>
+                        </div>
+                      ) : qrStatus?.base64 ? (
+                        <div style={{ position: "relative" }}>
+                          <img
+                            src={qrStatus.base64}
+                            alt="Código QR de WhatsApp"
+                            style={{
+                              width: 250,
+                              height: 250,
+                              display: "block",
+                              borderRadius: 8,
+                            }}
+                          />
+                        </div>
+                      ) : (
+                        <div style={{ textAlign: "center", color: "#0b141a", padding: "1rem" }}>
+                          <div style={{ fontSize: "2rem", color: "#ef4444" }}>⚠️</div>
+                          <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#b91c1c", marginTop: "0.5rem" }}>
+                            {qrError || "No se pudo cargar el QR"}
+                          </div>
+                          <button
+                            onClick={() => fetchQrStatus(true)}
+                            className="lp-btn lp-btn-primary"
+                            style={{ marginTop: "1rem", fontSize: "0.85rem" }}
+                          >
+                            Reintentar
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Progress Bar & Countdown Timer */}
+                    <div style={{ marginTop: "1.25rem", width: "100%", maxWidth: 280, textAlign: "center" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
+                        <span>Expira en:</span>
+                        <strong style={{ color: secondsRemaining <= 5 ? "#ef4444" : "var(--primary)" }}>
+                          {secondsRemaining}s
+                        </strong>
+                      </div>
+                      <div style={{ width: "100%", height: 6, background: "var(--border)", borderRadius: 999, overflow: "hidden" }}>
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${(secondsRemaining / 30) * 100}%`,
+                            background: secondsRemaining <= 5 ? "#ef4444" : "#25d366",
+                            transition: "width 1s linear, background-color 0.3s",
+                          }}
+                        />
+                      </div>
+                      <button
+                        onClick={() => fetchQrStatus(true)}
+                        disabled={isRenewing}
+                        style={{
+                          marginTop: "1rem",
+                          background: "transparent",
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          color: "var(--text)",
+                          padding: "0.5rem 1rem",
+                          fontSize: "0.85rem",
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "0.5rem",
+                          transition: "border-color 0.2s",
+                        }}
+                      >
+                        <span>🔄</span> {isRenewing ? "Renovando código..." : "Renovar código QR ahora"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* TAB 1: BANDEJA DE CHATS                                   */}
+        {/* ========================================================= */}
         {tab === "chats" && (
           <div style={{ display: "grid", gridTemplateColumns: "350px 1fr", gap: "1.5rem", height: "calc(100vh - 180px)" }}>
             {/* Conversations List */}
@@ -441,7 +801,9 @@ export default function PanelDashboard() {
           </div>
         )}
 
-        {/* TAB 2: PEDIDOS */}
+        {/* ========================================================= */}
+        {/* TAB 2: PEDIDOS                                            */}
+        {/* ========================================================= */}
         {tab === "orders" && (
           <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "1.5rem" }}>
             <h2 style={{ fontSize: "1.25rem", marginBottom: "1rem" }}>Pedidos Registrados</h2>
@@ -480,7 +842,9 @@ export default function PanelDashboard() {
           </div>
         )}
 
-        {/* TAB 3: CATÁLOGO */}
+        {/* ========================================================= */}
+        {/* TAB 3: CATÁLOGO                                           */}
+        {/* ========================================================= */}
         {tab === "catalog" && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 350px", gap: "1.5rem" }}>
             <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "1.5rem" }}>
@@ -575,7 +939,9 @@ export default function PanelDashboard() {
           </div>
         )}
 
-        {/* TAB 4: CONFIGURACIÓN */}
+        {/* ========================================================= */}
+        {/* TAB 4: CONFIGURACIÓN                                      */}
+        {/* ========================================================= */}
         {tab === "settings" && (
           <div style={{ maxWidth: 700, margin: "0 auto", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "2rem" }}>
             <h2 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>Configuración del Negocio</h2>
