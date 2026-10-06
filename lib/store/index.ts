@@ -400,7 +400,7 @@ export async function appendMessage(
       await ensureTursoReady();
       const client = getTursoClient();
       await client.execute({
-        sql: `INSERT INTO messages (conversation_id, role, content, at, created_at) VALUES (?, ?, ?, "", ?)`,
+        sql: `INSERT INTO messages (conversation_id, role, content, at, created_at) VALUES (?, ?, ?, '', ?)`,
         args: [conversationId, role, content, memoryMsg.createdAt],
       });
       await client.execute({
