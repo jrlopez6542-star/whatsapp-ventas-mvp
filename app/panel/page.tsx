@@ -137,6 +137,7 @@ export default function PanelDashboard() {
   // Conversations & Chat
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "bot" | "human">("all");
   const [messages, setMessages] = useState<Message[]>([]);
   const [replyText, setReplyText] = useState("");
@@ -979,7 +980,7 @@ export default function PanelDashboard() {
                   </thead>
                   <tbody>
                     {orders.map((o) => (
-                      <tr key={o.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                      <tr key={o.id} style={{ borderBottom: "1px solid var(--border)", cursor: "pointer" }} onClick={() => setSelectedOrderId(o.id)}>
                         <td style={{ padding: "0.75rem", fontFamily: "monospace", fontWeight: 700, color: "var(--primary)" }}>
                           #{o.id.slice(0, 8)}
                         </td>
