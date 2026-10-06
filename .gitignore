@@ -8,3 +8,4 @@ build
 .vercel
 proyecto_completo.txt
 unpack.mjs
+.env*

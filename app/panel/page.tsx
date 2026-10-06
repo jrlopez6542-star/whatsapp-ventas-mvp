@@ -341,7 +341,7 @@ export default function PanelDashboard() {
     }
     const loadMessages = async () => {
       try {
-        const res = await fetch(`/api/panel/conversations/${encodeURIComponent(selectedConvId)}/messages`);
+        const res = await fetch(`/api/panel/conversations/${encodeURIComponent(selectedConvId)}/messages`, { cache: "no-store" });
         const data = await res.json();
         if (data.ok) setMessages(data.messages || []);
       } catch {}
@@ -367,7 +367,7 @@ export default function PanelDashboard() {
     if (e) e.stopPropagation();
     if (!confirm("¿Deseas eliminar esta conversación del panel?")) return;
     try {
-      await fetch(`/api/panel/conversations/${encodeURIComponent(convId)}`, {
+      await fetch(`/api/panel/conversations/${encodeURIComponent(convId)}`, { cache: "no-store", ..., {
         method: "DELETE",
       });
       if (selectedConvId === convId) setSelectedConvId(null);
@@ -397,7 +397,7 @@ export default function PanelDashboard() {
         body: JSON.stringify({ body: replyText }),
       });
       setReplyText("");
-      const res = await fetch(`/api/panel/conversations/${encodeURIComponent(selectedConvId)}/messages`);
+      const res = await fetch(`/api/panel/conversations/${encodeURIComponent(selectedConvId)}/messages`, { cache: "no-store" });
       const data = await res.json();
       if (data.ok) setMessages(data.messages || []);
       loadConversations();
