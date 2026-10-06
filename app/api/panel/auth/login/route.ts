@@ -13,9 +13,10 @@ async function sha256Hex(text: string): Promise<string> {
 export async function POST(request: NextRequest) {
   try {
     const { password } = await request.json();
-    const envPassword = (process.env.PANEL_PASSWORD || "").trim();
+    const envPassword = (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "");
+    const inputPassword = String(password || "").trim().replace(/^"|"$/g, "");
 
-    if (!envPassword || password === envPassword) {
+    if (!envPassword || inputPassword === envPassword) {
       const token = await sha256Hex(`whatsapp-ventas-panel:${envPassword}`);
       const response = NextResponse.json({ ok: true });
       response.cookies.set("panel_session", token, {

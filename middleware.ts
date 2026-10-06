@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 const PANEL_COOKIE = "panel_session";
 
 function getPassword(): string {
-  return (process.env.PANEL_PASSWORD || "").trim();
+  return (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "");
 }
 
 async function sha256Hex(text: string): Promise<string> {
