@@ -1,4 +1,5 @@
 import { after, NextRequest, NextResponse } from "next/server";
+import { markEvolutionMessageAsRead } from "@/lib/evolution";
 import {
   isLidJid,
   isMessagesUpsertEvent,
@@ -141,6 +142,7 @@ export async function POST(request: NextRequest) {
           });
           return;
         }
+        await markEvolutionMessageAsRead(parsed.replyJid, parsed.messageId);
         const send = await sendDelayedOutboundWhatsApp(fromKey, replyTo, reply);
         if (!send.ok) {
           console.error("[evolution] outbound failed", send);

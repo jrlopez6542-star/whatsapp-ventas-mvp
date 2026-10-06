@@ -285,7 +285,7 @@ export async function handleSalesMessage(
 
   const previous = await getMessages(conversationKey);
   const catalogText = products
-    .map((p) => `- [${p.sku}] ${p.name}: ${formatCop(p.price)} (${p.description || "Deliciosos y frescos"})`)
+    .map((p) => `- ${p.name}: ${formatCop(p.price)} (${p.description || "Deliciosos y frescos"})`)
     .join("\n");
 
   const systemPrompt = `Eres el asistente virtual y vendedor estrella por WhatsApp de "${settings.name}".
@@ -490,7 +490,7 @@ ${catalogText}
     reply = `${settings.welcomeMessage}\n\nEscribe *catálogo* para ver todos nuestros buñuelos y cajas surtidas o tradicionales, o dinos directamente qué deseas ordenar.`;
   } else if (isAskingCatalog) {
     const items = products
-      .map((p) => `• *${p.name}* [${p.sku}]\n  Precio: ${formatCop(p.price)} - _${p.description || "Delicioso y crujiente"}_`)
+      .map((p) => `• *${p.name}*\n  Precio: ${formatCop(p.price)} - _${p.description || "Delicioso y crujiente"}_`)
       .join("\n\n");
     reply = `🧀 *Menú Oficial de BUÑUELANDIA:*\n\n${items}\n\nPara pedir, indícanos qué productos deseas (ejemplo: *1 CAJA x8 Surtida y 2 Buñuelos de Mora*).`;
   } else if (foundAddress && (foundPayment || isAffirmation || lower.includes("nequi") || lower.includes("efectivo") || lower.includes("daviplata"))) {
@@ -514,7 +514,7 @@ ${catalogText}
       }
     );
 
-    const itemsListText = finalItems.map((it) => `- ${it.name} [${it.sku}] x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
+    const itemsListText = finalItems.map((it) => `- ${it.name} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
 
     reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
     mode = "order_created";
