@@ -64,34 +64,6 @@ const DEFAULT_SETTINGS: OrgSettings = {
 
 const SEED_PRODUCTS: Product[] = [
   {
-    sku: "BM",
-    name: "Buñuelo Mora",
-    price: 4500,
-    active: true,
-    description: "Buñuelo caliente relleno con dulce de mora artesanal",
-  },
-  {
-    sku: "BA",
-    name: "Buñuelo Arequipe",
-    price: 4500,
-    active: true,
-    description: "Buñuelo caliente relleno de exquisito arequipe",
-  },
-  {
-    sku: "BQ",
-    name: "Buñuelo Queso",
-    price: 4500,
-    active: true,
-    description: "Buñuelo caliente relleno con queso derretido",
-  },
-  {
-    sku: "BC",
-    name: "Buñuelo Costeño",
-    price: 4500,
-    active: true,
-    description: "Buñuelo tradicional con auténtico queso costeño",
-  },
-  {
     sku: "C4T",
     name: "CAJA x4 Tradicional",
     price: 16000,
@@ -110,14 +82,14 @@ const SEED_PRODUCTS: Product[] = [
     name: "CAJA x4 Surtida",
     price: 18000,
     active: true,
-    description: "Caja de 4 buñuelos surtidos rellenos a elección (Mora, Arequipe, Queso)",
+    description: "Caja de 4 buñuelos surtidos. Salsas a elección: Mora, Arequipe, Bocadillo, Suero Costeño.",
   },
   {
     sku: "C8S",
     name: "CAJA x8 Surtida",
     price: 36000,
     active: true,
-    description: "Caja de 8 buñuelos surtidos rellenos a elección",
+    description: "Caja de 8 buñuelos surtidos. Salsas a elección: Mora, Arequipe, Bocadillo, Suero Costeño.",
   },
 ];
 
