@@ -367,7 +367,7 @@ export default function PanelDashboard() {
     if (e) e.stopPropagation();
     if (!confirm("¿Deseas eliminar esta conversación del panel?")) return;
     try {
-      await fetch(`/api/panel/conversations/${encodeURIComponent(convId)}`, { cache: "no-store", ..., {
+      await fetch(`/api/panel/conversations/${encodeURIComponent(convId)}`, { cache: "no-store",
         method: "DELETE",
       });
       if (selectedConvId === convId) setSelectedConvId(null);
