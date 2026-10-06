@@ -1,73 +1,114 @@
-1
 import { createHmac, timingSafeEqual } from "crypto";
-2
 
-
-3
 /**
-4
  * TODO (MVP): Signature validation is optional.
-5
  * Enable it in production by setting TWILIO_AUTH_TOKEN.
-6
  * Docs: https://www.twilio.com/docs/usage/security#validating-requests
-7
  */
-8
 export function validateTwilioSignature(
-9
   authToken: string,
-10
   signature: string | null,
-11
   url: string,
-12
   params: Record<string, string>
-13
 ): boolean {
-14
   if (!signature) return false;
-15
 
-
-16
   const data =
-17
     url +
-18
     Object.keys(params)
-19
       .sort()
-20
       .reduce((acc, key) => acc + key + params[key], "");
-21
 
-
-22
   const expected = createHmac("sha1", authToken).update(data, "utf8").digest("base64");
-23
 
-
-24
   try {
-25
     const a = Buffer.from(expected);
-26
     const b = Buffer.from(signature);
-27
     if (a.length !== b.length) return false;
-28
     return timingSafeEqual(a, b);
-29
   } catch {
-30
     return false;
-31
   }
-32
 }
-33
 
-
-34
 export function escapeXml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+export function twimlMessage(body: string): string {
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${escapeXml(body)}</Message></Response>`;
+}
+
+export function twimlEmpty(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?><Response></Response>`;
+}
+
+export function isTwilioSendConfigured(): boolean {
+  return Boolean(
+    process.env.TWILIO_ACCOUNT_SID?.trim() &&
+      process.env.TWILIO_AUTH_TOKEN?.trim() &&
+      process.env.TWILIO_WHATSAPP_FROM?.trim()
+  );
+}
+
+export type SendWhatsAppResult =
+  | { ok: true; sid: string }
+  | { ok: false; error: string };
+
+/**
+ * Envía un mensaje WhatsApp vía Twilio REST API.
+ */
+export async function sendWhatsAppMessage(
+  to: string,
+  body: string
+): Promise<SendWhatsAppResult> {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  const authToken = process.env.TWILIO_AUTH_TOKEN?.trim();
+  const from = process.env.TWILIO_WHATSAPP_FROM?.trim();
+
+  if (!accountSid || !authToken || !from) {
+    return {
+      ok: false,
+      error:
+        "Faltan TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN o TWILIO_WHATSAPP_FROM",
+    };
+  }
+
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`;
+  const params = new URLSearchParams({
+    From: from,
+    To: to,
+    Body: body,
+  });
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization:
+          "Basic " + Buffer.from(`${accountSid}:${authToken}`).toString("base64"),
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: params.toString(),
+    });
+
+    const data = (await res.json()) as { sid?: string; message?: string; error_message?: string };
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: data.message || data.error_message || `Twilio HTTP ${res.status}`,
+      };
+    }
+    return { ok: true, sid: data.sid || "" };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Error de red al llamar Twilio",
+    };
+  }
+}
