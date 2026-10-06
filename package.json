@@ -10,6 +10,7 @@
     "test": "tsx --test lib/outbound-queue.test.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-ec2": "^3.1146.0",
     "@google/genai": "^2.27.0",
     "@libsql/client": "^0.18.0",
     "dotenv": "^18.0.5",
