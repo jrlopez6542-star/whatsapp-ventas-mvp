@@ -1,0 +1,1 @@
+import { NextResponse } from "next/server"; import { getTursoClient } from "@/lib/store"; export async function GET() { const c = getTursoClient(); const r = await c.execute("PRAGMA table_info(messages)"); return NextResponse.json(r.rows); }

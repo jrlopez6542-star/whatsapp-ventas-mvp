@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getOrgSettings, updateOrgSettings } from "@/lib/store";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   const settings = await getOrgSettings();
@@ -17,3 +18,4 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ ok: false, error: String(error) }, { status: 400 });
   }
 }
+

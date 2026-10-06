@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -372,6 +372,17 @@ export default function PanelDashboard() {
       });
       if (selectedConvId === convId) setSelectedConvId(null);
       loadConversations();
+    } catch {}
+  };
+
+  const handleDeleteOrder = async (orderId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (!confirm("¿Deseas eliminar este pedido?")) return;
+    try {
+      await fetch(`/api/panel/orders/${encodeURIComponent(orderId)}`, {
+        method: "DELETE",
+      });
+      loadOrders();
     } catch {}
   };
 
@@ -963,6 +974,7 @@ export default function PanelDashboard() {
                       <th style={{ padding: "0.75rem" }}>Total (COP)</th>
                       <th style={{ padding: "0.75rem" }}>Estado</th>
                       <th style={{ padding: "0.75rem" }}>Fecha</th>
+                        <th style={{ padding: "0.75rem" }}>Acción</th>
                     </tr>
                   </thead>
                   <tbody>

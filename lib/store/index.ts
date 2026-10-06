@@ -568,6 +568,19 @@ export async function createOrder(
   return memOrder;
 }
 
+export async function deleteOrder(id: string): Promise<void> {
+  getMemoryStore().orders.delete(id);
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({ sql: "DELETE FROM orders WHERE id = ?", args: [id] });
+    } catch (err) {
+      console.error("[store] deleteOrder error:", err);
+    }
+  }
+}
+
 export async function getOrders(): Promise<Order[]> {
   if (!isTursoConfigured()) {
     return getMemoryStore().getOrders();

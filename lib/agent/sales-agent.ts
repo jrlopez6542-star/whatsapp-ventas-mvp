@@ -237,6 +237,13 @@ async function tryExtractAndRegisterOrder(
     detectedTotal = defaultProduct.price;
   }
 
+  if (detectedTotal === 0) {
+    const totalMatch = combined.match(/total[^\d]*?(\d[\d.,]*)/i);
+    if (totalMatch) {
+      detectedTotal = parseInt(totalMatch[1].replace(/[.,]/g, ""), 10);
+    }
+  }
+
   const address = extractAddress(combined) || "Dirección indicada en chat";
   const paymentMethod = extractPaymentMethod(combined) || "Efectivo contra entrega";
   const summary = orderItems.map((it) => `${it.sku} x${it.quantity}`).join(", ");

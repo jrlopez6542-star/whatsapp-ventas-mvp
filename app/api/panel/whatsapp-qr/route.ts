@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 function getEvolutionConfig(instanceParam?: string | null) {
   const apiUrl = (process.env.EVOLUTION_API_URL || "http://localhost:8080").replace(/\/+$/, "");
@@ -146,3 +147,4 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+

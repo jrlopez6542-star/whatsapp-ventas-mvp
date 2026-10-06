@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 async function sha256Hex(text: string): Promise<string> {
   const data = new TextEncoder().encode(text);
@@ -33,3 +34,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "Petición inválida" }, { status: 400 });
   }
 }
+

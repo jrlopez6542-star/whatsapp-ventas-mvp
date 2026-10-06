@@ -3,6 +3,7 @@ import { appendMessage, getMessages, setConversationStatus } from "@/lib/store";
 import { sendOutboundWhatsApp } from "@/lib/whatsapp-send";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(
   _request: NextRequest,
