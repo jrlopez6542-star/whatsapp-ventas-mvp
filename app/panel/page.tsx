@@ -44,6 +44,10 @@ interface OrgSettings {
   tone: string;
   welcomeMessage: string;
   rules: string;
+  businessHoursEnabled?: string;
+  businessHoursStart?: string;
+  businessHoursEnd?: string;
+  outOfHoursMessage?: string;
 }
 
 interface QrStatus {
@@ -123,7 +127,8 @@ export function formatDateDisplay(ts: number | string | undefined): { time: stri
 }
 
 export default function PanelDashboard() {
-  const [tab, setTab] = useState<"whatsapp_qr" | "chats" | "orders" | "catalog" | "settings">("whatsapp_qr");
+  const [tab, setTab] = useState<"whatsapp_qr" | "chats" | "orders" | "catalog" | "settings" | "hours">("orders");
+  const [menuOpen, setMenuOpen] = useState(false);
   const [health, setHealth] = useState<any>(null);
 
   // WhatsApp Web QR state
@@ -491,22 +496,29 @@ export default function PanelDashboard() {
             </div>
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-          <button onClick={handleLogout} className="ghost" style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "0.9rem" }}>
-            Cerrar Sesión
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem", position: "relative" }}>
+          <button onClick={() => setMenuOpen(!menuOpen)} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: "1.5rem" }}>
+            ⚙️
           </button>
+          {menuOpen && (
+            <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "0.5rem", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px", boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)", padding: "0.5rem", display: "flex", flexDirection: "column", gap: "0.25rem", zIndex: 50, minWidth: "200px" }}>
+              <button onClick={() => { setTab("whatsapp_qr"); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>📱 Vincular WhatsApp</button>
+              <button onClick={() => { setTab("settings"); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>🤖 Configuración IA</button>
+              <button onClick={() => { setTab("hours"); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>🕒 Horarios</button>
+              <hr style={{ borderColor: "var(--border)", margin: "0.25rem 0" }} />
+              <button onClick={handleLogout} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "#ef4444", width: "100%", borderRadius: "4px" }}>🚪 Cerrar Sesión</button>
+            </div>
+          )}
         </div>
       </header>
 
       {/* Navigation Tabs */}
-      <div style={{ display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--border)", padding: "0 1.5rem", background: "var(--bg-card)" }}>
-        {[
-          { id: "whatsapp_qr", label: "📱 Vincular WhatsApp (QR)" },
-          { id: "chats", label: "💬 Bandeja de Entrada" },
-          { id: "orders", label: "📦 Pedidos" },
-          { id: "catalog", label: "🏷️ Catálogo" },
-          { id: "settings", label: "⚙️ Configuración" },
-        ].map((t) => (
+      <div style={{ display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--border)", padding: "0 1.5rem", background: "var(--bg-card)", overflowX: "auto", whiteSpace: "nowrap" }}>
+          {[
+            { id: "orders", label: "📦 Pedidos" },
+            { id: "chats", label: "💬 Bandeja de Entrada" },
+            { id: "catalog", label: "🏷️ Catálogo" },
+          ].map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id as any)}
@@ -964,7 +976,7 @@ export default function PanelDashboard() {
               </div>
             ) : (
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+                <div style={{ overflowX: "auto", maxWidth: "100vw" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left", color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase" }}>
                       <th style={{ padding: "0.75rem" }}>ID</th>
@@ -1027,7 +1039,7 @@ export default function PanelDashboard() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </table></div>
               </div>
             )}
           </div>
@@ -1040,7 +1052,7 @@ export default function PanelDashboard() {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 350px", gap: "1.5rem" }}>
             <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "1.5rem" }}>
               <h2 style={{ fontSize: "1.25rem", marginBottom: "1rem" }}>Productos en Catálogo</h2>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+              <div style={{ overflowX: "auto", maxWidth: "100vw" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left", color: "var(--text-muted)" }}>
                     <th style={{ padding: "0.75rem" }}>SKU</th>
@@ -1073,7 +1085,7 @@ export default function PanelDashboard() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             </div>
 
             {/* Create Product Form */}
@@ -1195,6 +1207,75 @@ export default function PanelDashboard() {
             </form>
           </div>
         )}
+      
+        {/* ========================================================= */}
+        {/* TAB 5: HORARIOS                                           */}
+        {/* ========================================================= */}
+        {tab === "hours" && (
+          <div style={{ maxWidth: 700, margin: "0 auto", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "2rem" }}>
+            <h2 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>🕒 Horario de Atención</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: "0.9rem", marginBottom: "1.5rem" }}>
+              Define cuándo la IA debe atender. Fuera de este horario, se enviará el mensaje automático.
+            </p>
+            {saveSuccess && (
+              <div style={{ padding: "0.75rem", background: "rgba(37,211,102,0.2)", color: "var(--primary)", borderRadius: 6, marginBottom: "1rem" }}>
+                Configuración guardada exitosamente.
+              </div>
+            )}
+            <form onSubmit={handleSaveSettings} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+              
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", background: "rgba(56,189,248,0.1)", padding: "1rem", borderRadius: "8px", border: "1px solid rgba(56,189,248,0.3)" }}>
+                <input
+                  type="checkbox"
+                  id="businessHoursEnabled"
+                  checked={settings.businessHoursEnabled === "true"}
+                  onChange={(e) => setSettings({ ...settings, businessHoursEnabled: e.target.checked ? "true" : "false" })}
+                  style={{ transform: "scale(1.2)" }}
+                />
+                <label htmlFor="businessHoursEnabled" style={{ fontWeight: 600, cursor: "pointer" }}>Habilitar Horario de Atención</label>
+              </div>
+
+              {settings.businessHoursEnabled === "true" && (
+                <>
+                  <div style={{ display: "flex", gap: "1rem" }}>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>Hora de Apertura</label>
+                      <input
+                        type="time"
+                        value={settings.businessHoursStart || "08:00"}
+                        onChange={(e) => setSettings({ ...settings, businessHoursStart: e.target.value })}
+                        style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>Hora de Cierre</label>
+                      <input
+                        type="time"
+                        value={settings.businessHoursEnd || "20:00"}
+                        onChange={(e) => setSettings({ ...settings, businessHoursEnd: e.target.value })}
+                        style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>Mensaje de Cerrado (Fuera de Horario)</label>
+                    <textarea
+                      rows={3}
+                      value={settings.outOfHoursMessage || ""}
+                      onChange={(e) => setSettings({ ...settings, outOfHoursMessage: e.target.value })}
+                      placeholder="¡Hola! En este momento nos encontramos cerrados..."
+                      style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
+                    />
+                  </div>
+                </>
+              )}
+              <button type="submit" disabled={savingSettings} className="lp-btn lp-btn-primary" style={{ alignSelf: "flex-start" }}>
+                {savingSettings ? "Guardando..." : "Guardar Cambios"}
+              </button>
+            </form>
+          </div>
+        )}
+
       </main>
     </div>
   );
