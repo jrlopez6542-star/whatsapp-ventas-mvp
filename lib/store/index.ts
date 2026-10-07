@@ -56,6 +56,8 @@ export interface OrgSettings {
   businessHoursStart?: string;
   businessHoursEnd?: string;
   outOfHoursMessage?: string;
+  extraPrompt?: string;
+  botObjective?: string;
   rules: string;
 }
 
@@ -66,6 +68,8 @@ const DEFAULT_SETTINGS: OrgSettings = {
   businessHoursStart: "08:00",
   businessHoursEnd: "20:00",
   outOfHoursMessage: "¡Hola! En este momento nos encontramos cerrados. 🌙 Te atenderemos con gusto en nuestro horario de atención. 🥟",
+  extraPrompt: "",
+  botObjective: "Vender la mayor cantidad de cajas de buñuelos posibles y recolectar dirección y método de pago.",
   welcomeMessage: "¡Hola! 🤤 Bienvenido a *BUÑUELANDIA*. Los mejores buñuelos frescos, crujientes y calienticos recién hechos. ¿Te gustaría ver nuestro menú de buñuelos y cajas?",
   rules: "Ofrece el catálogo oficial de BUÑUELANDIA. Para pedidos confirma: productos y cantidades, nombre completo del cliente, dirección exacta de entrega y medio de pago (Nequi, Daviplata o Efectivo contra entrega). Si solicitan hablar con una persona, escala a humano.",
 };
@@ -593,6 +597,8 @@ export async function getOrgSettings(): Promise<OrgSettings> {
         if (k === "businessHoursStart") settings.businessHoursStart = v;
         if (k === "businessHoursEnd") settings.businessHoursEnd = v;
         if (k === "outOfHoursMessage") settings.outOfHoursMessage = v;
+        if (k === "extraPrompt") settings.extraPrompt = v;
+        if (k === "botObjective") settings.botObjective = v;
     }
     return settings;
   } catch {

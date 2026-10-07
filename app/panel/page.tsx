@@ -48,6 +48,8 @@ interface OrgSettings {
   businessHoursStart?: string;
   businessHoursEnd?: string;
   outOfHoursMessage?: string;
+  extraPrompt?: string;
+  botObjective?: string;
 }
 
 interface QrStatus {
@@ -1201,9 +1203,28 @@ export default function PanelDashboard() {
                   style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
                 />
               </div>
-              <button type="submit" disabled={savingSettings} className="lp-btn lp-btn-primary" style={{ alignSelf: "flex-start" }}>
-                {savingSettings ? "Guardando..." : "Guardar Cambios"}
-              </button>
+              <div style={{ display: "flex", gap: "1rem", marginTop: "1rem" }}>
+                <button type="submit" disabled={savingSettings} className="lp-btn lp-btn-primary">
+                  {savingSettings ? "Guardando..." : "Guardar Cambios"}
+                </button>
+                <button 
+                  type="button" 
+                  className="ghost"
+                  onClick={async () => {
+                    alert("Probando conexión con Gemini y OpenAI...");
+                    const res = await fetch("/api/panel/test-ai");
+                    const data = await res.json();
+                    if (data.ok) {
+                      alert("✅ API funcionando correctamente: " + JSON.stringify(data.results));
+                    } else {
+                      alert("❌ Error en la prueba de API: " + data.error);
+                    }
+                  }}
+                  style={{ padding: "0.75rem 1.5rem", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text)", cursor: "pointer", fontWeight: 600 }}
+                >
+                  🧪 Probar APIs
+                </button>
+              </div>
             </form>
           </div>
         )}
