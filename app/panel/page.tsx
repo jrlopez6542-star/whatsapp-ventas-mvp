@@ -520,7 +520,7 @@ export default function PanelDashboard() {
         {isMobileMode && !showMobileSidebar && (
           <button 
             onClick={() => setShowMobileSidebar(true)} 
-            className="fixed top-3 left-3 z-[9998] bg-[#202c33] text-white p-2.5 rounded-md shadow-lg transition-transform flex items-center justify-center border border-[#2a3942]"
+            className="fixed top-4 left-4 z-[999999] bg-[#007aff] hover:bg-[#005bb5] text-white p-3 rounded-full shadow-2xl transition-transform flex items-center justify-center"
           >
             <i className="ph ph-list text-xl"></i>
           </button>
