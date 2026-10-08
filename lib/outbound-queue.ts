@@ -1,3 +1,4 @@
+import { markEvolutionMessageAsRead } from "@/lib/evolution";
 import { randomUUID } from "crypto";
 import { ensureTursoReady, getTursoClient, isTursoConfigured } from "@/lib/store/db";
 import {
@@ -191,7 +192,8 @@ export type DelayedOutboundResult = OutboundWhatsAppResult & {
 export async function sendDelayedOutboundWhatsApp(
   conversationKey: string,
   to: string,
-  body: string
+  body: string,
+  messageIdToMarkRead?: string
 ): Promise<DelayedOutboundResult> {
   return runSerializedConversation(conversationKey, async () => {
     const config = getReplyDelayConfig();
@@ -205,6 +207,9 @@ export async function sendDelayedOutboundWhatsApp(
           delayMs,
         });
         await sleep(delayMs);
+        if (messageIdToMarkRead) {
+          await markEvolutionMessageAsRead(to, messageIdToMarkRead);
+        }
         const result = await sendOutboundWhatsApp(to, body);
         return { ...result, delayMs };
       }

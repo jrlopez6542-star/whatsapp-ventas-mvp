@@ -274,6 +274,26 @@ export async function handleSalesMessage(
   const settings = await getOrgSettings();
   const products = await getProducts(true);
 
+    // --- BUSINESS HOURS CHECK ---
+    if (settings.businessHoursEnabled === "true") {
+      const start = settings.businessHoursStart || "08:00";
+      const end = settings.businessHoursEnd || "20:00";
+      
+      const now = new Date();
+      const coTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Bogota" }));
+      const hours = coTime.getHours();
+      const minutes = coTime.getMinutes();
+      const currentTimeStr = `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+
+      if (currentTimeStr < start || currentTimeStr > end) {
+        const reply = settings.outOfHoursMessage || "¡Hola! En este momento nos encontramos cerrados. Te atenderemos con gusto en nuestro horario de atención.";
+        await appendMessage(conversationKey, "assistant", reply);
+        return { reply, mode: "keyword" };
+      }
+    }
+    // ----------------------------
+
+
   // 1. Escalamiento a humano inmediato
   if (
     lower.includes("escalar humano") ||

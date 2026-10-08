@@ -142,8 +142,8 @@ export async function POST(request: NextRequest) {
           });
           return;
         }
-        await markEvolutionMessageAsRead(parsed.replyJid, parsed.messageId);
-        const send = await sendDelayedOutboundWhatsApp(fromKey, replyTo, reply);
+        // mark as read is now handled after the delay inside sendDelayedOutboundWhatsApp
+        const send = await sendDelayedOutboundWhatsApp(fromKey, replyTo, reply, parsed.messageId);
         if (!send.ok) {
           console.error("[evolution] outbound failed", send);
         } else {
