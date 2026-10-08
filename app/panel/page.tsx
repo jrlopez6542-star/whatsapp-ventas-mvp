@@ -3,9 +3,9 @@ import Script from 'next/script';
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { DashboardView }
+import { DashboardView } from "./DashboardView";
 import { SettingsView } from "./SettingsView";
-import { OrdersView } from "./OrdersView"; from "./DashboardView";
+import { OrdersView } from "./OrdersView";
 import { BotFlowsView } from "./BotFlowsView";
 import "../crm.css";
 
