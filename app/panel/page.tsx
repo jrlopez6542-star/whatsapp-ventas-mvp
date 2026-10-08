@@ -533,12 +533,12 @@ export default function PanelDashboard() {
           if (typeof window !== "undefined") localStorage.setItem("crm_mobile_mode", String(next));
           return next;
         })} 
-          className="fixed bottom-4 right-4 z-[999999] bg-[#007aff] hover:bg-[#005bb5] text-white p-3.5 rounded-full shadow-2xl transition-transform hover:scale-105 flex items-center justify-center"
+          className="fixed top-4 right-4 z-[999999] bg-[#202c33] hover:bg-[#2a3942] text-slate-300 p-2 rounded-md shadow-md transition-transform flex items-center justify-center border border-[#2a3942]"
         >
           {isMobileMode ? (
-            <><i className="ph ph-desktop text-2xl"></i> </>
+            <><i className="ph ph-desktop text-xl"></i> </>
           ) : (
-            <><i className="ph ph-device-mobile text-2xl"></i> <span className="font-semibold pr-2">Móvil</span></>
+            <><i className="ph ph-device-mobile text-xl"></i> <span className="font-semibold pr-2">Móvil</span></>
           )}
         </button>
 
