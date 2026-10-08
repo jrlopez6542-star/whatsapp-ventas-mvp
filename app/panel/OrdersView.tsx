@@ -1,9 +1,11 @@
 "use client";
-import React from "react";
+import React, { useState } from "react";
 
 export function OrdersView({ orders = [] }: { orders: any[] }) {
+  const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+
   return (
-    <div className="p-6 text-slate-300 w-full h-full overflow-y-auto">
+    <div className="p-6 text-slate-300 w-full h-full overflow-y-auto relative">
       <div className="flex justify-between items-center mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white mb-1 flex items-center gap-2">
@@ -39,10 +41,15 @@ export function OrdersView({ orders = [] }: { orders: any[] }) {
               </thead>
               <tbody className="divide-y divide-[#1f2c34]">
                 {orders.map((o) => (
-                  <tr key={o.id} className="hover:bg-[#162128] transition">
+                  <tr 
+                    key={o.id} 
+                    className="hover:bg-[#162128] transition cursor-pointer"
+                    onClick={() => setSelectedOrder(o)}
+                  >
                     <td className="p-4 font-mono font-bold text-[#007aff]">#{o.id.slice(0, 8)}</td>
                     <td className="p-4">
                       <div className="font-medium text-white">{o.customerName || "Sin Nombre"}</div>
+                      <div className="text-xs text-slate-500">{o.phone || o.conversationId.split('@')[0]}</div>
                     </td>
                     <td className="p-4 text-slate-400 max-w-[200px] truncate" title={o.itemsSummary}>{o.itemsSummary}</td>
                     <td className="p-4 text-slate-400 max-w-[200px] truncate" title={o.deliveryAddress}>{o.deliveryAddress || "N/A"}</td>
@@ -63,6 +70,72 @@ export function OrdersView({ orders = [] }: { orders: any[] }) {
           </div>
         )}
       </div>
+
+      {/* MODAL DETALLES DEL PEDIDO */}
+      {selectedOrder && (
+        <div className="fixed inset-0 bg-black/60 z-[99999] flex items-center justify-center p-4">
+          <div className="bg-[#121b22] border border-[#1f2c34] rounded-xl w-full max-w-lg shadow-2xl flex flex-col">
+            <div className="p-5 border-b border-[#1f2c34] flex justify-between items-center bg-[#162128] rounded-t-xl">
+              <h3 className="font-bold text-white text-lg flex items-center gap-2">
+                <i className="ph-fill ph-receipt text-[#007aff]"></i> Detalle del Pedido
+              </h3>
+              <button 
+                onClick={() => setSelectedOrder(null)} 
+                className="text-slate-400 hover:text-white transition"
+              >
+                <i className="ph ph-x text-xl"></i>
+              </button>
+            </div>
+            
+            <div className="p-6 space-y-5 overflow-y-auto">
+              <div className="flex justify-between items-start">
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">ID DEL PEDIDO</div>
+                  <div className="font-mono text-[#007aff] font-bold">#{selectedOrder.id}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-xs text-slate-500 mb-1">FECHA Y HORA</div>
+                  <div className="text-sm text-slate-300">{new Date(selectedOrder.createdAt).toLocaleString()}</div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 pt-4 border-t border-[#1f2c34]">
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">CLIENTE</div>
+                  <div className="text-sm font-medium text-white">{selectedOrder.customerName || "No especificado"}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">TELÉFONO</div>
+                  <div className="text-sm font-medium text-white">{selectedOrder.phone || selectedOrder.conversationId.split('@')[0]}</div>
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-[#1f2c34]">
+                <div className="text-xs text-slate-500 mb-2">DIRECCIÓN DE ENTREGA</div>
+                <div className="text-sm text-slate-300 bg-[#162128] p-3 rounded-lg border border-[#1f2c34]">{selectedOrder.deliveryAddress || "No especificada"}</div>
+              </div>
+
+              <div className="pt-4 border-t border-[#1f2c34]">
+                <div className="text-xs text-slate-500 mb-2">MÉTODO DE PAGO</div>
+                <div className="text-sm font-medium text-white">{selectedOrder.paymentMethod || "No especificado"}</div>
+              </div>
+
+              <div className="pt-4 border-t border-[#1f2c34]">
+                <div className="text-xs text-slate-500 mb-2">PRODUCTOS / RESUMEN</div>
+                <div className="text-sm text-slate-300 whitespace-pre-wrap bg-[#162128] p-3 rounded-lg border border-[#1f2c34] leading-relaxed">
+                  {selectedOrder.itemsSummary || "No hay detalle de productos"}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5 border-t border-[#1f2c34] bg-[#162128] rounded-b-xl flex justify-between items-center">
+              <span className="text-slate-400 font-medium">TOTAL A PAGAR</span>
+              <span className="text-2xl font-bold text-emerald-500">${selectedOrder.total?.toLocaleString("es-CO")}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

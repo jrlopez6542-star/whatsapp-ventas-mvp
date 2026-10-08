@@ -515,6 +515,17 @@ export default function PanelDashboard() {
       
       <div className={`bg-[#0b141a] text-slate-300 font-sans antialiased h-screen w-screen overflow-hidden flex select-none text-[13px] ${isMobileMode ? '' : ''}`}>
         
+        
+        {/* HAMBURGER MENU (MOBILE ONLY) */}
+        {isMobileMode && !showMobileSidebar && (
+          <button 
+            onClick={() => setShowMobileSidebar(true)} 
+            className="fixed top-3 left-3 z-[9998] bg-[#202c33] text-white p-2.5 rounded-md shadow-lg transition-transform flex items-center justify-center border border-[#2a3942]"
+          >
+            <i className="ph ph-list text-xl"></i>
+          </button>
+        )}
+
         {/* MOBILE TOGGLE BUTTON (FLOATING) */}
         <button 
           onClick={() => setIsMobileMode(prev => {
@@ -522,7 +533,7 @@ export default function PanelDashboard() {
           if (typeof window !== "undefined") localStorage.setItem("crm_mobile_mode", String(next));
           return next;
         })} 
-          className="fixed bottom-6 right-6 z-[9999] bg-[#007aff] hover:bg-[#005bb5] text-white p-4 rounded-full shadow-2xl transition-transform hover:scale-105 flex items-center justify-center gap-2"
+          className="fixed bottom-3 right-3 z-[9999] bg-[#007aff] hover:bg-[#005bb5] text-white p-2.5 rounded-full shadow-lg transition-transform hover:scale-105 flex items-center justify-center"
         >
           {isMobileMode ? (
             <><i className="ph ph-desktop text-2xl"></i> <span className="font-semibold pr-2">Desktop</span></>
