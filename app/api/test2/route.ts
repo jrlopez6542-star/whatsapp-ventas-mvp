@@ -1,12 +1,21 @@
 import { NextResponse } from 'next/server';
-import { getTursoClient } from '@/lib/store/db';
+import { getTursoClient, ensureTursoReady } from '@/lib/store/db';
 
-export async function GET(req: Request) {
+export const runtime = "nodejs";
+
+export async function GET() {
   try {
+    await ensureTursoReady();
     const client = getTursoClient();
-    const data = await client.execute("SELECT conversation_id, content, created_at, role FROM messages ORDER BY created_at DESC LIMIT 10");
-    return NextResponse.json({ ok: true, count: data.rows.length, data: data.rows });
-  } catch (err: any) {
-    return NextResponse.json({ ok: false, error: String(err) });
+    
+    // Get last 5 orders
+    const ordersRes = await client.execute("SELECT * FROM orders ORDER BY created_at DESC LIMIT 5");
+    
+    // Get last 15 messages to see if user actually made an order
+    const msgsRes = await client.execute("SELECT conversation_id, role, content, created_at FROM messages ORDER BY created_at DESC LIMIT 15");
+    
+    return NextResponse.json({ ok: true, orders: ordersRes.rows, messages: msgsRes.rows });
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: error.message });
   }
 }
