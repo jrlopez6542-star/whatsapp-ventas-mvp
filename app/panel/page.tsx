@@ -717,7 +717,7 @@ export default function PanelDashboard() {
                             {buttons.length > 0 && (
                               <div className="w-full max-w-md mt-1 space-y-1">
                                 {buttons.map((b, i) => (
-                                  <div key={i} className="w-full bg-[#1e2a30] hover:bg-[#26353d] border border-[#2a3942] text-[#53bdeb] text-[15px] font-medium py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-md mt-1">
+                                  <div key={i} className="w-full bg-[#1e2a30]/30 border border-[#2a3942]/50 text-[#53bdeb]/50 text-[13px] py-1.5 px-3 rounded-lg flex items-center justify-center mt-1 cursor-default pointer-events-none opacity-80">
                                     {b}
                                   </div>
                                 ))}
