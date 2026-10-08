@@ -25,7 +25,7 @@ function formatCop(amount: number): string {
 // Extrae direcciones colombianas típicas
 function extractAddress(text: string): string | null {
   const match = text.match(
-    /(?:direcci[oó]n|enviar a|para la|despachar a|calle|carrera|cra|cll|diagonal|diag|transversal|trans|av|avenida|manzana|mz|barrio|apto|casa|conjunto)[^:\n,.]*[:\s]+([^.\n,]+(?:\s+[^.\n,]+)*)/i
+    /\b(?:direcci[oó]n|enviar a|para la|despachar a|calle|carrera|cra|cll|diagonal|diag|transversal|trans|av|avenida|manzana|mz|barrio|apto|casa|conjunto)\b[^:\n,.]*[:\s]+([^.\n,]+(?:\s+[^.\n,]+)*)/i
   );
   if (match) return match[1].trim();
 
