@@ -1,15 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getOrgSettings } from '@/lib/store';
-import { verifyAuth } from '@/lib/auth';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  if (!verifyAuth()) {
-    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
-  }
-
   const results: any = {};
   
   if (process.env.GEMINI_API_KEY) {
@@ -20,7 +14,6 @@ export async function GET() {
       const candidateModels = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
       if (process.env.GEMINI_MODEL) candidateModels.unshift(process.env.GEMINI_MODEL.trim());
       
-      // Run in parallel to avoid Vercel 10s timeout on free tier!
       const promises = candidateModels.map(model => 
         ai.models.generateContent({
           model,
@@ -38,7 +31,7 @@ export async function GET() {
         results.gemini = `Error: ${outcomes[0].error}`;
       }
       
-      results.debug = outcomes; // Send back debug info
+      results.debug = outcomes;
     } catch (e: any) {
       results.gemini = "Error fatal: " + e.message;
     }
