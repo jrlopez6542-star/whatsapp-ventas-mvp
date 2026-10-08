@@ -134,9 +134,6 @@ export default function PanelDashboard() {
   const [tab, setTab] = useState<"whatsapp_qr" | "chats" | "orders" | "catalog" | "settings" | "hours">("orders");
   const [menuOpen, setMenuOpen] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
-  const [isMobileMode, setIsMobileMode] = useState(false);
-  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
-  const [showMobileDetails, setShowMobileDetails] = useState(false);
   const [health, setHealth] = useState<any>(null);
 
   // WhatsApp Web QR state
@@ -499,29 +496,10 @@ export default function PanelDashboard() {
         input:focus { outline: none; }
       `}</style>
       
-      <div className={`bg-[#0b141a] text-slate-300 font-sans antialiased h-screen w-screen overflow-hidden flex select-none text-[13px] ${isMobileMode ? 'justify-center items-center bg-[#000000]' : ''}`}>
-        
-        {/* MOBILE TOGGLE BUTTON (FLOATING) */}
-        <button 
-          onClick={() => setIsMobileMode(!isMobileMode)} 
-          className="fixed bottom-6 right-6 z-[9999] bg-[#007aff] hover:bg-[#005bb5] text-white p-4 rounded-full shadow-2xl transition-transform hover:scale-105 flex items-center justify-center gap-2"
-        >
-          {isMobileMode ? (
-            <><i className="ph ph-desktop text-2xl"></i> <span className="font-semibold pr-2">Desktop</span></>
-          ) : (
-            <><i className="ph ph-device-mobile text-2xl"></i> <span className="font-semibold pr-2">Móvil</span></>
-          )}
-        </button>
-
-        {/* MAIN CONTAINER (MOBILE FRAME OR FULL SCREEN) */}
-        <div className={isMobileMode ? "w-[375px] h-[812px] bg-[#0b141a] relative overflow-hidden flex rounded-[2.5rem] border-[8px] border-[#1f2c34] shadow-2xl" : "flex-1 flex overflow-hidden w-full h-full"}>
-
+      <div className="bg-[#0b141a] text-slate-300 font-sans antialiased h-screen w-screen overflow-hidden flex select-none text-[13px]">
         
         {/* 1. BARRA LATERAL IZQUIERDA (NAVEGACIÓN) */}
-        <aside className={`${isMobileMode ? (showMobileSidebar ? 'absolute inset-y-0 left-0 w-[260px] z-50 transition-transform translate-x-0' : 'absolute inset-y-0 left-0 w-[260px] z-50 transition-transform -translate-x-full') : 'w-[220px]'} bg-[#121b22] border-r border-[#1f2c34] flex flex-col justify-between shrink-0`}>
-          {isMobileMode && showMobileSidebar && (
-             <div className="fixed inset-0 bg-black/50 z-[-1]" onClick={() => setShowMobileSidebar(false)}></div>
-          )}
+        <aside className="w-[220px] bg-[#121b22] border-r border-[#1f2c34] flex flex-col justify-between shrink-0">
           <div>
             {/* Header / Logo */}
             <div className="h-16 flex items-center gap-3 px-4">
@@ -575,16 +553,9 @@ export default function PanelDashboard() {
         {tab === "chats" && (
           <>
             {/* 2. BANDEJA DE CHATS */}
-            <section className={`${isMobileMode ? (selectedConvId ? 'hidden' : 'w-full') : 'w-[340px]'} bg-[#111b21] border-r border-[#1f2c34] flex flex-col shrink-0`}>
+            <section className="w-[340px] bg-[#111b21] border-r border-[#1f2c34] flex flex-col shrink-0">
               <div className="p-4 pb-2 border-b border-[#1f2c34]">
-                <div className="flex items-center gap-3 mb-4">
-                  {isMobileMode && (
-                    <button onClick={() => setShowMobileSidebar(true)} className="text-white p-1 hover:bg-[#202c33] rounded">
-                      <i className="ph ph-list text-2xl"></i>
-                    </button>
-                  )}
-                  <h2 className="text-xl font-bold text-white">Chats en Vivo</h2>
-                </div>
+                <h2 className="text-xl font-bold text-white mb-4">Chats en Vivo</h2>
                 <div className="relative mb-4">
                   <i className="ph ph-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-base"></i>
                   <input 
@@ -654,28 +625,18 @@ export default function PanelDashboard() {
             </section>
 
             {/* 3. ÁREA PRINCIPAL */}
-            <main className={`${isMobileMode ? (selectedConvId ? "w-full" : "hidden") : "flex-1"} bg-[#0b141a] flex flex-col justify-between relative overflow-hidden`} style={{backgroundImage: "url('https://whatsapp-ventas-mvp.vercel.app/bg-chat.png')", backgroundSize: 'cover', backgroundBlendMode: 'overlay', backgroundColor: 'rgba(11,20,26,0.95)'}}>
+            <main className="flex-1 bg-[#0b141a] flex flex-col justify-between relative overflow-hidden" style={{backgroundImage: "url('https://whatsapp-ventas-mvp.vercel.app/bg-chat.png')", backgroundSize: 'cover', backgroundBlendMode: 'overlay', backgroundColor: 'rgba(11,20,26,0.95)'}}>
               {selectedConvId ? (
                 <>
                   <header className="h-16 bg-[#121b22] px-6 flex items-center justify-between z-10 shrink-0 border-b border-[#1f2c34]">
                     <div className="flex items-center gap-3">
-                      {isMobileMode && (
-                        <button onClick={() => setSelectedConvId(null)} className="mr-2 text-slate-300 hover:text-white flex items-center">
-                          <i className="ph ph-caret-left text-2xl"></i>
-                        </button>
-                      )}
                       <div>
                         <h2 className="text-[16px] font-bold text-white leading-tight">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</h2>
                         <p className="text-xs text-slate-400">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</p>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      {isMobileMode && (
-                        <button onClick={() => setShowMobileDetails(true)} className="text-slate-300 hover:text-white p-2 text-xl rounded-lg hover:bg-[#202c33] transition">
-                          <i className="ph ph-info"></i>
-                        </button>
-                      )}
+                    <div className="flex items-center gap-3">
                       {conversations.find(c => c.id === selectedConvId)?.status === "bot" ? (
                         <button onClick={() => handleToggleBot(selectedConvId, "human")} className="flex items-center gap-2 bg-[#007aff] hover:bg-[#005bb5] text-white font-semibold text-sm px-4 py-2 rounded-lg shadow-sm transition">
                           <i className="ph-fill ph-pause"></i>
@@ -716,7 +677,7 @@ export default function PanelDashboard() {
                             {buttons.length > 0 && (
                               <div className="w-full max-w-md mt-1 space-y-1">
                                 {buttons.map((b, i) => (
-                                  <div key={i} className="w-full bg-[#1e2a30] hover:bg-[#26353d] border border-[#2a3942] text-[#53bdeb] text-[15px] font-medium py-3 px-4 rounded-xl flex items-center justify-center gap-2 transition cursor-pointer shadow-md mt-1">
+                                  <div key={i} className="w-full bg-[#202c33] hover:bg-[#2a3942] text-[#00a884] text-[14.5px] py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition cursor-pointer shadow-sm">
                                     {b}
                                   </div>
                                 ))}
@@ -767,16 +728,7 @@ export default function PanelDashboard() {
 
             {/* 4. DETALLES (Right Sidebar) */}
             {selectedConvId && (
-              <aside className={`${isMobileMode ? (showMobileDetails ? 'absolute inset-y-0 right-0 w-[280px] z-50 transition-transform translate-x-0' : 'absolute inset-y-0 right-0 w-[280px] z-50 transition-transform translate-x-full') : 'w-[280px]'} bg-[#121b22] border-l border-[#1f2c34] flex flex-col shrink-0 overflow-y-auto`}>
-                {isMobileMode && showMobileDetails && (
-                   <div className="fixed inset-0 bg-black/50 z-[-1]" onClick={() => setShowMobileDetails(false)}></div>
-                )}
-                {isMobileMode && (
-                  <div className="p-4 border-b border-[#1f2c34] flex justify-between items-center bg-[#111b21]">
-                    <span className="font-bold text-white">Detalles</span>
-                    <button onClick={() => setShowMobileDetails(false)} className="text-slate-400 hover:text-white text-xl"><i className="ph ph-x"></i></button>
-                  </div>
-                )}
+              <aside className="w-[280px] bg-[#121b22] border-l border-[#1f2c34] flex flex-col shrink-0 overflow-y-auto">
                 
                 <div className="p-5 border-b border-[#1f2c34]">
                   <h3 className="font-bold text-white text-base mb-4">Detalles del Contacto</h3>
@@ -833,8 +785,6 @@ export default function PanelDashboard() {
             {tab === ("qr" as any) && <div className="text-white p-4">QR / Vincular - En desarrollo</div>}
           </main>
         )}
-        
-        </div>
 
       </div>
     </>
