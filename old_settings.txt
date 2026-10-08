@@ -1,0 +1,11 @@
+
+          <div style={{ maxWidth: 700, margin: "0 auto", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "2rem" }}>
+            <h2 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>ConfiguraciÃ³n del Negocio</h2>
+            <p style={{ color: "var(--text-muted)", fontSize: "0.9rem", marginBottom: "1.5rem" }}>
+              Estos parÃ¡metros se inyectan directamente en el system prompt del agente de ventas con IA.
+            </p>
+            {saveSuccess && (
+              <div style={{ padding: "0.75rem", background: "rgba(37,211,102,0.2)", color: "var(--primary)", borderRadius: 6, marginBottom: "1rem" }}>
+                ConfiguraciÃ³n guardada exitosamente.
+              </div>
+            

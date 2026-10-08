@@ -1,4 +1,4 @@
-import { isEvolutionConfigured, sendEvolutionText, sendEvolutionPoll } from "@/lib/evolution";
+import { isEvolutionConfigured, sendEvolutionText, sendEvolutionButtons } from "@/lib/evolution";
 import { isTwilioSendConfigured, sendWhatsAppMessage } from "@/lib/twilio";
 
 export type OutboundWhatsAppResult =
@@ -39,7 +39,7 @@ export async function sendOutboundWhatsApp(
     }
     
     if (buttons.length > 0) {
-      const pollRes = await sendEvolutionPoll(to, "Opciones:", buttons);
+      const pollRes = await sendEvolutionButtons(to, "Opciones:", buttons);
       if (!cleanBody && !pollRes.ok) {
         return { ok: false, error: pollRes.error, channel: "evolution" };
       }

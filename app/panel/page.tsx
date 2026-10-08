@@ -3,7 +3,9 @@ import Script from 'next/script';
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { DashboardView } from "./DashboardView";
+import { DashboardView }
+import { SettingsView } from "./SettingsView";
+import { OrdersView } from "./OrdersView"; from "./DashboardView";
 import { BotFlowsView } from "./BotFlowsView";
 import "../crm.css";
 
@@ -514,64 +516,7 @@ export default function PanelDashboard() {
       <div className={`bg-[#0b141a] text-slate-300 font-sans antialiased h-screen w-screen overflow-hidden flex select-none text-[13px] ${isMobileMode ? '' : ''}`}>
         
         {/* MOBILE TOGGLE BUTTON (FLOATING) */}
-        <button 
-          onClick={() => setIsMobileMode(prev => {
-          const next = !prev;
-          if (typeof window !== "undefined") localStorage.setItem("crm_mobile_mode", String(next));
-          return next;
-        })} 
-          className="fixed bottom-6 right-6 z-[9999] bg-[#007aff] hover:bg-[#005bb5] text-white p-4 rounded-full shadow-2xl transition-transform hover:scale-105 flex items-center justify-center gap-2"
-        >
-          {isMobileMode ? (
-            <><i className="ph ph-desktop text-2xl"></i> <span className="font-semibold pr-2">Desktop</span></>
-          ) : (
-            <><i className="ph ph-device-mobile text-2xl"></i> <span className="font-semibold pr-2">Móvil</span></>
-          )}
-        </button>
-
-        {/* MAIN CONTAINER (MOBILE FRAME OR FULL SCREEN) */}
-        <div className={isMobileMode ? "w-full h-full flex-1 bg-[#0b141a] relative overflow-hidden flex" : "flex-1 flex overflow-hidden w-full h-full"}>
-
         
-        {/* 1. BARRA LATERAL IZQUIERDA (NAVEGACIÓN) */}
-        <aside className={`${isMobileMode ? (showMobileSidebar ? 'absolute inset-y-0 left-0 w-[260px] z-50 transition-transform translate-x-0' : 'absolute inset-y-0 left-0 w-[260px] z-50 transition-transform -translate-x-full') : 'w-[220px]'} bg-[#121b22] border-r border-[#1f2c34] flex flex-col justify-between shrink-0`}>
-          {isMobileMode && showMobileSidebar && (
-             <div className="fixed inset-0 bg-black/50 z-[-1]" onClick={() => setShowMobileSidebar(false)}></div>
-          )}
-          <div>
-            {/* Header / Logo */}
-            <div className="h-16 flex items-center gap-3 px-4">
-              <div className="text-[#25D366] text-3xl">
-                <i className="ph-fill ph-whatsapp-logo"></i>
-              </div>
-              <div className="flex items-center gap-1.5 text-xs text-[#25D366] font-medium">
-                <span className="w-2 h-2 rounded-full bg-[#25D366] animate-pulse"></span>
-                API Conectada
-              </div>
-            </div>
-
-            <nav className="px-2 mt-2 space-y-1 text-[13px] font-medium text-slate-400">
-              <button onClick={() => { setTab("orders"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='orders' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
-                <i className="ph ph-squares-four text-lg"></i> Dashboard
-              </button>
-              <button onClick={() => { setTab("chats"); setShowMobileSidebar(false); }} className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition ${tab==='chats' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
-                <div className="flex items-center gap-3">
-                  <i className="ph ph-chat-circle-dots text-lg"></i> Chats en vivo
-                </div>
-                <span className="bg-[#007aff] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{conversations.length}</span>
-              </button>
-              <button onClick={() => { setTab("catalog"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='catalog' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
-                <i className="ph ph-robot text-lg"></i> Bots (Flujos)
-              </button>
-              <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
-                <i className="ph ph-article text-lg"></i> Plantillas
-              </button>
-              <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
-                <i className="ph ph-users text-lg"></i> Contactos
-              </button>
-              <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
-                <i className="ph ph-chart-line-up text-lg"></i> Analíticas
-              </button>
               <button onClick={() => { setTab("settings"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='settings' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <i className="ph ph-gear text-lg"></i> Configuración
               </button>
@@ -842,9 +787,11 @@ export default function PanelDashboard() {
         {/* CONTENEDOR PARA OTRAS TABS */}
         {tab !== "chats" && (
           <main className="flex-1 overflow-y-auto bg-[#0b141a]">
-            {tab === "orders" && <DashboardView />}
+            {tab === "orders" && <DashboardView conversations={conversations} orders={orders} />}
+            {tab === "real_orders" && <OrdersView orders={orders} />}
+
             {tab === "catalog" && <BotFlowsView />}
-            {tab === "settings" && <div className="text-white p-4">Configuración - En desarrollo</div>}
+            {tab === "settings" && <SettingsView />}
             {tab === "hours" && <div className="text-white p-4">Horarios - En desarrollo</div>}
             {tab === ("qr" as any) && <div className="text-white p-4">QR / Vincular - En desarrollo</div>}
           </main>

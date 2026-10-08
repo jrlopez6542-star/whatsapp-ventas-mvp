@@ -1,0 +1,44 @@
+
+          <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "1.5rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
+              <div>
+                <h2 style={{ fontSize: "1.35rem", fontWeight: 700, margin: 0 }}>ðŸ“¦ Pedidos de BuÃ±uelos Confirmados</h2>
+                <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: "0.25rem 0 0" }}>
+                  AquÃ­ se registran automÃ¡ticamente los pedidos cerrados por la IA con direcciÃ³n y medio de pago.
+                </p>
+              </div>
+              <button
+                onClick={loadOrders}
+                className="lp-btn lp-btn-secondary"
+                style={{ fontSize: "0.85rem", padding: "0.4rem 0.8rem" }}
+              >
+                ðŸ”„ Actualizar lista
+              </button>
+            </div>
+
+            {orders.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "3rem 1rem", color: "var(--text-muted)" }}>
+                <span style={{ fontSize: "2.5rem", display: "block", marginBottom: "0.5rem" }}>ðŸ¥Ÿ</span>
+                <p style={{ fontWeight: 600 }}>No hay pedidos confirmados todavÃ­a.</p>
+                <p style={{ fontSize: "0.85rem" }}>Cuando un cliente confirme por WhatsApp con su direcciÃ³n, aparecerÃ¡ aquÃ­ inmediatamente.</p>
+              </div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left", color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase" }}>
+                      <th style={{ padding: "0.75rem" }}>ID</th>
+                      <th style={{ padding: "0.75rem" }}>Cliente / TelÃ©fono</th>
+                      <th style={{ padding: "0.75rem" }}>Productos</th>
+                      <th style={{ padding: "0.75rem" }}>ðŸ“ DirecciÃ³n de Entrega</th>
+                      <th style={{ padding: "0.75rem" }}>ðŸ’µ Pago</th>
+                      <th style={{ padding: "0.75rem" }}>Total (COP)</th>
+                      <th style={{ padding: "0.75rem" }}>Estado</th>
+                      <th style={{ padding: "0.75rem" }}>Fecha</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orders.map((o) => (
+                      <tr key={o.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                        <td style={{ padding: "0.75rem", fontFamily: "monospace", fontWeight: 700, color: "var(--primary)" }}>
+                          #{o.id.slice(0, 8
