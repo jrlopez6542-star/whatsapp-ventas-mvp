@@ -18,8 +18,8 @@ export async function GET() {
         ai.models.generateContent({
           model,
           contents: "Responde únicamente con la palabra 'OK'",
-        }).then(res => ({ model, ok: true, text: res.text }))
-          .catch(err => ({ model, ok: false, error: err.message }))
+        }).then(res => ({ model, ok: true, text: res.text, error: null }))
+          .catch(err => ({ model, ok: false, error: err.message, text: null }))
       );
       
       const outcomes = await Promise.all(promises);
