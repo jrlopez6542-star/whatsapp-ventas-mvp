@@ -533,10 +533,10 @@ export default function PanelDashboard() {
           if (typeof window !== "undefined") localStorage.setItem("crm_mobile_mode", String(next));
           return next;
         })} 
-          className="fixed bottom-3 right-3 z-[9999] bg-[#007aff] hover:bg-[#005bb5] text-white p-2.5 rounded-full shadow-lg transition-transform hover:scale-105 flex items-center justify-center"
+          className="fixed bottom-4 right-4 z-[999999] bg-[#007aff] hover:bg-[#005bb5] text-white p-3.5 rounded-full shadow-2xl transition-transform hover:scale-105 flex items-center justify-center"
         >
           {isMobileMode ? (
-            <><i className="ph ph-desktop text-2xl"></i> <span className="font-semibold pr-2">Desktop</span></>
+            <><i className="ph ph-desktop text-2xl"></i> </>
           ) : (
             <><i className="ph ph-device-mobile text-2xl"></i> <span className="font-semibold pr-2">Móvil</span></>
           )}
@@ -579,12 +579,8 @@ export default function PanelDashboard() {
               <button onClick={() => { setTab("catalog"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='catalog' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <i className="ph ph-robot text-lg"></i> Bots (Flujos)
               </button>
-              <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
-                <i className="ph ph-article text-lg"></i> Plantillas
-              </button>
-              <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
-                <i className="ph ph-users text-lg"></i> Contactos
-              </button>
+              
+              
               
               <button onClick={() => { setTab("settings"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='settings' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <i className="ph ph-gear text-lg"></i> Configuración

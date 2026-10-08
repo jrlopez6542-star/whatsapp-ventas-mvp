@@ -8,7 +8,7 @@ export function DashboardView({ conversations = [], orders = [] }: { conversatio
   const botRate = totalChats > 0 ? Math.round((botChats / totalChats) * 100) : 0;
   
   return (
-    <div className="p-6 text-slate-300 w-full h-full overflow-y-auto">
+    <div className="p-6 pt-16 md:pt-6 text-slate-300 w-full h-full overflow-y-auto">
       <div className="flex justify-between items-center mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white mb-1">Métricas y Salud del Sistema</h1>

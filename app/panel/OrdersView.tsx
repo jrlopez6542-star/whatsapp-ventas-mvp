@@ -5,7 +5,7 @@ export function OrdersView({ orders = [] }: { orders: any[] }) {
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
 
   return (
-    <div className="p-6 text-slate-300 w-full h-full overflow-y-auto relative">
+    <div className="p-6 pt-16 md:pt-6 text-slate-300 w-full h-full overflow-y-auto relative">
       <div className="flex justify-between items-center mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white mb-1 flex items-center gap-2">
