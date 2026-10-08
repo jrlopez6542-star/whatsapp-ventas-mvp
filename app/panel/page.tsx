@@ -135,7 +135,7 @@ export function formatDateDisplay(ts: number | string | undefined): { time: stri
 }
 
 export default function PanelDashboard() {
-  const [tab, setTab] = useState<"whatsapp_qr" | "chats" | "orders" | "catalog" | "settings" | "hours">("orders");
+  const [tab, setTab] = useState<"whatsapp_qr" | "chats" | "orders" | "catalog" | "settings" | "hours" | "real_orders">("orders");
   const [menuOpen, setMenuOpen] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
   const [isMobileMode, setIsMobileMode] = useState(false);

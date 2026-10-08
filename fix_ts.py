@@ -3,20 +3,18 @@ import re
 with open('app/panel/page.tsx', 'r', encoding='utf-8') as f:
     code = f.read()
 
-# Completely replace toggleMobileMode with inline arrow function
-search = 'onClick={toggleMobileMode}'
-replace = '''onClick={() => setIsMobileMode(prev => {
-          const next = !prev;
-          if (typeof window !== "undefined") localStorage.setItem("crm_mobile_mode", String(next));
-          return next;
-        })}'''
+code = re.sub(
+    r'useState<"whatsapp_qr"\s*\|\s*"chats"\s*\|\s*"orders"\s*\|\s*"catalog"\s*\|\s*"settings"\s*\|\s*"hours">',
+    'useState<"whatsapp_qr" | "chats" | "orders" | "catalog" | "settings" | "hours" | "real_orders">',
+    code
+)
 
-code = code.replace(search, replace)
-
-# And remove any floating toggleMobileMode definitions if they exist
-code = re.sub(r'const toggleMobileMode = \(\) => \{[\s\S]*?\};\s*', '', code)
+# And also replace in case it's different
+code = re.sub(
+    r'useState<"whatsapp_qr"\s*\|\s*"chats"\s*\|\s*"orders"\s*\|\s*"catalog"\s*\|\s*"settings">',
+    'useState<"whatsapp_qr" | "chats" | "orders" | "catalog" | "settings" | "hours" | "real_orders">',
+    code
+)
 
 with open('app/panel/page.tsx', 'w', encoding='utf-8') as f:
     f.write(code)
-
-print("Fixed")
