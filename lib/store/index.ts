@@ -530,7 +530,7 @@ export async function createOrder(
         console.warn("[store] order_items insert warning:", itemErr);
       }
     } catch (err) {
-      console.error("[store] createOrder Turso error:", err);
+      console.error("[store] createOrder Turso error:", err); throw err;
     }
   }
   return memOrder;
