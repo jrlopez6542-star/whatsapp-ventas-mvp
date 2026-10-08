@@ -1,3 +1,4 @@
+import { QrModal } from "./QrModal";
 "use client";
 import Script from 'next/script';
 
