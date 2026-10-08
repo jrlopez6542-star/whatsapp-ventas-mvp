@@ -135,6 +135,7 @@ export default function PanelDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
   const [isMobileMode, setIsMobileMode] = useState(false);
+  useEffect(() => { if (typeof window !== 'undefined' && window.innerWidth < 768) setIsMobileMode(true); }, []);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [showMobileDetails, setShowMobileDetails] = useState(false);
   const [health, setHealth] = useState<any>(null);
@@ -499,7 +500,7 @@ export default function PanelDashboard() {
         input:focus { outline: none; }
       `}</style>
       
-      <div className={`bg-[#0b141a] text-slate-300 font-sans antialiased h-screen w-screen overflow-hidden flex select-none text-[13px] ${isMobileMode ? 'justify-center items-center bg-[#000000]' : ''}`}>
+      <div className={`bg-[#0b141a] text-slate-300 font-sans antialiased h-screen w-screen overflow-hidden flex select-none text-[13px] ${isMobileMode ? '' : ''}`}>
         
         {/* MOBILE TOGGLE BUTTON (FLOATING) */}
         <button 
@@ -514,7 +515,7 @@ export default function PanelDashboard() {
         </button>
 
         {/* MAIN CONTAINER (MOBILE FRAME OR FULL SCREEN) */}
-        <div className={isMobileMode ? "w-[375px] h-[812px] bg-[#0b141a] relative overflow-hidden flex rounded-[2.5rem] border-[8px] border-[#1f2c34] shadow-2xl" : "flex-1 flex overflow-hidden w-full h-full"}>
+        <div className={isMobileMode ? "w-full h-full flex-1 bg-[#0b141a] relative overflow-hidden flex" : "flex-1 flex overflow-hidden w-full h-full"}>
 
         
         {/* 1. BARRA LATERAL IZQUIERDA (NAVEGACIÓN) */}
