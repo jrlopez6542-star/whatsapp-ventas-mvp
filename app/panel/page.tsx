@@ -854,7 +854,7 @@ export default function PanelDashboard() {
         {tab !== "chats" && (
           <main className="flex-1 overflow-y-auto bg-[#0b141a]">
             {tab === "orders" && <DashboardView conversations={conversations} orders={orders} />}
-            {tab === "real_orders" && <OrdersView orders={orders} />}
+            {tab === "real_orders" && <OrdersView orders={orders} onOrdersChange={loadOrders} />}
             {tab === "catalog" && <BotFlowsView />}
             {tab === "settings" && <SettingsView />}
             {tab === "hours" && <div className="text-white p-4">Horarios - En desarrollo</div>}

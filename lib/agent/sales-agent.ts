@@ -25,7 +25,7 @@ function formatCop(amount: number): string {
 // Extrae direcciones colombianas típicas
 function extractAddress(text: string): string | null {
   const match = text.match(
-    /\b(?:direcci[oó]n|enviar a|para la|despachar a|calle|carrera|cra|cll|diagonal|diag|transversal|trans|av|avenida|manzana|mz|barrio|apto|casa|conjunto)\b[^:\n,.]*[:\s]+([^.\n,]+(?:\s+[^.\n,]+)*)/i
+    /\b(?:direcci[oó]n|enviar a|para la|despachar a|calle|carrera|cra|cll|diagonal|diag|transversal|trans|av|avenida|manzana|mz|barrio|apto|casa|conjunto)\b[^:\n,.]*[:\s]+([^.\n,]+)/i
   );
   if (match) return match[1].trim();
 
@@ -491,7 +491,7 @@ export async function handleSalesMessage(
   let reply = "";
   let mode: SalesMessageResult["mode"] = "keyword";
 
-  const allChatText = [...previous.map((m) => m.content), text].join(" ");
+  const allChatText = [...previous.map((m) => m.content), text].join("\n");
   const foundAddress = extractAddress(text) || extractAddress(allChatText);
   const foundPayment = extractPaymentMethod(text) || extractPaymentMethod(allChatText);
   const { items: extractedItems, total: extractedTotal } = extractProductsFromText(allChatText, products);

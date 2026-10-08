@@ -1,8 +1,26 @@
 "use client";
 import React, { useState } from "react";
 
-export function OrdersView({ orders = [] }: { orders: any[] }) {
+export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onOrdersChange?: () => void }) {
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const deleteOrder = async (id: string) => {
+    if (!confirm("¿Estás seguro de que quieres eliminar este pedido? Esta acción no se puede deshacer.")) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/panel/orders/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        if (onOrdersChange) onOrdersChange();
+      } else {
+        alert("Error al eliminar el pedido.");
+      }
+    } catch (err) {
+      alert("Error de conexión al eliminar el pedido.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
 
   return (
     <div className="p-6 pt-16 md:pt-6 text-slate-300 w-full h-full overflow-y-auto relative">
@@ -37,6 +55,7 @@ export function OrdersView({ orders = [] }: { orders: any[] }) {
                   <th className="p-4 font-semibold">Total (COP)</th>
                   <th className="p-4 font-semibold">Estado</th>
                   <th className="p-4 font-semibold">Fecha</th>
+                    <th className="p-4 font-semibold text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1f2c34]">
@@ -62,6 +81,15 @@ export function OrdersView({ orders = [] }: { orders: any[] }) {
                     </td>
                     <td className="p-4 text-slate-500 text-xs">
                       {new Date(o.createdAt).toLocaleString()}
+                    </td>
+                    <td className="p-4 text-right">
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); deleteOrder(o.id); }}
+                        className="text-slate-500 hover:text-red-500 transition p-2 rounded-md hover:bg-red-500/10"
+                        title="Eliminar pedido"
+                      >
+                        <i className="ph ph-trash text-lg"></i>
+                      </button>
                     </td>
                   </tr>
                 ))}
