@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import "../crm.css";
 
 interface Conversation {
   id: string;
@@ -145,8 +146,10 @@ export default function PanelDashboard() {
   // Conversations & Chat
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"all" | "bot" | "human">("all");
+  const [filter, setFilter] = useState<"all" | "bot" | "human" | "closed">("all");
   const [messages, setMessages] = useState<Message[]>([]);
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
@@ -479,90 +482,47 @@ export default function PanelDashboard() {
   const selectedConv = conversations.find((c) => c.id === selectedConvId);
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)", color: "var(--text)" }}>
-      <style>{`
-        /* Mobile & Modal CSS */
-        .chats-grid { display: grid; grid-template-columns: 350px 1fr; gap: 1.5rem; height: calc(100vh - 180px); }
-        .mobile-modal-overlay {
-          position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-          background: rgba(0,0,0,0.6); z-index: 1000;
-          display: flex; align-items: center; justify-content: center;
-        }
-        .mobile-modal-content {
-          background: var(--bg-card); padding: 2rem; border-radius: 12px; width: 500px;
-          max-width: 95vw; max-height: 90vh; overflow-y: auto; border: 1px solid var(--border);
-        }
-        @media (max-width: 768px) {
-          header { padding: 1rem !important; flex-wrap: wrap; gap: 0.5rem; }
-          .chats-grid { grid-template-columns: 1fr; height: auto; }
-          .mobile-hide { display: none !important; }
-        }
-      `}</style>
-
-      {/* Top Navbar */}
-      <header style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-card)", padding: "0.75rem 1.5rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-          <Link href="/" style={{ color: "var(--text)", textDecoration: "none", fontWeight: 700, fontSize: "1.1rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <span style={{ color: "#25d366", fontSize: "1.3rem" }}>💬</span> WhatsApp Ventas
-          </Link>
-          <span style={{ color: "var(--border)" }}>|</span>
-          <span style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>Panel Administrativo</span>
-          {health && (
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <span className="lp-pill" style={{ background: qrStatus?.connected ? "rgba(37,211,102,0.15)" : "rgba(234,179,8,0.15)", color: qrStatus?.connected ? "var(--primary)" : "#eab308" }}>
-                {qrStatus?.connected ? "● WhatsApp Conectado" : "○ WhatsApp Desconectado"}
-              </span>
-              <span className="lp-pill" style={{ background: health.tursoConfigured ? "rgba(56,189,248,0.15)" : "rgba(148,163,184,0.15)", color: health.tursoConfigured ? "var(--accent)" : "var(--text-muted)" }}>
-                DB: {health.tursoConfigured ? "Turso" : "Memoria"}
-              </span>
-            </div>
-          )}
+    
+    <div className="crm-layout">
+      {/* SIDEBAR */}
+      <div className="crm-sidebar">
+        <div className="crm-sidebar-logo">
+          <span style={{ fontSize: "1.5rem" }}>📱</span>
+          Ventas WhatsApp
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "1rem", position: "relative" }}>
-          <button onClick={() => setMenuOpen(!menuOpen)} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: "1.5rem" }}>
-            ⚙️
+        
+        <div className="crm-sidebar-nav">
+          <button className={`crm-sidebar-btn ${tab === "chats" ? "active" : ""}`} onClick={() => setTab("chats")}>
+            <span>💬</span> Chats en Vivo
           </button>
-          {menuOpen && (
-            <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "0.5rem", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px", boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)", padding: "0.5rem", display: "flex", flexDirection: "column", gap: "0.25rem", zIndex: 50, minWidth: "200px" }}>
-              <button onClick={() => { setShowQrModal(true); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>📱 Vincular WhatsApp</button>
-              <button onClick={() => { setTab("settings"); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>🤖 Configuración IA</button>
-              <button onClick={() => { setTab("hours"); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>🕒 Horarios</button>
-              <hr style={{ borderColor: "var(--border)", margin: "0.25rem 0" }} />
-              <button onClick={handleLogout} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "#ef4444", width: "100%", borderRadius: "4px" }}>🚪 Cerrar Sesión</button>
-            </div>
-          )}
+          <button className={`crm-sidebar-btn ${tab === "orders" ? "active" : ""}`} onClick={() => setTab("orders")}>
+            <span>📦</span> Pedidos
+          </button>
+          <button className={`crm-sidebar-btn ${tab === "catalog" ? "active" : ""}`} onClick={() => setTab("catalog")}>
+            <span>🍔</span> Menú / Catálogo
+          </button>
+          <button className={`crm-sidebar-btn ${tab === "hours" ? "active" : ""}`} onClick={() => setTab("hours")}>
+            <span>🕒</span> Horarios
+          </button>
+          <button className={`crm-sidebar-btn ${tab === "settings" ? "active" : ""}`} onClick={() => setTab("settings")}>
+            <span>🤖</span> Configuración IA
+          </button>
         </div>
-      </header>
 
-      {/* Navigation Tabs */}
-      <div style={{ display: "flex", gap: "0.5rem", borderBottom: "1px solid var(--border)", padding: "0 1.5rem", background: "var(--bg-card)", overflowX: "auto", whiteSpace: "nowrap" }}>
-          {[
-            { id: "orders", label: "📦 Pedidos" },
-            { id: "chats", label: "💬 Bandeja de Entrada" },
-            { id: "catalog", label: "🏷️ Catálogo" },
-          ].map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id as any)}
-            style={{
-              padding: "0.85rem 1.25rem",
-              background: "transparent",
-              border: "none",
-              borderBottom: tab === t.id ? "3px solid var(--primary)" : "3px solid transparent",
-              color: tab === t.id ? "var(--text)" : "var(--text-muted)",
-              fontWeight: tab === t.id ? 700 : 500,
-              cursor: "pointer",
-              fontSize: "0.95rem",
-              transition: "all 0.2s ease",
-            }}
-          >
-            {t.label}
+        <div style={{ padding: "1rem", marginTop: "auto" }}>
+          <button onClick={() => setShowQrModal(true)} className="crm-sidebar-btn" style={{ width: "100%", justifyContent: "flex-start", marginBottom: "0.5rem" }}>
+            <span>🔗</span> Vincular WhatsApp
           </button>
-        ))}
+          <button onClick={handleLogout} className="crm-sidebar-btn" style={{ width: "100%", justifyContent: "flex-start", color: "#ef4444" }}>
+            <span>🚪</span> Cerrar Sesión
+          </button>
+        </div>
       </div>
 
-      {/* Content Area */}
-      <main style={{ flex: 1, padding: "1.5rem", maxWidth: 1200, width: "100%", margin: "0 auto" }}>
+      {/* MAIN CONTENT AREA */}
+      <div className="crm-chats-container" style={{ display: tab === "chats" ? "flex" : "none", width: "100%" }}>
+        <div className="crm-main-content" style={{ padding: "0" }}>
+  
         
         {/* ========================================================= */}
         {/* TAB: WHATSAPP WEB STYLE QR CODE                           */}
@@ -797,179 +757,193 @@ export default function PanelDashboard() {
         {/* ========================================================= */}
         {/* TAB 1: BANDEJA DE CHATS                                   */}
         {/* ========================================================= */}
-        {tab === "chats" && (
-          <div className="chats-grid">
-            {/* Conversations List */}
-            <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-              <div style={{ padding: "1rem", borderBottom: "1px solid var(--border)", display: "flex", gap: "0.5rem" }}>
-                {(["all", "bot", "human"] as const).map((f) => (
-                  <button
-                    key={f}
-                    onClick={() => setFilter(f)}
-                    style={{
-                      flex: 1,
-                      padding: "0.4rem",
-                      borderRadius: 6,
-                      fontSize: "0.8rem",
-                      border: "1px solid var(--border)",
-                      background: filter === f ? "var(--primary-bg)" : "transparent",
-                      color: filter === f ? "var(--primary)" : "var(--text-muted)",
-                      cursor: "pointer",
-                      fontWeight: 600,
-                    }}
-                  >
-                    {f === "all" ? "Todos" : f === "bot" ? "Bot" : "Humano"}
-                  </button>
-                ))}
-              </div>
-              <div style={{ flex: 1, overflowY: "auto" }}>
-                {filteredConversations.length === 0 ? (
-                  <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted)", fontSize: "0.9rem" }}>
-                    No hay conversaciones aún.
+          {tab === "chats" && (
+            <div style={{ display: "flex", height: "100%", width: "100%" }}>
+              {/* Left Column: Chat List */}
+              <div className="crm-chat-list-col">
+                <div className="crm-chat-list-header">
+                  <h2>Chats en Vivo</h2>
+                  <input 
+                    type="text" 
+                    placeholder="Buscar contacto o número..." 
+                    className="crm-search-bar" 
+                    
+                  />
+                  <div className="crm-filters">
+                    {(["all", "human", "bot", "closed"] as const).map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => setFilter(f)}
+                        className={`crm-filter-btn ${filter === f ? "active" : ""}`}
+                      >
+                        {f === "all" ? "Todos" : f === "human" ? "Esperando Asesor" : f === "bot" ? "Bot Activo" : "Finalizado"}
+                      </button>
+                    ))}
                   </div>
-                ) : (
-                  filteredConversations.map((c) => (
-                    <div
-                      key={c.id}
-                      onClick={() => setSelectedConvId(c.id)}
-                      style={{
-                        padding: "1rem",
-                        borderBottom: "1px solid var(--border)",
-                        cursor: "pointer",
-                        background: selectedConvId === c.id ? "#1a243b" : "transparent",
-                        transition: "background 0.15s",
-                      }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
-                        <span style={{ fontWeight: 600, fontSize: "0.95rem" }}>
-                          {formatPhoneDisplay(c.phone)}
-                        </span>
-                        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                          <span
-                            style={{
-                              fontSize: "0.75rem",
-                              padding: "0.2rem 0.5rem",
-                              borderRadius: 4,
-                              background: c.status === "human" ? "rgba(239,68,68,0.2)" : "rgba(37,211,102,0.2)",
-                              color: c.status === "human" ? "#f87171" : "var(--primary)",
-                              fontWeight: 600,
-                            }}
-                          >
-                            {c.status.toUpperCase()}
+                </div>
+                <div className="crm-chat-items">
+                  {filteredConversations.length === 0 ? (
+                    <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted)", fontSize: "0.9rem" }}>
+                      No hay conversaciones.
+                    </div>
+                  ) : (
+                    filteredConversations.map((c) => (
+                      <div
+                        key={c.id}
+                        onClick={() => setSelectedConvId(c.id)}
+                        className={`crm-chat-item ${selectedConvId === c.id ? "active" : ""}`}
+                      >
+                        <div className="crm-chat-item-avatar">
+                          👤
+                          <div className={`crm-status-dot ${c.status === "human" ? "online" : "offline"}`}></div>
+                        </div>
+                        <div className="crm-chat-item-details">
+                          <div className="crm-chat-item-header">
+                            <span className="crm-chat-item-name">{c.phone}</span>
+                          </div>
+                          <div className="crm-chat-item-msg">
+                            Click para ver mensajes
+                          </div>
+                          <span className={`crm-tag ${c.status}`}>
+                            {c.status === "human" ? "⚠️ Requiere Humano" : c.status === "bot" ? "🤖 Bot Activo" : "Finalizado"}
                           </span>
-                          <button
-                            onClick={(e) => handleDeleteConversation(c.id, e)}
-                            title="Eliminar conversación"
-                            style={{
-                              background: "transparent",
-                              border: "none",
-                              color: "var(--text-muted)",
-                              cursor: "pointer",
-                              padding: "0.2rem",
-                              fontSize: "0.85rem",
-                            }}
-                          >
-                            🗑️
-                          </button>
                         </div>
                       </div>
-                      <div style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                        {formatDateDisplay(c.updatedAt).time} · {formatDateDisplay(c.updatedAt).date}
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Middle Column: Chat View */}
+              <div className="crm-chat-main">
+                {selectedConvId ? (
+                  <>
+                    <div className="crm-chat-main-header">
+                      <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+                        <div className="crm-chat-item-avatar">👤</div>
+                        <div>
+                          <h3 style={{ margin: 0, fontSize: "1.05rem", color: "#f3f4f6" }}>{selectedConvId}</h3>
+                          <span style={{ fontSize: "0.8rem", color: "#10b981" }}>En línea</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => { const c = filteredConversations.find(x => x.id === selectedConvId); if (c) handleToggleStatus(c.id, c.status); }}
+                        className={`crm-control-btn ${
+                          filteredConversations.find(c => c.id === selectedConvId)?.status === "bot" ? "" : "active"
+                        }`}
+                      >
+                        {filteredConversations.find(c => c.id === selectedConvId)?.status === "bot" 
+                          ? "⏸ Pausar Bot / Tomar Control Manual" 
+                          : "▶ Reanudar Bot"}
+                      </button>
+                    </div>
+
+                    <div className="crm-chat-messages">
+                      {messages.map((m, idx) => {
+                        const isSystem = m.role === "system";
+                        if (isSystem) {
+                          return (
+                            <div key={idx} className="crm-system-msg">
+                              ⚠️ Regla activada: {m.content}
+                            </div>
+                          );
+                        }
+                        const isBot = m.role === "assistant";
+                        return (
+                          <div key={idx} className={`crm-bubble-wrapper ${isBot ? "bot" : "human"}`}>
+                            <div className="crm-bubble">
+                              {m.content}
+                              {/* TODO: Render Interactive buttons here if any */}
+                            </div>
+                            <div className="crm-bubble-meta">
+                              {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      <div ref={messagesEndRef} />
+                    </div>
+
+                    <div className="crm-chat-input-area">
+                      <div className="crm-chat-input-wrapper">
+                        <input
+                          type="text"
+                          value={replyText}
+                          onChange={(e) => setReplyText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              handleSendReply({ preventDefault: () => {} } as any);
+                            }
+                          }}
+                          placeholder="Escribe un mensaje como asesor..."
+                        />
+                        <button className="send" onClick={(e) => handleSendReply(e as any)}>
+                          ▶
+                        </button>
                       </div>
                     </div>
-                  ))
+                  </>
+                ) : (
+                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#9ca3af" }}>
+                    Selecciona una conversación
+                  </div>
+                )}
+              </div>
+
+              {/* Right Column: Contact Details */}
+              <div className="crm-details-col">
+                {selectedConvId ? (
+                  <>
+                    <div className="crm-details-section">
+                      <h3>Detalles del Contacto</h3>
+                      <div className="crm-contact-profile">
+                        <div className="crm-contact-profile-avatar">👤</div>
+                        <div className="crm-contact-profile-info">
+                          <h4>{selectedConvId}</h4>
+                          <p>{selectedConvId}</p>
+                        </div>
+                      </div>
+                      <div className="crm-detail-row">
+                        <strong>Origen:</strong> Ingresó por WhatsApp
+                      </div>
+                    </div>
+
+                    <div className="crm-details-section">
+                      <h3>Etiquetas</h3>
+                      <div className="crm-tags-list">
+                        <span className="crm-detail-tag">Cliente Nuevo</span>
+                        <span className="crm-detail-tag">Soporte</span>
+                        <button className="crm-detail-tag add">+ Añadir etiqueta</button>
+                      </div>
+                    </div>
+
+                    <div className="crm-details-section">
+                      <h3>Acciones Rápidas</h3>
+                      <div className="crm-quick-actions">
+                        <button className="crm-action-btn">👤 Asignar a Asesor</button>
+                        <button className="crm-action-btn">📩 Enviar Plantilla HSM</button>
+                        <button className="crm-action-btn" onClick={() => { const c = filteredConversations.find(x => x.id === selectedConvId); if (c) handleToggleStatus(c.id, c.status); }}>🔄 Reiniciar Bot</button>
+                        <button className="crm-action-btn">📝 Notas Internas</button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ color: "#9ca3af", textAlign: "center", marginTop: "2rem", fontSize: "0.9rem" }}>
+                    Selecciona una conversación para ver los detalles.
+                  </div>
                 )}
               </div>
             </div>
+          )}
 
-            {/* Chat View */}
-            <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-              {selectedConv ? (
-                <>
-                  <div style={{ padding: "1rem 1.5rem", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div>
-                      <h3 style={{ fontSize: "1.05rem", margin: 0 }}>
-                        {formatPhoneDisplay(selectedConv.phone)}
-                      </h3>
-                      <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                        Modo actual: <strong>{selectedConv.status}</strong>
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                      <button
-                        onClick={() => handleToggleStatus(selectedConv.id, selectedConv.status)}
-                        className={`lp-btn ${selectedConv.status === "human" ? "lp-btn-primary" : "lp-btn-secondary"}`}
-                        style={{ fontSize: "0.85rem", padding: "0.4rem 0.9rem" }}
-                      >
-                        {selectedConv.status === "human" ? "Devolver al Bot" : "Tomar Control (Humano)"}
-                      </button>
-                      <button
-                        onClick={() => handleDeleteConversation(selectedConv.id)}
-                        className="lp-btn lp-btn-secondary"
-                        style={{ fontSize: "0.85rem", padding: "0.4rem 0.7rem", color: "#f87171" }}
-                        title="Eliminar conversación"
-                      >
-                        🗑️ Eliminar
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Messages Bubble Area */}
-                  <div style={{ flex: 1, padding: "1.5rem", overflowY: "auto", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-                    {messages.length === 0 ? (
-                      <div style={{ textAlign: "center", color: "var(--text-muted)", marginTop: "2rem" }}>
-                        Sin mensajes registrados.
-                      </div>
-                    ) : (
-                      messages.map((m) => (
-                        <div
-                          key={m.id}
-                          className={`lp-bubble ${m.role === "user" ? "lp-bubble-user" : "lp-bubble-bot"}`}
-                          style={{
-                            alignSelf: m.role === "user" ? "flex-start" : "flex-end",
-                            background: m.role === "user" ? "#1e293b" : "#064e3b",
-                          }}
-                        >
-                          <div style={{ fontSize: "0.75rem", opacity: 0.7, marginBottom: "0.2rem" }}>
-                            {m.role === "user" ? "Cliente" : "Asistente / Humano"} · {formatDateDisplay(m.createdAt).time}
-                          </div>
-                          <div>{m.content}</div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-
-                  {/* Manual Reply Box */}
-                  <form onSubmit={handleSendReply} style={{ padding: "1rem", borderTop: "1px solid var(--border)", display: "flex", gap: "0.75rem" }}>
-                    <input
-                      type="text"
-                      value={replyText}
-                      onChange={(e) => setReplyText(e.target.value)}
-                      placeholder="Escribe una respuesta manual (activará el modo humano)..."
-                      style={{
-                        flex: 1,
-                        padding: "0.75rem",
-                        borderRadius: 8,
-                        border: "1px solid var(--border)",
-                        background: "var(--bg)",
-                        color: "var(--text)",
-                      }}
-                    />
-                    <button type="submit" disabled={sending} className="lp-btn lp-btn-primary">
-                      {sending ? "Enviando..." : "Enviar"}
-                    </button>
-                  </form>
-                </>
-              ) : (
-                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)" }}>
-                  Selecciona una conversación de la lista para ver los mensajes.
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
         {/* ========================================================= */}
+        </div>
+      </div>
+
+      {/* OTHER TABS */} 
+      <div className="crm-main-content" style={{ display: tab !== "chats" ? "block" : "none", width: "100%" }}>
         {/* ========================================================= */}
         {/* TAB 2: PEDIDOS (SECCIÓN APARTE)                           */}
         {/* ========================================================= */}
@@ -1345,9 +1319,6 @@ export default function PanelDashboard() {
             </form>
           </div>
         )}
-
-      </main>
-    
       {/* ORDER DETAILS MODAL */}
       {selectedOrderId && (
         <div className="mobile-modal-overlay" onClick={() => setSelectedOrderId(null)}>
@@ -1400,5 +1371,17 @@ export default function PanelDashboard() {
       )}
 
     </div>
+    </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
