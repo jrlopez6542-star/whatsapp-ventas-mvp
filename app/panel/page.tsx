@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -131,6 +131,7 @@ export function formatDateDisplay(ts: number | string | undefined): { time: stri
 export default function PanelDashboard() {
   const [tab, setTab] = useState<"whatsapp_qr" | "chats" | "orders" | "catalog" | "settings" | "hours">("orders");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showQrModal, setShowQrModal] = useState(false);
   const [health, setHealth] = useState<any>(null);
 
   // WhatsApp Web QR state
@@ -523,7 +524,7 @@ export default function PanelDashboard() {
           </button>
           {menuOpen && (
             <div style={{ position: "absolute", top: "100%", right: 0, marginTop: "0.5rem", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: "8px", boxShadow: "0 10px 15px -3px rgba(0,0,0,0.1)", padding: "0.5rem", display: "flex", flexDirection: "column", gap: "0.25rem", zIndex: 50, minWidth: "200px" }}>
-              <button onClick={() => { setTab("whatsapp_qr"); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>📱 Vincular WhatsApp</button>
+              <button onClick={() => { setShowQrModal(true); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>📱 Vincular WhatsApp</button>
               <button onClick={() => { setTab("settings"); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>🤖 Configuración IA</button>
               <button onClick={() => { setTab("hours"); setMenuOpen(false); }} style={{ background: "transparent", border: "none", textAlign: "left", padding: "0.5rem 1rem", cursor: "pointer", color: "var(--text)", width: "100%", borderRadius: "4px" }}>🕒 Horarios</button>
               <hr style={{ borderColor: "var(--border)", margin: "0.25rem 0" }} />
@@ -566,10 +567,10 @@ export default function PanelDashboard() {
         {/* ========================================================= */}
         {/* TAB: WHATSAPP WEB STYLE QR CODE                           */}
         {/* ========================================================= */}
-        {tab === "whatsapp_qr" && (
-          <div style={{ maxWidth: 960, margin: "1rem auto" }}>
-            {/* WhatsApp Web Banner Header */}
-            <div style={{ background: "#00a884", borderRadius: "16px 16px 0 0", padding: "1.25rem 2rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        {showQrModal && (
+          <div className="mobile-modal-overlay" onClick={() => setShowQrModal(false)}>
+            <div className="mobile-modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 960, margin: "1rem auto", width: "95vw", padding: 0 }}>
+              <div style={{ background: "#00a884", borderRadius: "12px 12px 0 0", padding: "1.25rem 2rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
                 <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#ffffff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.3rem" }}>
                   📱
@@ -601,8 +602,9 @@ export default function PanelDashboard() {
                   <option value="bot_whatsapp_mvp">bot_whatsapp_mvp (Por escanear)</option>
                   <option value="ventas2">ventas2 (Línea existente)</option>
                 </select>
+                </div>
+                <button onClick={() => setShowQrModal(false)} style={{ background: "transparent", border: "none", color: "white", fontSize: "2rem", cursor: "pointer", marginLeft: "1rem", lineHeight: 1 }}>&times;</button>
               </div>
-            </div>
 
             {/* Main Card */}
             <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderTop: "none", borderRadius: "0 0 16px 16px", padding: "2.5rem 2rem", boxShadow: "0 20px 40px rgba(0,0,0,0.5)" }}>
@@ -790,8 +792,8 @@ export default function PanelDashboard() {
               )}
             </div>
           </div>
-        )}
-
+</div>
+)}
         {/* ========================================================= */}
         {/* TAB 1: BANDEJA DE CHATS                                   */}
         {/* ========================================================= */}
@@ -1222,6 +1224,34 @@ export default function PanelDashboard() {
                   style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
                 />
               </div>
+              
+              <div style={{ marginTop: "1rem" }}>
+                <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
+                  Objetivo Principal del Bot
+                </label>
+                <input
+                  type="text"
+                  value={settings.botObjective || ""}
+                  onChange={(e) => setSettings({ ...settings, botObjective: e.target.value })}
+                  placeholder="Ej: Vender la mayor cantidad de buñuelos posibles y ser muy amable."
+                  style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
+                />
+              </div>
+
+              <div style={{ marginTop: "1rem" }}>
+                <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
+                  Personalización Avanzada de IA (Prompt Extra)
+                </label>
+                <textarea
+                  rows={4}
+                  value={settings.extraPrompt || ""}
+                  onChange={(e) => setSettings({ ...settings, extraPrompt: e.target.value })}
+                  placeholder="Instrucciones adicionales para inyectar en el prompt base de Gemini..."
+                  style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
+                />
+                <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Estas instrucciones se concatenan al final del prompt base y te permiten modificar el comportamiento y formato de la IA.</p>
+              </div>
+
               <div style={{ display: "flex", gap: "1rem", marginTop: "1rem" }}>
                 <button type="submit" disabled={savingSettings} className="lp-btn lp-btn-primary">
                   {savingSettings ? "Guardando..." : "Guardar Cambios"}
