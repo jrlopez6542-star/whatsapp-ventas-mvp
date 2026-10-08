@@ -493,10 +493,10 @@ export default function PanelDashboard() {
         
         <div className="crm-sidebar-nav">
           <button className={`crm-sidebar-btn ${tab === "chats" ? "active" : ""}`} onClick={() => setTab("chats")}>
-            <span>💬</span> Chats en Vivo
+            <span className="icon">💬</span> <span className="label">Chats en Vivo</span>
           </button>
           <button className={`crm-sidebar-btn ${tab === "orders" ? "active" : ""}`} onClick={() => setTab("orders")}>
-            <span>📦</span> Pedidos
+            <span className="icon">📦</span> <span className="label">Pedidos</span>
           </button>
           <button className={`crm-sidebar-btn ${tab === "catalog" ? "active" : ""}`} onClick={() => setTab("catalog")}>
             <span>🍔</span> Menú / Catálogo
@@ -851,10 +851,31 @@ export default function PanelDashboard() {
                         const isBot = m.role === "assistant";
                         return (
                           <div key={idx} className={`crm-bubble-wrapper ${isBot ? "bot" : "human"}`}>
+                            
                             <div className="crm-bubble">
-                              {m.content}
-                              {/* TODO: Render Interactive buttons here if any */}
+                              {(() => {
+                                const btnRegex = /\[BOTONES:\s*(.+?)\]/i;
+                                const match = m.content.match(btnRegex);
+                                if (!match) return m.content;
+                                const text = m.content.replace(btnRegex, '').trim();
+                                const buttons = match[1].split('|').map(b => b.trim()).filter(b => b);
+                                return (
+                                  <>
+                                    <div>{text}</div>
+                                    {buttons.length > 0 && (
+                                      <div className="crm-interactive-btns">
+                                        {buttons.map((b, i) => (
+                                          <button key={i} className="crm-interactive-btn">
+                                            {b}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </div>
+
                             <div className="crm-bubble-meta">
                               {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </div>
@@ -866,6 +887,7 @@ export default function PanelDashboard() {
 
                     <div className="crm-chat-input-area">
                       <div className="crm-chat-input-wrapper">
+                        <button className="attach" style={{color:"var(--text-muted)", cursor:"pointer", background:"none", border:"none", fontSize:"1.2rem"}}>📎</button>
                         <input
                           type="text"
                           value={replyText}

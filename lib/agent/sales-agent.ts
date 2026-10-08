@@ -355,8 +355,17 @@ export async function handleSalesMessage(
   ⛔ RESTRICCIONES IMPORTANTES:
   - YA NO SE VENDE POR UNIDAD. SOLO SE VENDEN CAJAS DE 4 O DE 8. Si alguien pide unidades sueltas (ej: "quiero 2 buñuelos"), explícale amablemente que solo manejamos cajas de 4 o de 8.
   - NUNCA inventes precios ni sumes mal.
-  - NO confirmes el pedido hasta tener dirección, método de pago y las salsas elegidas si pidió una caja surtida.\n\n  ${settings.extraPrompt ? `💡 INSTRUCCIONES ADICIONALES (¡Síguelas al pie de la letra!):\n  ${settings.extraPrompt}` : ''}`;
+  - NO confirmes el pedido hasta tener dirección, método de pago y las salsas elegidas si pidió una caja surtida.
 
+  BOTONES INTERACTIVOS DE WHATSAPP (¡MUY IMPORTANTE!):
+  Puedes enviarle botones interactivos al cliente para facilitarle la respuesta. Para enviarlos, al puro final de tu mensaje añade exactamente esta estructura:
+  [BOTONES: Opción 1 | Opción 2]
+  Reglas de los botones:
+  - Máximo 3 botones.
+  - Cada opción debe ser corta (ej: "Ver Catálogo", "Comprar Caja x4", "Comprar Caja x8", "Hablar con Asesor").
+  - Úsalos estratégicamente para guiar al cliente al siguiente paso del flujo.
+
+  ${settings.extraPrompt ? `📌 INSTRUCCIONES ADICIONALES (¡Síguelas al pie de la letra!):\n  ${settings.extraPrompt}` : ''}`;
   // 2. Intentar con Google Gemini (probando modelos disponibles: gemini-3.8-flash, gemini-2.0-flash, gemini-1.5-flash)
   if (process.env.GEMINI_API_KEY?.trim()) {
     const rawEnvModel = process.env.GEMINI_MODEL?.trim();

@@ -1,4 +1,6 @@
-import { isEvolutionConfigured, sendEvolutionText, sendEvolutionPoll } from "@/lib/evolution";
+const fs = require('fs');
+
+let code = `import { isEvolutionConfigured, sendEvolutionText, sendEvolutionPoll } from "@/lib/evolution";
 import { isTwilioSendConfigured, sendWhatsAppMessage } from "@/lib/twilio";
 
 export type OutboundWhatsAppResult =
@@ -21,11 +23,11 @@ export async function sendOutboundWhatsApp(
   to: string,
   body: string
 ): Promise<OutboundWhatsAppResult> {
-  const buttonsRegex = /\[BOTONES:\s*(.+?)\]/i;
+  const buttonsRegex = /\\[BOTONES:\\s*(.+?)\\]/i;
   const match = body.match(buttonsRegex);
   
   let cleanBody = body;
-  let buttons: string[] = [];
+  let buttons = [];
   
   if (match) {
     cleanBody = body.replace(buttonsRegex, '').trim();
@@ -33,7 +35,7 @@ export async function sendOutboundWhatsApp(
   }
 
   if (isEvolutionConfigured()) {
-    let r: any = { ok: true, id: 'none', error: '' };
+    let r = { ok: true, id: 'none', error: '' };
     if (cleanBody) {
       r = await sendEvolutionText(to, cleanBody);
     }
@@ -51,7 +53,7 @@ export async function sendOutboundWhatsApp(
   }
 
   if (isTwilioSendConfigured()) {
-    const fallbackText = buttons.length > 0 ? `\n\nOpciones:\n` + buttons.map((b, i) => `${i+1}. ${b}`).join('\n') : '';
+    const fallbackText = buttons.length > 0 ? \`\\n\\nOpciones:\\n\` + buttons.map((b, i) => \`\${i+1}. \${b}\`).join('\\n') : '';
     const r = await sendWhatsAppMessage(to, cleanBody + fallbackText);
     if (r.ok) return { ok: true, id: r.sid, channel: "twilio" };
     return { ok: false, error: r.error, channel: "twilio" };
@@ -63,4 +65,6 @@ export async function sendOutboundWhatsApp(
     channel: "none",
   };
 }
+`;
 
+fs.writeFileSync('lib/whatsapp-send.ts', code);
