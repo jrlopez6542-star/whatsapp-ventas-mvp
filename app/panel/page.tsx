@@ -3,6 +3,8 @@ import Script from 'next/script';
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { DashboardView } from "./DashboardView";
+import { BotFlowsView } from "./BotFlowsView";
 import "../crm.css";
 
 interface Conversation {
@@ -513,7 +515,11 @@ export default function PanelDashboard() {
         
         {/* MOBILE TOGGLE BUTTON (FLOATING) */}
         <button 
-          onClick={toggleMobileMode} 
+          onClick={() => setIsMobileMode(prev => {
+          const next = !prev;
+          if (typeof window !== "undefined") localStorage.setItem("crm_mobile_mode", String(next));
+          return next;
+        })} 
           className="fixed bottom-6 right-6 z-[9999] bg-[#007aff] hover:bg-[#005bb5] text-white p-4 rounded-full shadow-2xl transition-transform hover:scale-105 flex items-center justify-center gap-2"
         >
           {isMobileMode ? (
@@ -835,9 +841,9 @@ export default function PanelDashboard() {
 
         {/* CONTENEDOR PARA OTRAS TABS */}
         {tab !== "chats" && (
-          <main className="flex-1 overflow-y-auto p-8 bg-[#0b141a]">
-            {tab === "orders" && <div className="text-white p-4">Pedidos - En desarrollo</div>}
-            {tab === "catalog" && <div className="text-white p-4">Catálogo - En desarrollo</div>}
+          <main className="flex-1 overflow-y-auto bg-[#0b141a]">
+            {tab === "orders" && <DashboardView />}
+            {tab === "catalog" && <BotFlowsView />}
             {tab === "settings" && <div className="text-white p-4">Configuración - En desarrollo</div>}
             {tab === "hours" && <div className="text-white p-4">Horarios - En desarrollo</div>}
             {tab === ("qr" as any) && <div className="text-white p-4">QR / Vincular - En desarrollo</div>}

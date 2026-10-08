@@ -1,24 +1,22 @@
-import sys
+import re
 
 with open('app/panel/page.tsx', 'r', encoding='utf-8') as f:
     code = f.read()
 
-if "import Script from 'next/script';" not in code and 'import Script from "next/script";' not in code:
-    code = "import Script from 'next/script';\n" + code
+# Completely replace toggleMobileMode with inline arrow function
+search = 'onClick={toggleMobileMode}'
+replace = '''onClick={() => setIsMobileMode(prev => {
+          const next = !prev;
+          if (typeof window !== "undefined") localStorage.setItem("crm_mobile_mode", String(next));
+          return next;
+        })}'''
 
-code = code.replace("conv.pushName || ", "")
-code = code.replace("conversations.find(c => c.id === selectedConvId)?.pushName || ", "")
+code = code.replace(search, replace)
 
-if "const handleToggleBot" not in code:
-    code = code.replace('const [replyText, setReplyText] = useState("");', 'const [replyText, setReplyText] = useState("");\n  const handleToggleBot = async (id: string, newStatus: string) => { /* TODO: Implement */ };')
-
-code = code.replace('let buttons = [];', 'let buttons: string[] = [];')
-code = code.replace('const formatPhoneLocal = (p) =>', 'const formatPhoneLocal = (p: string) =>')
-code = code.replace('onClick={handleSendReply}', 'onClick={() => handleSendReply(replyText)}')
-code = code.replace('e.key === "Enter" && handleSendReply()', 'e.key === "Enter" && handleSendReply(replyText)')
-code = code.replace('tab === "qr"', 'tab === ("qr" as any)')
+# And remove any floating toggleMobileMode definitions if they exist
+code = re.sub(r'const toggleMobileMode = \(\) => \{[\s\S]*?\};\s*', '', code)
 
 with open('app/panel/page.tsx', 'w', encoding='utf-8') as f:
     f.write(code)
 
-print("TS fixes applied")
+print("Fixed")
