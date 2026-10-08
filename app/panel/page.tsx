@@ -135,7 +135,16 @@ export default function PanelDashboard() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [showQrModal, setShowQrModal] = useState(false);
   const [isMobileMode, setIsMobileMode] = useState(false);
-  useEffect(() => { if (typeof window !== 'undefined' && window.innerWidth < 768) setIsMobileMode(true); }, []);
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('crm_mobile_mode');
+      if (saved !== null) {
+        setIsMobileMode(saved === 'true');
+      } else if (window.innerWidth < 768) {
+        setIsMobileMode(true);
+      }
+    }
+  }, []);
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [showMobileDetails, setShowMobileDetails] = useState(false);
   const [health, setHealth] = useState<any>(null);
