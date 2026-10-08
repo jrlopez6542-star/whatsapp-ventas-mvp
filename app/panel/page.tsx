@@ -516,6 +516,9 @@ export default function PanelDashboard() {
       <div className={`bg-[#0b141a] text-slate-300 font-sans antialiased h-screen w-screen overflow-hidden flex select-none text-[13px] ${isMobileMode ? '' : ''}`}>
         
         
+        {/* QR MODAL */}
+        {showQrModal && <QrModal onClose={() => setShowQrModal(false)} />}
+        
         {/* HAMBURGER MENU (MOBILE ONLY) */}
         {isMobileMode && !showMobileSidebar && !(tab === "chats" && selectedConvId) && (
           <button 
@@ -526,21 +529,7 @@ export default function PanelDashboard() {
           </button>
         )}
 
-        {/* MOBILE TOGGLE BUTTON (FLOATING) */}
-        <button 
-          onClick={() => setIsMobileMode(prev => {
-          const next = !prev;
-          if (typeof window !== "undefined") localStorage.setItem("crm_mobile_mode", String(next));
-          return next;
-        })} 
-          className="fixed top-4 right-4 z-[999999] bg-[#202c33] hover:bg-[#2a3942] text-slate-300 p-2 rounded-md shadow-md transition-transform flex items-center justify-center border border-[#2a3942]"
-        >
-          {isMobileMode ? (
-            <><i className="ph ph-desktop text-xl"></i> </>
-          ) : (
-            <><i className="ph ph-device-mobile text-xl"></i> <span className="font-semibold pr-2">Móvil</span></>
-          )}
-        </button>
+        
 
         {/* MAIN CONTAINER (MOBILE FRAME OR FULL SCREEN) */}
         <div className={isMobileMode ? "w-full h-full flex-1 bg-[#0b141a] relative overflow-hidden flex" : "flex-1 flex overflow-hidden w-full h-full"}>
@@ -589,6 +578,17 @@ export default function PanelDashboard() {
           </div>
 
           <div className="p-2 space-y-1">
+              <button onClick={() => setIsMobileMode(prev => {
+                const next = !prev;
+                if (typeof window !== "undefined") localStorage.setItem("crm_mobile_mode", String(next));
+                return next;
+              })} className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
+                {isMobileMode ? (
+                  <><i className="ph ph-desktop text-lg"></i> Modo Escritorio</>
+                ) : (
+                  <><i className="ph ph-device-mobile text-lg"></i> Modo Móvil</>
+                )}
+              </button>
             <button onClick={() => setShowQrModal(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
               <i className="ph ph-qr-code text-lg"></i> Vincular WhatsApp
             </button>
