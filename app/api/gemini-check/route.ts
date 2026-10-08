@@ -36,9 +36,9 @@ export async function GET() {
       }
 
       if (success) {
-        results.gemini = \`OK (using \${successfulModel})\`;
+        results.gemini = `OK (using ${successfulModel})`;
       } else {
-        results.gemini = \`Error: \${lastErr}\`;
+        results.gemini = `Error: ${lastErr}`;
       }
     } catch (e: any) {
       results.gemini = "Error fatal: " + e.message;
