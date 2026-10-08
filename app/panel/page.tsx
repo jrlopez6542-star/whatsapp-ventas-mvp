@@ -1,5 +1,5 @@
-import { QrModal } from "./QrModal";
 "use client";
+import { QrModal } from "./QrModal";
 import Script from 'next/script';
 
 import { useEffect, useRef, useState } from "react";
