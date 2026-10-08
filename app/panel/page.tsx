@@ -504,7 +504,7 @@ export default function PanelDashboard() {
         
         {/* MOBILE TOGGLE BUTTON (FLOATING) */}
         <button 
-          onClick={() => setIsMobileMode(!isMobileMode)} 
+          onClick={toggleMobileMode} 
           className="fixed bottom-6 right-6 z-[9999] bg-[#007aff] hover:bg-[#005bb5] text-white p-4 rounded-full shadow-2xl transition-transform hover:scale-105 flex items-center justify-center gap-2"
         >
           {isMobileMode ? (
@@ -536,16 +536,16 @@ export default function PanelDashboard() {
             </div>
 
             <nav className="px-2 mt-2 space-y-1 text-[13px] font-medium text-slate-400">
-              <button onClick={() => setTab("orders")} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='orders' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
+              <button onClick={() => { setTab("orders"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='orders' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <i className="ph ph-squares-four text-lg"></i> Dashboard
               </button>
-              <button onClick={() => setTab("chats")} className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition ${tab==='chats' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
+              <button onClick={() => { setTab("chats"); setShowMobileSidebar(false); }} className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition ${tab==='chats' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <div className="flex items-center gap-3">
                   <i className="ph ph-chat-circle-dots text-lg"></i> Chats en vivo
                 </div>
                 <span className="bg-[#007aff] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{conversations.length}</span>
               </button>
-              <button onClick={() => setTab("catalog")} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='catalog' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
+              <button onClick={() => { setTab("catalog"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='catalog' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <i className="ph ph-robot text-lg"></i> Bots (Flujos)
               </button>
               <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
@@ -557,7 +557,7 @@ export default function PanelDashboard() {
               <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
                 <i className="ph ph-chart-line-up text-lg"></i> Analíticas
               </button>
-              <button onClick={() => setTab("settings")} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='settings' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
+              <button onClick={() => { setTab("settings"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='settings' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <i className="ph ph-gear text-lg"></i> Configuración
               </button>
             </nav>
