@@ -1,4 +1,5 @@
 "use client";
+import Script from 'next/script';
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
@@ -152,6 +153,7 @@ export default function PanelDashboard() {
   const [filter, setFilter] = useState<"all" | "bot" | "human" | "closed">("all");
   const [messages, setMessages] = useState<Message[]>([]);
   const [replyText, setReplyText] = useState("");
+  const handleToggleBot = async (id: string, newStatus: string) => { /* TODO: Implement */ };
   const [sending, setSending] = useState(false);
 
   // Orders
@@ -398,7 +400,7 @@ export default function PanelDashboard() {
     } catch {}
   };
 
-  const handleSendReply = async (e: React.FormEvent) => {
+  const handleSendReply = async (e?: any) => {
     e.preventDefault();
     if (!selectedConvId || !replyText.trim() || sending) return;
     setSending(true);
@@ -481,929 +483,311 @@ export default function PanelDashboard() {
 
   const selectedConv = conversations.find((c) => c.id === selectedConvId);
 
-  return (
-    
-    <div className="crm-layout">
-      {/* SIDEBAR */}
-      <div className="crm-sidebar">
-        <div className="crm-sidebar-logo">
-          <span style={{ fontSize: "1.5rem" }}>📱</span>
-          Ventas WhatsApp
-        </div>
+    return (
+    <>
+      <Script src="https://cdn.tailwindcss.com" strategy="beforeInteractive" />
+      <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
+      <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css" />
+      <style>{`
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+        input:focus { outline: none; }
+      `}</style>
+      
+      <div className="bg-[#0b141a] text-slate-300 font-sans antialiased h-screen w-screen overflow-hidden flex select-none text-[13px]">
         
-        <div className="crm-sidebar-nav">
-          <button className={`crm-sidebar-btn ${tab === "chats" ? "active" : ""}`} onClick={() => setTab("chats")}>
-            <span className="icon">💬</span> <span className="label">Chats en Vivo</span>
-          </button>
-          <button className={`crm-sidebar-btn ${tab === "orders" ? "active" : ""}`} onClick={() => setTab("orders")}>
-            <span className="icon">📦</span> <span className="label">Pedidos</span>
-          </button>
-          <button className={`crm-sidebar-btn ${tab === "catalog" ? "active" : ""}`} onClick={() => setTab("catalog")}>
-            <span>🍔</span> Menú / Catálogo
-          </button>
-          <button className={`crm-sidebar-btn ${tab === "hours" ? "active" : ""}`} onClick={() => setTab("hours")}>
-            <span>🕒</span> Horarios
-          </button>
-          <button className={`crm-sidebar-btn ${tab === "settings" ? "active" : ""}`} onClick={() => setTab("settings")}>
-            <span>🤖</span> Configuración IA
-          </button>
-        </div>
-
-        <div style={{ padding: "1rem", marginTop: "auto" }}>
-          <button onClick={() => setShowQrModal(true)} className="crm-sidebar-btn" style={{ width: "100%", justifyContent: "flex-start", marginBottom: "0.5rem" }}>
-            <span>🔗</span> Vincular WhatsApp
-          </button>
-          <button onClick={handleLogout} className="crm-sidebar-btn" style={{ width: "100%", justifyContent: "flex-start", color: "#ef4444" }}>
-            <span>🚪</span> Cerrar Sesión
-          </button>
-        </div>
-      </div>
-
-      {/* MAIN CONTENT AREA */}
-      <div className="crm-chats-container" style={{ display: tab === "chats" ? "flex" : "none", width: "100%" }}>
-        <div className="crm-main-content" style={{ padding: "0" }}>
-  
-        
-        {/* ========================================================= */}
-        {/* TAB: WHATSAPP WEB STYLE QR CODE                           */}
-        {/* ========================================================= */}
-        {showQrModal && (
-          <div className="mobile-modal-overlay" onClick={() => setShowQrModal(false)}>
-            <div className="mobile-modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: 960, margin: "1rem auto", width: "95vw", padding: 0 }}>
-              <div style={{ background: "#00a884", borderRadius: "12px 12px 0 0", padding: "1.25rem 2rem", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-                <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#ffffff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "1.3rem" }}>
-                  📱
-                </div>
-                <div>
-                  <h2 style={{ fontSize: "1.25rem", fontWeight: 700, color: "#ffffff", margin: 0 }}>
-                    WhatsApp Web · Vinculación Oficial
-                  </h2>
-                  <p style={{ fontSize: "0.85rem", color: "#e6fffa", margin: 0 }}>
-                    Conecta tu número comercial con el motor de Inteligencia Artificial
-                  </p>
-                </div>
+        {/* 1. BARRA LATERAL IZQUIERDA (NAVEGACIÓN) */}
+        <aside className="w-[220px] bg-[#121b22] border-r border-[#1f2c34] flex flex-col justify-between shrink-0">
+          <div>
+            {/* Header / Logo */}
+            <div className="h-16 flex items-center gap-3 px-4">
+              <div className="text-[#25D366] text-3xl">
+                <i className="ph-fill ph-whatsapp-logo"></i>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-                <span style={{ fontSize: "0.85rem", color: "#ffffff" }}>Instancia:</span>
-                <select
-                  value={selectedInstance}
-                  onChange={(e) => setSelectedInstance(e.target.value)}
-                  style={{
-                    background: "rgba(0,0,0,0.25)",
-                    border: "1px solid rgba(255,255,255,0.4)",
-                    color: "#ffffff",
-                    borderRadius: 6,
-                    padding: "0.3rem 0.6rem",
-                    fontSize: "0.85rem",
-                    cursor: "pointer",
-                  }}
-                >
-                  <option value="bot_whatsapp_mvp">bot_whatsapp_mvp (Por escanear)</option>
-                  <option value="ventas2">ventas2 (Línea existente)</option>
-                </select>
-                </div>
-                <button onClick={() => setShowQrModal(false)} style={{ background: "transparent", border: "none", color: "white", fontSize: "2rem", cursor: "pointer", marginLeft: "1rem", lineHeight: 1 }}>&times;</button>
+              <div className="flex items-center gap-1.5 text-xs text-[#25D366] font-medium">
+                <span className="w-2 h-2 rounded-full bg-[#25D366] animate-pulse"></span>
+                API Conectada
               </div>
-
-            {/* Main Card */}
-            <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderTop: "none", borderRadius: "0 0 16px 16px", padding: "2.5rem 2rem", boxShadow: "0 20px 40px rgba(0,0,0,0.5)" }}>
-              {qrStatus?.connected ? (
-                /* STATE: CONNECTED */
-                <div style={{ textAlign: "center", padding: "2rem 1rem" }}>
-                  <div style={{ width: 80, height: 80, borderRadius: "50%", background: "rgba(37,211,102,0.15)", border: "2px solid #25d366", margin: "0 auto 1.5rem", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "2.5rem" }}>
-                    ✅
-                  </div>
-                  <h2 style={{ fontSize: "1.75rem", fontWeight: 700, marginBottom: "0.5rem" }}>
-                    ¡WhatsApp Conectado con Éxito!
-                  </h2>
-                  <p style={{ color: "var(--text-muted)", fontSize: "1.05rem", maxWidth: 500, margin: "0 auto 1.5rem" }}>
-                    Tu línea de WhatsApp está sincronizada y respondiendo automáticamente cotizaciones y pedidos con IA.
-                  </p>
-
-                  <div style={{ display: "inline-flex", flexDirection: "column", gap: "0.75rem", background: "#0b141a", border: "1px solid var(--border)", borderRadius: 12, padding: "1.25rem 2rem", textAlign: "left", marginBottom: "2rem", minWidth: 320 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
-                      <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>Instancia activa:</span>
-                      <strong style={{ color: "#25d366", fontSize: "0.9rem" }}>{qrStatus.instance}</strong>
-                    </div>
-                    {qrStatus.profile?.ownerJid && (
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
-                        <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>Número conectado:</span>
-                        <strong style={{ fontSize: "0.9rem" }}>{qrStatus.profile.ownerJid.replace("@s.whatsapp.net", "")}</strong>
-                      </div>
-                    )}
-                    {qrStatus.profile?.profileName && (
-                      <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
-                        <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>Nombre del perfil:</span>
-                        <strong style={{ fontSize: "0.9rem" }}>{qrStatus.profile.profileName}</strong>
-                      </div>
-                    )}
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
-                      <span style={{ color: "var(--text-muted)", fontSize: "0.9rem" }}>Estado de sesión:</span>
-                      <span className="lp-pill" style={{ background: "rgba(37,211,102,0.2)", color: "#25d366", margin: 0 }}>
-                        EN LÍNEA (OPEN)
-                      </span>
-                    </div>
-                  </div>
-
-                  <div style={{ display: "flex", gap: "1rem", justifyContent: "center" }}>
-                    <button
-                      onClick={() => setTab("chats")}
-                      className="lp-btn lp-btn-primary"
-                      style={{ fontSize: "1rem", padding: "0.75rem 1.75rem" }}
-                    >
-                      Ir a la Bandeja de Mensajes →
-                    </button>
-                    <button
-                      onClick={handleDisconnectWhatsapp}
-                      className="lp-btn lp-btn-secondary"
-                      style={{ fontSize: "1rem", padding: "0.75rem 1.75rem", color: "#f87171" }}
-                    >
-                      Desconectar WhatsApp
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                /* STATE: CONNECTING / QR DISPLAY */
-                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 0.8fr", gap: "3rem", alignItems: "center" }}>
-                  {/* Left Column: Instructions estilo WhatsApp Web */}
-                  <div>
-                    <h2 style={{ fontSize: "1.6rem", fontWeight: 700, marginBottom: "1rem" }}>
-                      Inicia sesión con tu WhatsApp
-                    </h2>
-                    <ol style={{ paddingLeft: "1.25rem", display: "flex", flexDirection: "column", gap: "1rem", color: "var(--text)", fontSize: "1.05rem", lineHeight: 1.5 }}>
-                      <li>
-                        Abre <strong>WhatsApp</strong> en tu teléfono móvil.
-                      </li>
-                      <li>
-                        Toca el menú de <strong>tres puntos ⋮</strong> (Android) o ve a <strong>Ajustes ⚙️</strong> (iPhone).
-                      </li>
-                      <li>
-                        Selecciona <strong>Dispositivos vinculados</strong> y luego toca en <strong>Vincular un dispositivo</strong>.
-                      </li>
-                      <li>
-                        Apunta tu teléfono hacia esta pantalla para <strong>escanear el código QR</strong>.
-                      </li>
-                    </ol>
-
-                    <div style={{ marginTop: "2rem", padding: "1rem", background: "rgba(56,189,248,0.1)", border: "1px solid rgba(56,189,248,0.3)", borderRadius: 8 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "var(--accent)", fontSize: "0.9rem", fontWeight: 600 }}>
-                        <span>⚡</span> Renovación automática activa
-                      </div>
-                      <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: "0.25rem 0 0" }}>
-                        Si el código vence, la pantalla solicitará automáticamente una nueva clave a Docker Evolution para que nunca se quede congelada.
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Right Column: QR Code Container */}
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                    <div
-                      style={{
-                        background: "#ffffff",
-                        padding: "1.25rem",
-                        borderRadius: 16,
-                        boxShadow: "0 10px 30px rgba(0,0,0,0.6)",
-                        position: "relative",
-                        minWidth: 280,
-                        minHeight: 280,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                      }}
-                    >
-                      {qrLoading || isRenewing ? (
-                        <div style={{ textAlign: "center", color: "#0b141a" }}>
-                          <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>⏳</div>
-                          <strong style={{ fontSize: "0.95rem" }}>Generando código QR...</strong>
-                          <div style={{ fontSize: "0.8rem", color: "#64748b" }}>Conectando con Docker...</div>
-                        </div>
-                      ) : qrStatus?.base64 ? (
-                        <div style={{ position: "relative" }}>
-                          <img
-                            src={qrStatus.base64}
-                            alt="Código QR de WhatsApp"
-                            style={{
-                              width: 250,
-                              height: 250,
-                              display: "block",
-                              borderRadius: 8,
-                            }}
-                          />
-                        </div>
-                      ) : (
-                        <div style={{ textAlign: "center", color: "#0b141a", padding: "1rem" }}>
-                          <div style={{ fontSize: "2rem", color: "#ef4444" }}>⚠️</div>
-                          <div style={{ fontSize: "0.9rem", fontWeight: 600, color: "#b91c1c", marginTop: "0.5rem" }}>
-                            {qrError || "No se pudo cargar el QR"}
-                          </div>
-                          <button
-                            onClick={() => fetchQrStatus(true)}
-                            className="lp-btn lp-btn-primary"
-                            style={{ marginTop: "1rem", fontSize: "0.85rem" }}
-                          >
-                            Reintentar
-                          </button>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Progress Bar & Countdown Timer */}
-                    <div style={{ marginTop: "1.25rem", width: "100%", maxWidth: 280, textAlign: "center" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "0.4rem" }}>
-                        <span>Expira en:</span>
-                        <strong style={{ color: secondsRemaining <= 5 ? "#ef4444" : "var(--primary)" }}>
-                          {secondsRemaining}s
-                        </strong>
-                      </div>
-                      <div style={{ width: "100%", height: 6, background: "var(--border)", borderRadius: 999, overflow: "hidden" }}>
-                        <div
-                          style={{
-                            height: "100%",
-                            width: `${(secondsRemaining / 30) * 100}%`,
-                            background: secondsRemaining <= 5 ? "#ef4444" : "#25d366",
-                            transition: "width 1s linear, background-color 0.3s",
-                          }}
-                        />
-                      </div>
-                      <button
-                        onClick={() => fetchQrStatus(true)}
-                        disabled={isRenewing}
-                        style={{
-                          marginTop: "1rem",
-                          background: "transparent",
-                          border: "1px solid var(--border)",
-                          borderRadius: 8,
-                          color: "var(--text)",
-                          padding: "0.5rem 1rem",
-                          fontSize: "0.85rem",
-                          cursor: "pointer",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "0.5rem",
-                          transition: "border-color 0.2s",
-                        }}
-                      >
-                        <span>🔄</span> {isRenewing ? "Renovando código..." : "Renovar código QR ahora"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
+
+            <nav className="px-2 mt-2 space-y-1 text-[13px] font-medium text-slate-400">
+              <button onClick={() => setTab("orders")} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='orders' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
+                <i className="ph ph-squares-four text-lg"></i> Dashboard
+              </button>
+              <button onClick={() => setTab("chats")} className={`w-full flex items-center justify-between px-3 py-2 rounded-md transition ${tab==='chats' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
+                <div className="flex items-center gap-3">
+                  <i className="ph ph-chat-circle-dots text-lg"></i> Chats en vivo
+                </div>
+                <span className="bg-[#007aff] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{conversations.length}</span>
+              </button>
+              <button onClick={() => setTab("catalog")} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='catalog' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
+                <i className="ph ph-robot text-lg"></i> Bots (Flujos)
+              </button>
+              <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
+                <i className="ph ph-article text-lg"></i> Plantillas
+              </button>
+              <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
+                <i className="ph ph-users text-lg"></i> Contactos
+              </button>
+              <button className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
+                <i className="ph ph-chart-line-up text-lg"></i> Analíticas
+              </button>
+              <button onClick={() => setTab("settings")} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='settings' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
+                <i className="ph ph-gear text-lg"></i> Configuración
+              </button>
+            </nav>
           </div>
-</div>
-)}
-        {/* ========================================================= */}
-        {/* TAB 1: BANDEJA DE CHATS                                   */}
-        {/* ========================================================= */}
-          {tab === "chats" && (
-            <div style={{ display: "flex", height: "100%", width: "100%" }}>
-              {/* Left Column: Chat List */}
-              <div className="crm-chat-list-col">
-                <div className="crm-chat-list-header">
-                  <h2>Chats en Vivo</h2>
+
+          <div className="p-2 space-y-1">
+            <button onClick={() => setShowQrModal(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
+              <i className="ph ph-qr-code text-lg"></i> Vincular WhatsApp
+            </button>
+            <button onClick={handleLogout} className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-[#ef4444] hover:bg-[#ef4444]/10">
+              <i className="ph ph-sign-out text-lg"></i> Cerrar Sesión
+            </button>
+          </div>
+        </aside>
+
+        {tab === "chats" && (
+          <>
+            {/* 2. BANDEJA DE CHATS */}
+            <section className="w-[340px] bg-[#111b21] border-r border-[#1f2c34] flex flex-col shrink-0">
+              <div className="p-4 pb-2 border-b border-[#1f2c34]">
+                <h2 className="text-xl font-bold text-white mb-4">Chats en Vivo</h2>
+                <div className="relative mb-4">
+                  <i className="ph ph-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-base"></i>
                   <input 
                     type="text" 
-                    placeholder="Buscar contacto o número..." 
-                    className="crm-search-bar" 
-                    
+                    placeholder="Buscar conversación..." 
+                    className="w-full bg-[#202c33] text-sm text-white placeholder-slate-400 pl-9 pr-3 py-2 rounded-lg border border-transparent focus:border-[#1f2c34] transition"
                   />
-                  <div className="crm-filters">
-                    {(["all", "human", "bot", "closed"] as const).map((f) => (
-                      <button
-                        key={f}
-                        onClick={() => setFilter(f)}
-                        className={`crm-filter-btn ${filter === f ? "active" : ""}`}
-                      >
-                        {f === "all" ? "Todos" : f === "human" ? "Esperando Asesor" : f === "bot" ? "Bot Activo" : "Finalizado"}
-                      </button>
-                    ))}
-                  </div>
                 </div>
-                <div className="crm-chat-items">
-                  {filteredConversations.length === 0 ? (
-                    <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted)", fontSize: "0.9rem" }}>
-                      No hay conversaciones.
-                    </div>
-                  ) : (
-                    filteredConversations.map((c) => (
-                      <div
-                        key={c.id}
-                        onClick={() => setSelectedConvId(c.id)}
-                        className={`crm-chat-item ${selectedConvId === c.id ? "active" : ""}`}
-                      >
-                        <div className="crm-chat-item-avatar">
-                          👤
-                          <div className={`crm-status-dot ${c.status === "human" ? "online" : "offline"}`}></div>
-                        </div>
-                        <div className="crm-chat-item-details">
-                          <div className="crm-chat-item-header">
-                            <span className="crm-chat-item-name">{c.phone}</span>
-                          </div>
-                          <div className="crm-chat-item-msg">
-                            Click para ver mensajes
-                          </div>
-                          <span className={`crm-tag ${c.status}`}>
-                            {c.status === "human" ? "⚠️ Requiere Humano" : c.status === "bot" ? "🤖 Bot Activo" : "Finalizado"}
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  )}
+
+                <div className="flex gap-4 text-[13px] font-medium border-b border-[#1f2c34]">
+                  <button onClick={() => setFilter("all")} className={`pb-2 ${filter === "all" ? "text-[#007aff] border-b-2 border-[#007aff]" : "text-slate-400 hover:text-slate-200"}`}>Todos</button>
+                  <button onClick={() => setFilter("human")} className={`pb-2 ${filter === "human" ? "text-[#007aff] border-b-2 border-[#007aff]" : "text-slate-400 hover:text-slate-200"}`}>Esperando Asesor</button>
+                  <button onClick={() => setFilter("bot")} className={`pb-2 ${filter === "bot" ? "text-[#007aff] border-b-2 border-[#007aff]" : "text-slate-400 hover:text-slate-200"}`}>Bot Activo</button>
                 </div>
               </div>
 
-              {/* Middle Column: Chat View */}
-              <div className="crm-chat-main">
-                {selectedConvId ? (
-                  <>
-                    <div className="crm-chat-main-header">
-                      <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-                        <div className="crm-chat-item-avatar">👤</div>
-                        <div>
-                          <h3 style={{ margin: 0, fontSize: "1.05rem", color: "#f3f4f6" }}>{selectedConvId}</h3>
-                          <span style={{ fontSize: "0.8rem", color: "#10b981" }}>En línea</span>
+              <div className="flex-1 overflow-y-auto">
+                {filteredConversations.map((conv) => {
+                  const isActive = selectedConvId === conv.id;
+                  const isHuman = conv.status === "human";
+                  const isClosed = conv.status === "closed";
+                  const formatPhoneLocal = (p: string) => p ? p.replace(/[^0-9]/g, '').slice(-10) : '';
+                  
+                  return (
+                    <div key={conv.id} onClick={() => setSelectedConvId(conv.id)} className={`px-4 py-3 cursor-pointer transition border-b border-[#1f2c34] ${isActive ? 'bg-[#202c33]' : 'hover:bg-[#202c33]/50'}`}>
+                      <div className="flex items-start gap-3">
+                        <div className="relative shrink-0">
+                          <img src={`https://api.dicebear.com/7.x/initials/svg?seed=${conv.phone || conv.id}&backgroundColor=202c33&textColor=ffffff`} className="w-12 h-12 rounded-full object-cover border border-[#1f2c34]" alt="" />
+                          {isHuman && <span className="absolute bottom-0 right-0 w-4 h-4 bg-[#f59e0b] border-2 border-[#111b21] rounded-full flex items-center justify-center"><i className="ph-fill ph-warning text-[10px] text-white"></i></span>}
+                          {!isHuman && !isClosed && <span className="absolute bottom-0 right-0 w-4 h-4 bg-[#22c55e] border-2 border-[#111b21] rounded-full flex items-center justify-center"><i className="ph-fill ph-check text-[10px] text-white"></i></span>}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex justify-between items-baseline mb-1">
+                            <h3 className="text-[15px] font-semibold text-white truncate">{formatPhoneLocal(conv.phone) || formatPhoneLocal(conv.id)}</h3>
+                            <span className="text-xs text-slate-400">{new Date(conv.updatedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                          </div>
+                          
+                          <div className="flex items-center gap-1.5 mb-1.5">
+                            <span className="text-xs text-slate-400 font-mono">{formatPhoneLocal(conv.phone) || formatPhoneLocal(conv.id)}</span>
+                          </div>
+
+                          <div className="flex items-center gap-2 mb-1">
+                            {isHuman && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[#f59e0b]/10 text-[#f59e0b] border border-[#f59e0b]/20">
+                                <i className="ph-fill ph-warning"></i> Requiere Humano
+                              </span>
+                            )}
+                            {!isHuman && !isClosed && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[#22c55e]/10 text-[#22c55e] border border-[#22c55e]/20">
+                                <i className="ph-fill ph-robot"></i> Bot Activo
+                              </span>
+                            )}
+                            {isClosed && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium bg-[#64748b]/20 text-[#cbd5e1] border border-[#64748b]/30">
+                                <i className="ph ph-check"></i> Finalizado
+                              </span>
+                            )}
+                          </div>
+                          
+                          <p className="text-sm text-slate-400 truncate">Conversación activa</p>
                         </div>
                       </div>
-                      <button
-                        onClick={() => { const c = filteredConversations.find(x => x.id === selectedConvId); if (c) handleToggleStatus(c.id, c.status); }}
-                        className={`crm-control-btn ${
-                          filteredConversations.find(c => c.id === selectedConvId)?.status === "bot" ? "" : "active"
-                        }`}
-                      >
-                        {filteredConversations.find(c => c.id === selectedConvId)?.status === "bot" 
-                          ? "⏸ Pausar Bot / Tomar Control Manual" 
-                          : "▶ Reanudar Bot"}
-                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+
+            {/* 3. ÁREA PRINCIPAL */}
+            <main className="flex-1 bg-[#0b141a] flex flex-col justify-between relative overflow-hidden" style={{backgroundImage: "url('https://whatsapp-ventas-mvp.vercel.app/bg-chat.png')", backgroundSize: 'cover', backgroundBlendMode: 'overlay', backgroundColor: 'rgba(11,20,26,0.95)'}}>
+              {selectedConvId ? (
+                <>
+                  <header className="h-16 bg-[#121b22] px-6 flex items-center justify-between z-10 shrink-0 border-b border-[#1f2c34]">
+                    <div className="flex items-center gap-3">
+                      <div>
+                        <h2 className="text-[16px] font-bold text-white leading-tight">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</h2>
+                        <p className="text-xs text-slate-400">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</p>
+                      </div>
                     </div>
 
-                    <div className="crm-chat-messages">
-                      {messages.map((m, idx) => {
-                        const isSystem = m.role === "system";
-                        if (isSystem) {
-                          return (
-                            <div key={idx} className="crm-system-msg">
-                              ⚠️ Regla activada: {m.content}
-                            </div>
-                          );
-                        }
-                        const isBot = m.role === "assistant";
-                        return (
-                          <div key={idx} className={`crm-bubble-wrapper ${isBot ? "bot" : "human"}`}>
-                            
-                            <div className="crm-bubble">
-                              {(() => {
-                                const btnRegex = /\[BOTONES:\s*(.+?)\]/i;
-                                const match = m.content.match(btnRegex);
-                                if (!match) return m.content;
-                                const text = m.content.replace(btnRegex, '').trim();
-                                const buttons = match[1].split('|').map(b => b.trim()).filter(b => b);
-                                return (
-                                  <>
-                                    <div>{text}</div>
-                                    {buttons.length > 0 && (
-                                      <div className="crm-interactive-btns">
-                                        {buttons.map((b, i) => (
-                                          <button key={i} className="crm-interactive-btn">
-                                            {b}
-                                          </button>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </>
-                                );
-                              })()}
-                            </div>
+                    <div className="flex items-center gap-3">
+                      {conversations.find(c => c.id === selectedConvId)?.status === "bot" ? (
+                        <button onClick={() => handleToggleBot(selectedConvId, "human")} className="flex items-center gap-2 bg-[#007aff] hover:bg-[#005bb5] text-white font-semibold text-sm px-4 py-2 rounded-lg shadow-sm transition">
+                          <i className="ph-fill ph-pause"></i>
+                          <span>Pausar Bot / Tomar Control Manual</span>
+                        </button>
+                      ) : (
+                        <button onClick={() => handleToggleBot(selectedConvId, "bot")} className="flex items-center gap-2 bg-[#007aff] hover:bg-[#005bb5] text-white font-semibold text-sm px-4 py-2 rounded-lg shadow-sm transition">
+                          <i className="ph-fill ph-play"></i>
+                          <span>Reactivar Bot Automático</span>
+                        </button>
+                      )}
+                      <button onClick={() => handleToggleBot(selectedConvId, "closed")} className="flex items-center gap-2 text-slate-300 hover:text-white px-3 py-2 text-sm rounded-lg border border-[#2a3942] hover:bg-[#202c33] transition">
+                        <i className="ph ph-x"></i> Cerrar Caso
+                      </button>
+                    </div>
+                  </header>
 
-                            <div className="crm-bubble-meta">
-                              {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  <div className="flex-1 overflow-y-auto p-6 space-y-3">
+                    {messages.map((m, idx) => {
+                      const isBot = m.role === "assistant";
+                      
+                      const btnRegex = /\[BOTONES:\s*(.+?)\]/i;
+                      const match = m.content.match(btnRegex);
+                      let text = m.content;
+                      let buttons: string[] = [];
+                      if (match) {
+                        text = m.content.replace(btnRegex, '').trim();
+                        buttons = match[1].split('|').map(b => b.trim()).filter(b => b);
+                      }
+
+                      if (isBot) {
+                        return (
+                          <div key={idx} className="flex flex-col items-start w-full">
+                            <div className="bg-[#202c33] text-slate-200 p-3 rounded-lg rounded-tl-none text-[14.5px] max-w-md shadow-sm border border-transparent">
+                              <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
+                              <div className="text-[11px] text-slate-400 text-right mt-1">{new Date(m.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                            </div>
+                            {buttons.length > 0 && (
+                              <div className="w-full max-w-md mt-1 space-y-1">
+                                {buttons.map((b, i) => (
+                                  <div key={i} className="w-full bg-[#202c33] hover:bg-[#2a3942] text-[#00a884] text-[14.5px] py-2.5 px-4 rounded-lg flex items-center justify-center gap-2 transition cursor-pointer shadow-sm">
+                                    {b}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      } else {
+                        return (
+                          <div key={idx} className="flex flex-col items-end w-full">
+                            <div className="bg-[#005c4b] text-white p-3 rounded-lg rounded-tr-none text-[14.5px] max-w-md shadow-sm">
+                              <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
+                              <div className="flex items-center justify-end gap-1 text-[11px] text-teal-100/70 mt-1">
+                                <span>{new Date(m.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                <i className="ph-fill ph-checks text-[#53bdeb] text-sm"></i>
+                              </div>
                             </div>
                           </div>
                         );
-                      })}
-                      <div ref={messagesEndRef} />
-                    </div>
-
-                    <div className="crm-chat-input-area">
-                      <div className="crm-chat-input-wrapper">
-                        <button className="attach" style={{color:"var(--text-muted)", cursor:"pointer", background:"none", border:"none", fontSize:"1.2rem"}}>📎</button>
-                        <input
-                          type="text"
-                          value={replyText}
-                          onChange={(e) => setReplyText(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
-                              e.preventDefault();
-                              handleSendReply({ preventDefault: () => {} } as any);
-                            }
-                          }}
-                          placeholder="Escribe un mensaje como asesor..."
-                        />
-                        <button className="send" onClick={(e) => handleSendReply(e as any)}>
-                          ▶
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#9ca3af" }}>
-                    Selecciona una conversación
+                      }
+                    })}
+                    <div ref={messagesEndRef} />
                   </div>
-                )}
-              </div>
 
-              {/* Right Column: Contact Details */}
-              <div className="crm-details-col">
-                {selectedConvId ? (
-                  <>
-                    <div className="crm-details-section">
-                      <h3>Detalles del Contacto</h3>
-                      <div className="crm-contact-profile">
-                        <div className="crm-contact-profile-avatar">👤</div>
-                        <div className="crm-contact-profile-info">
-                          <h4>{selectedConvId}</h4>
-                          <p>{selectedConvId}</p>
-                        </div>
-                      </div>
-                      <div className="crm-detail-row">
-                        <strong>Origen:</strong> Ingresó por WhatsApp
-                      </div>
-                    </div>
-
-                    <div className="crm-details-section">
-                      <h3>Etiquetas</h3>
-                      <div className="crm-tags-list">
-                        <span className="crm-detail-tag">Cliente Nuevo</span>
-                        <span className="crm-detail-tag">Soporte</span>
-                        <button className="crm-detail-tag add">+ Añadir etiqueta</button>
-                      </div>
-                    </div>
-
-                    <div className="crm-details-section">
-                      <h3>Acciones Rápidas</h3>
-                      <div className="crm-quick-actions">
-                        <button className="crm-action-btn">👤 Asignar a Asesor</button>
-                        <button className="crm-action-btn">📩 Enviar Plantilla HSM</button>
-                        <button className="crm-action-btn" onClick={() => { const c = filteredConversations.find(x => x.id === selectedConvId); if (c) handleToggleStatus(c.id, c.status); }}>🔄 Reiniciar Bot</button>
-                        <button className="crm-action-btn">📝 Notas Internas</button>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <div style={{ color: "#9ca3af", textAlign: "center", marginTop: "2rem", fontSize: "0.9rem" }}>
-                    Selecciona una conversación para ver los detalles.
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-
-        {/* ========================================================= */}
-        </div>
-      </div>
-
-      {/* OTHER TABS */} 
-      <div className="crm-main-content" style={{ display: tab !== "chats" ? "block" : "none", width: "100%" }}>
-        {/* ========================================================= */}
-        {/* TAB 2: PEDIDOS (SECCIÓN APARTE)                           */}
-        {/* ========================================================= */}
-        {tab === "orders" && (
-          <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "1.5rem" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
-              <div>
-                <h2 style={{ fontSize: "1.35rem", fontWeight: 700, margin: 0 }}>📦 Pedidos de Buñuelos Confirmados</h2>
-                <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", margin: "0.25rem 0 0" }}>
-                  Aquí se registran automáticamente los pedidos cerrados por la IA con dirección y medio de pago.
-                </p>
-              </div>
-              <button
-                onClick={loadOrders}
-                className="lp-btn lp-btn-secondary"
-                style={{ fontSize: "0.85rem", padding: "0.4rem 0.8rem" }}
-              >
-                🔄 Actualizar lista
-              </button>
-            </div>
-
-            {orders.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "3rem 1rem", color: "var(--text-muted)" }}>
-                <span style={{ fontSize: "2.5rem", display: "block", marginBottom: "0.5rem" }}>🥟</span>
-                <p style={{ fontWeight: 600 }}>No hay pedidos confirmados todavía.</p>
-                <p style={{ fontSize: "0.85rem" }}>Cuando un cliente confirme por WhatsApp con su dirección, aparecerá aquí inmediatamente.</p>
-              </div>
-            ) : (
-              <div style={{ overflowX: "auto" }}>
-                <div style={{ overflowX: "auto", maxWidth: "100vw" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
-                  <thead>
-                    <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left", color: "var(--text-muted)", fontSize: "0.8rem", textTransform: "uppercase" }}>
-                      <th style={{ padding: "0.75rem" }}>ID</th>
-                      <th style={{ padding: "0.75rem" }}>Cliente / Teléfono</th>
-                      <th style={{ padding: "0.75rem" }}>Productos</th>
-                      <th style={{ padding: "0.75rem" }}>📍 Dirección de Entrega</th>
-                      <th style={{ padding: "0.75rem" }}>💵 Pago</th>
-                      <th style={{ padding: "0.75rem" }}>Total (COP)</th>
-                      <th style={{ padding: "0.75rem" }}>Estado</th>
-                      <th style={{ padding: "0.75rem" }}>Fecha</th>
-                        <th style={{ padding: "0.75rem" }}>Acción</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {orders.map((o) => (
-                      <tr key={o.id} style={{ borderBottom: "1px solid var(--border)", cursor: "pointer" }} onClick={() => setSelectedOrderId(o.id)}>
-                        <td style={{ padding: "0.75rem", fontFamily: "monospace", fontWeight: 700, color: "var(--primary)" }}>
-                          #{o.id.slice(0, 8)}
-                        </td>
-                        <td style={{ padding: "0.75rem" }}>
-                          <div style={{ fontWeight: 600 }}>{o.customerName || "Cliente"}</div>
-                          <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{formatPhoneDisplay(o.conversationId)}</div>
-                        </td>
-                        <td style={{ padding: "0.75rem" }}>
-                          <span style={{ background: "rgba(255,255,255,0.06)", padding: "0.25rem 0.5rem", borderRadius: 4, fontSize: "0.85rem" }}>
-                            {o.itemsSummary || "Buñuelos"}
-                          </span>
-                        </td>
-                        <td style={{ padding: "0.75rem", maxWidth: 220, wordBreak: "break-word" }}>
-                          <span style={{ color: "#fef08a", fontWeight: 500 }}>
-                            {o.deliveryAddress || "Por confirmar"}
-                          </span>
-                        </td>
-                        <td style={{ padding: "0.75rem" }}>
-                          <span style={{ background: "rgba(16,185,129,0.15)", color: "#34d399", padding: "0.2rem 0.5rem", borderRadius: 4, fontWeight: 600, fontSize: "0.8rem" }}>
-                            {o.paymentMethod || "Efectivo"}
-                          </span>
-                        </td>
-                        <td style={{ padding: "0.75rem", fontWeight: 700, fontSize: "1rem", color: "#38bdf8" }}>
-                          ${o.total.toLocaleString("es-CO")}
-                        </td>
-                        <td style={{ padding: "0.75rem" }}>
-                          <span
-                            className="lp-pill"
-                            style={{
-                              background: o.status === "confirmed" ? "rgba(34,197,94,0.2)" : "rgba(56,189,248,0.2)",
-                              color: o.status === "confirmed" ? "#4ade80" : "var(--accent)",
-                              fontWeight: 600,
-                              fontSize: "0.75rem",
-                            }}
-                          >
-                            {o.status.toUpperCase()}
-                          </span>
-                        </td>
-                        <td style={{ padding: "0.75rem", color: "var(--text-muted)", fontSize: "0.8rem" }}>
-                          {formatDateDisplay(o.createdAt).time}
-                          <br />
-                          {formatDateDisplay(o.createdAt).date}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table></div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ========================================================= */}
-        {/* TAB 3: CATÁLOGO                                           */}
-        {/* ========================================================= */}
-        {tab === "catalog" && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 350px", gap: "1.5rem" }}>
-            <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "1.5rem" }}>
-              <h2 style={{ fontSize: "1.25rem", marginBottom: "1rem" }}>Productos en Catálogo</h2>
-              <div style={{ overflowX: "auto", maxWidth: "100vw" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid var(--border)", textAlign: "left", color: "var(--text-muted)" }}>
-                    <th style={{ padding: "0.75rem" }}>SKU</th>
-                    <th style={{ padding: "0.75rem" }}>Nombre</th>
-                    <th style={{ padding: "0.75rem" }}>Precio</th>
-                    <th style={{ padding: "0.75rem" }}>Estado</th>
-                    <th style={{ padding: "0.75rem" }}>Acción</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {products.map((p) => (
-                    <tr key={p.sku} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ padding: "0.75rem", fontFamily: "monospace" }}>{p.sku}</td>
-                      <td style={{ padding: "0.75rem" }}>{p.name}</td>
-                      <td style={{ padding: "0.75rem", fontWeight: 600 }}>${p.price.toLocaleString("es-CO")} COP</td>
-                      <td style={{ padding: "0.75rem" }}>
-                        <span className="lp-pill" style={{ background: p.active ? "rgba(37,211,102,0.15)" : "rgba(148,163,184,0.15)", color: p.active ? "var(--primary)" : "var(--text-muted)" }}>
-                          {p.active ? "Activo" : "Inactivo"}
-                        </span>
-                      </td>
-                      <td style={{ padding: "0.75rem" }}>
-                        <button
-                          onClick={() => handleToggleProduct(p.sku, p.active)}
-                          className="ghost"
-                          style={{ background: "transparent", border: "1px solid var(--border)", padding: "0.3rem 0.6rem", borderRadius: 4, color: "var(--text)", cursor: "pointer", fontSize: "0.8rem" }}
-                        >
-                          {p.active ? "Desactivar" : "Activar"}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table></div>
-            </div>
-
-            {/* Create Product Form */}
-            <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "1.5rem" }}>
-              <h3 style={{ fontSize: "1.1rem", marginBottom: "1rem" }}>Agregar Producto</h3>
-              <form onSubmit={handleCreateProduct} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-                <div>
-                  <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>SKU</label>
-                  <input
-                    type="text"
-                    required
-                    value={newSku}
-                    onChange={(e) => setNewSku(e.target.value)}
-                    placeholder="KIT-01"
-                    style={{ width: "100%", padding: "0.6rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>Nombre</label>
-                  <input
-                    type="text"
-                    required
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    placeholder="Kit Emprendedor"
-                    style={{ width: "100%", padding: "0.6rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>Precio (COP)</label>
-                  <input
-                    type="number"
-                    required
-                    value={newPrice}
-                    onChange={(e) => setNewPrice(e.target.value)}
-                    placeholder="45000"
-                    style={{ width: "100%", padding: "0.6rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.3rem" }}>Descripción</label>
-                  <textarea
-                    value={newDesc}
-                    onChange={(e) => setNewDesc(e.target.value)}
-                    placeholder="Detalles del producto..."
-                    style={{ width: "100%", padding: "0.6rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)", resize: "vertical" }}
-                  />
-                </div>
-                <button type="submit" className="lp-btn lp-btn-primary" style={{ width: "100%" }}>
-                  Guardar Producto
-                </button>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* ========================================================= */}
-        {/* TAB 4: CONFIGURACIÓN                                      */}
-        {/* ========================================================= */}
-        {tab === "settings" && (
-          <div style={{ maxWidth: 700, margin: "0 auto", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "2rem" }}>
-            <h2 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>Configuración del Negocio</h2>
-            <p style={{ color: "var(--text-muted)", fontSize: "0.9rem", marginBottom: "1.5rem" }}>
-              Estos parámetros se inyectan directamente en el system prompt del agente de ventas con IA.
-            </p>
-            {saveSuccess && (
-              <div style={{ padding: "0.75rem", background: "rgba(37,211,102,0.2)", color: "var(--primary)", borderRadius: 6, marginBottom: "1rem" }}>
-                Configuración guardada exitosamente.
-              </div>
-            )}
-            <form onSubmit={handleSaveSettings} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
-                  Nombre del Negocio
-                </label>
-                <input
-                  type="text"
-                  value={settings.name}
-                  onChange={(e) => setSettings({ ...settings, name: e.target.value })}
-                  style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                />
-              </div>
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
-                  Tono de Comunicación
-                </label>
-                <input
-                  type="text"
-                  value={settings.tone}
-                  onChange={(e) => setSettings({ ...settings, tone: e.target.value })}
-                  style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                />
-              </div>
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
-                  Mensaje de Bienvenida
-                </label>
-                <textarea
-                  rows={3}
-                  value={settings.welcomeMessage}
-                  onChange={(e) => setSettings({ ...settings, welcomeMessage: e.target.value })}
-                  style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                />
-              </div>
-              <div>
-                <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
-                  Reglas de Negocio / Políticas
-                </label>
-                <textarea
-                  rows={4}
-                  value={settings.rules}
-                  onChange={(e) => setSettings({ ...settings, rules: e.target.value })}
-                  style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                />
-              </div>
-              
-              <div style={{ marginTop: "1rem" }}>
-                <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
-                  Objetivo Principal del Bot
-                </label>
-                <input
-                  type="text"
-                  value={settings.botObjective || ""}
-                  onChange={(e) => setSettings({ ...settings, botObjective: e.target.value })}
-                  placeholder="Ej: Vender la mayor cantidad de buñuelos posibles y ser muy amable."
-                  style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                />
-              </div>
-
-              <div style={{ marginTop: "1rem" }}>
-                <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>
-                  Personalización Avanzada de IA (Prompt Extra)
-                </label>
-                <textarea
-                  rows={4}
-                  value={settings.extraPrompt || ""}
-                  onChange={(e) => setSettings({ ...settings, extraPrompt: e.target.value })}
-                  placeholder="Instrucciones adicionales para inyectar en el prompt base de Gemini..."
-                  style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                />
-                <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.25rem" }}>Estas instrucciones se concatenan al final del prompt base y te permiten modificar el comportamiento y formato de la IA.</p>
-              </div>
-
-              <div style={{ display: "flex", gap: "1rem", marginTop: "1rem" }}>
-                <button type="submit" disabled={savingSettings} className="lp-btn lp-btn-primary">
-                  {savingSettings ? "Guardando..." : "Guardar Cambios"}
-                </button>
-                <button 
-                  type="button" 
-                  className="ghost"
-                  onClick={async () => {
-                    alert("Probando conexión con Gemini y OpenAI...");
-                    const res = await fetch("/api/panel/test-ai");
-                    const data = await res.json();
-                    if (data.ok) {
-                      alert("✅ API funcionando correctamente: " + JSON.stringify(data.results));
-                    } else {
-                      alert("❌ Error en la prueba de API: " + data.error);
-                    }
-                  }}
-                  style={{ padding: "0.75rem 1.5rem", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", color: "var(--text)", cursor: "pointer", fontWeight: 600 }}
-                >
-                  🧪 Probar APIs
-                </button>
-              </div>
-            </form>
-          </div>
-        )}
-      
-        {/* ========================================================= */}
-        {/* TAB 5: HORARIOS                                           */}
-        {/* ========================================================= */}
-        {tab === "hours" && (
-          <div style={{ maxWidth: 700, margin: "0 auto", background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: "2rem" }}>
-            <h2 style={{ fontSize: "1.25rem", marginBottom: "0.5rem" }}>🕒 Horario de Atención</h2>
-            <p style={{ color: "var(--text-muted)", fontSize: "0.9rem", marginBottom: "1.5rem" }}>
-              Define cuándo la IA debe atender. Fuera de este horario, se enviará el mensaje automático.
-            </p>
-            {saveSuccess && (
-              <div style={{ padding: "0.75rem", background: "rgba(37,211,102,0.2)", color: "var(--primary)", borderRadius: 6, marginBottom: "1rem" }}>
-                Configuración guardada exitosamente.
-              </div>
-            )}
-            <form onSubmit={handleSaveSettings} style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-              
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", background: "rgba(56,189,248,0.1)", padding: "1rem", borderRadius: "8px", border: "1px solid rgba(56,189,248,0.3)" }}>
-                <input
-                  type="checkbox"
-                  id="businessHoursEnabled"
-                  checked={settings.businessHoursEnabled === "true"}
-                  onChange={(e) => setSettings({ ...settings, businessHoursEnabled: e.target.checked ? "true" : "false" })}
-                  style={{ transform: "scale(1.2)" }}
-                />
-                <label htmlFor="businessHoursEnabled" style={{ fontWeight: 600, cursor: "pointer" }}>Habilitar Horario de Atención</label>
-              </div>
-
-              {settings.businessHoursEnabled === "true" && (
-                <>
-                  <div style={{ display: "flex", gap: "1rem" }}>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>Hora de Apertura</label>
-                      <input
-                        type="time"
-                        value={settings.businessHoursStart || "08:00"}
-                        onChange={(e) => setSettings({ ...settings, businessHoursStart: e.target.value })}
-                        style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                      />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>Hora de Cierre</label>
-                      <input
-                        type="time"
-                        value={settings.businessHoursEnd || "20:00"}
-                        onChange={(e) => setSettings({ ...settings, businessHoursEnd: e.target.value })}
-                        style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: "0.85rem", color: "var(--text-muted)", marginBottom: "0.35rem" }}>Mensaje de Cerrado (Fuera de Horario)</label>
-                    <textarea
-                      rows={3}
-                      value={settings.outOfHoursMessage || ""}
-                      onChange={(e) => setSettings({ ...settings, outOfHoursMessage: e.target.value })}
-                      placeholder="¡Hola! En este momento nos encontramos cerrados..."
-                      style={{ width: "100%", padding: "0.75rem", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--text)" }}
+                  <div className="p-3 bg-[#121b22] flex items-center gap-3 shrink-0 border-t border-[#1f2c34]">
+                    <button className="text-slate-400 hover:text-white p-2 rounded-lg transition">
+                      <i className="ph ph-paperclip text-[22px]"></i>
+                    </button>
+                    <input 
+                      type="text" 
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSendReply()}
+                      placeholder="Escribe un mensaje como asesor..." 
+                      className="flex-1 bg-[#202c33] text-[15px] text-white placeholder-slate-400 px-4 py-3 rounded-lg border-none focus:ring-0 transition"
                     />
+                    <button onClick={() => handleSendReply()} className="bg-[#202c33] hover:bg-[#2a3942] text-slate-300 p-3 rounded-lg transition flex items-center justify-center">
+                      <i className="ph-fill ph-paper-plane-tilt text-xl"></i>
+                    </button>
                   </div>
                 </>
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-slate-500">
+                  Selecciona un chat para comenzar
+                </div>
               )}
-              <button type="submit" disabled={savingSettings} className="lp-btn lp-btn-primary" style={{ alignSelf: "flex-start" }}>
-                {savingSettings ? "Guardando..." : "Guardar Cambios"}
-              </button>
-            </form>
-          </div>
-        )}
-      {/* ORDER DETAILS MODAL */}
-      {selectedOrderId && (
-        <div className="mobile-modal-overlay" onClick={() => setSelectedOrderId(null)}>
-          <div className="mobile-modal-content" onClick={(e) => e.stopPropagation()}>
-            {(() => {
-              const order = orders.find(o => o.id === selectedOrderId);
-              if (!order) return null;
-              return (
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-                    <h2 style={{ fontSize: "1.25rem", margin: 0 }}>Detalle de Pedido</h2>
-                    <button onClick={() => setSelectedOrderId(null)} style={{ background: "none", border: "none", fontSize: "1.5rem", cursor: "pointer", color: "var(--text)" }}>×</button>
-                  </div>
-                  
-                  <div style={{ marginBottom: "1rem" }}><strong>ID:</strong> {order.id}</div>
-                  <div style={{ marginBottom: "1rem" }}><strong>Cliente:</strong> {order.customerName || "Desconocido"}</div>
-                  <div style={{ marginBottom: "1rem" }}><strong>WhatsApp:</strong> {conversations.find(c => c.id === order.conversationId)?.phone || order.conversationId}</div>
-                  <div style={{ marginBottom: "1rem" }}><strong>Dirección:</strong> {order.deliveryAddress || "Pendiente"}</div>
-                  <div style={{ marginBottom: "1rem" }}><strong>Pago:</strong> {order.paymentMethod || "Pendiente"}</div>
-                  <div style={{ marginBottom: "1rem" }}><strong>Fecha:</strong> {formatDateDisplay(order.createdAt).date} {formatDateDisplay(order.createdAt).time}</div>
-                  <div style={{ marginBottom: "1rem" }}><strong>Total:</strong> <span style={{ color: "var(--primary)", fontWeight: "bold", fontSize: "1.2rem" }}>${order.total.toLocaleString("es-CO")}</span></div>
-                  
-                  <div style={{ marginTop: "1.5rem", background: "rgba(255,255,255,0.05)", padding: "1rem", borderRadius: "8px" }}>
-                    <h3 style={{ fontSize: "1rem", marginBottom: "0.5rem" }}>Resumen de Artículos</h3>
-                    <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: "0.9rem", color: "var(--text-muted)" }}>
-                      {order.itemsSummary || "Sin detalles adicionales"}
-                    </pre>
-                  </div>
+            </main>
 
-                  <div style={{ marginTop: "2rem", textAlign: "right" }}>
-                    <button 
-                      className="lp-btn" 
-                      onClick={async () => {
-                        if(confirm("¿Estás seguro de que quieres eliminar este pedido?")) {
-                          await fetch(`/api/panel/orders/${order.id}`, { method: 'DELETE' });
-                          setSelectedOrderId(null);
-                          loadOrders();
-                        }
-                      }}
-                      style={{ background: "#ef4444", color: "white", padding: "0.75rem 1.5rem" }}
-                    >
-                      🗑️ Eliminar Pedido
+            {/* 4. DETALLES (Right Sidebar) */}
+            {selectedConvId && (
+              <aside className="w-[280px] bg-[#121b22] border-l border-[#1f2c34] flex flex-col shrink-0 overflow-y-auto">
+                
+                <div className="p-5 border-b border-[#1f2c34]">
+                  <h3 className="font-bold text-white text-base mb-4">Detalles del Contacto</h3>
+                  <div className="mb-4">
+                    <h4 className="font-semibold text-slate-200 text-sm">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</h4>
+                    <p className="text-xs text-slate-400 mt-1">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</p>
+                  </div>
+                  
+                  <div className="flex flex-wrap gap-2">
+                    <span className="text-xs text-[#007aff] bg-[#007aff]/10 px-2 py-1 rounded border border-[#007aff]/20 font-medium">[Cliente Nuevo]</span>
+                    {conversations.find(c => c.id === selectedConvId)?.status === "human" && (
+                      <span className="text-xs text-[#f59e0b] bg-[#f59e0b]/10 px-2 py-1 rounded border border-[#f59e0b]/20 font-medium">[Prioridad]</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-5 border-b border-[#1f2c34]">
+                  <h3 className="font-bold text-white text-base mb-3">Historial del flujo</h3>
+                  <p className="text-sm text-slate-300 leading-relaxed">
+                    Flujo actual: <span className="text-slate-400">Menú Principal</span>
+                    {conversations.find(c => c.id === selectedConvId)?.status === "human" && (
+                      <span className="text-slate-400"> (Interrumpido)</span>
+                    )}
+                  </p>
+                </div>
+
+                <div className="p-5">
+                  <h3 className="font-bold text-white text-base mb-4">Acciones Rápidas</h3>
+                  <div className="space-y-3">
+                    <button className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 text-sm py-2 rounded-lg border border-[#2a3942] transition">
+                      <i className="ph-fill ph-user"></i> Asignar a Asesor
+                    </button>
+                    <button className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 text-sm py-2 rounded-lg border border-[#2a3942] transition">
+                      <i className="ph-fill ph-envelope"></i> Enviar Plantilla HSM
+                    </button>
+                    <button onClick={() => handleToggleBot(selectedConvId, "bot")} className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 text-sm py-2 rounded-lg border border-[#2a3942] transition">
+                      <i className="ph-fill ph-arrows-clockwise"></i> Reiniciar Bot
                     </button>
                   </div>
                 </div>
-              );
-            })()}
-          </div>
-        </div>
-      )}
 
-    </div>
-    </div>
+              </aside>
+            )}
+          </>
+        )}
+
+        {/* CONTENEDOR PARA OTRAS TABS */}
+        {tab !== "chats" && (
+          <main className="flex-1 overflow-y-auto p-8 bg-[#0b141a]">
+            {tab === "orders" && <div className="text-white p-4">Pedidos - En desarrollo</div>}
+            {tab === "catalog" && <div className="text-white p-4">Catálogo - En desarrollo</div>}
+            {tab === "settings" && <div className="text-white p-4">Configuración - En desarrollo</div>}
+            {tab === "hours" && <div className="text-white p-4">Horarios - En desarrollo</div>}
+            {tab === ("qr" as any) && <div className="text-white p-4">QR / Vincular - En desarrollo</div>}
+          </main>
+        )}
+
+      </div>
+    </>
   );
+
 }
-
-
-
-
-
-
-
-
-
-
-
