@@ -1,68 +1,70 @@
 import { NextResponse } from 'next/server';
+import { getOrgSettings } from '@/lib/store';
+import { verifyAuth } from '@/lib/auth';
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET() {
+  if (!verifyAuth()) {
+    return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+  }
+
   const results: any = {};
   
-  // Test Gemini
   if (process.env.GEMINI_API_KEY) {
     try {
       const { GoogleGenAI } = await import("@google/genai");
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
-      const candidateModels = [];
-      if (process.env.GEMINI_MODEL) candidateModels.push(process.env.GEMINI_MODEL);
-      candidateModels.push("gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-exp-1206");
+      const candidateModels = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+      if (process.env.GEMINI_MODEL) candidateModels.unshift(process.env.GEMINI_MODEL.trim());
       
-      let success = false;
-      let lastErr = "";
-      let successfulModel = "";
-
-      for (const model of candidateModels) {
-        try {
-          const response = await ai.models.generateContent({
-            model,
-            contents: "Responde únicamente con la palabra 'OK'",
-          });
-          if (response.text) {
-            success = true;
-            successfulModel = model;
-            break;
-          }
-        } catch (err: any) {
-          lastErr = err.message;
-        }
-      }
-
+      // Run in parallel to avoid Vercel 10s timeout on free tier!
+      const promises = candidateModels.map(model => 
+        ai.models.generateContent({
+          model,
+          contents: "Responde únicamente con la palabra 'OK'",
+        }).then(res => ({ model, ok: true, text: res.text }))
+          .catch(err => ({ model, ok: false, error: err.message }))
+      );
+      
+      const outcomes = await Promise.all(promises);
+      const success = outcomes.find(o => o.ok);
+      
       if (success) {
-        results.gemini = `OK (using ${successfulModel})`;
+        results.gemini = `OK (usando ${success.model})`;
       } else {
-        results.gemini = `Error: ${lastErr}`;
+        results.gemini = `Error: ${outcomes[0].error}`;
       }
+      
+      results.debug = outcomes; // Send back debug info
     } catch (e: any) {
       results.gemini = "Error fatal: " + e.message;
     }
   } else {
-    results.gemini = "Not configured";
+    results.gemini = "No configurado";
   }
 
-  // Test OpenAI
   if (process.env.OPENAI_API_KEY) {
     try {
       const { OpenAI } = await import("openai");
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
       const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
         messages: [{ role: "user", content: "Responde únicamente con la palabra 'OK'" }],
-        max_tokens: 5
+        max_tokens: 10,
       });
-      results.openai = response.choices[0]?.message?.content ? "OK" : "Empty response";
+      if (response.choices[0].message.content) {
+        results.openai = "OK";
+      } else {
+        results.openai = "Error desconocido";
+      }
     } catch (e: any) {
       results.openai = "Error: " + e.message;
     }
   } else {
-    results.openai = "Not configured";
+    results.openai = "No configurado";
   }
 
   return NextResponse.json({ ok: true, results });
