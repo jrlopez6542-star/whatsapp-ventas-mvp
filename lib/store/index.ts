@@ -51,6 +51,9 @@ export interface Order {
   status: OrderStatus;
   total: number;
   items?: OrderItem[];
+  invoiceNumber?: string;
+  invoiceId?: string;
+  invoiceUrl?: string;
   createdAt: number;
 }
 
@@ -246,6 +249,9 @@ class MemoryStore {
       changeAmount?: string;
       deliveryNotes?: string;
       status?: OrderStatus;
+      invoiceNumber?: string;
+      invoiceId?: string;
+      invoiceUrl?: string;
     }
   ): Order {
     const order: Order = {
@@ -261,6 +267,9 @@ class MemoryStore {
       status: details?.status || "confirmed",
       total,
       items,
+      invoiceNumber: details?.invoiceNumber,
+      invoiceId: details?.invoiceId,
+      invoiceUrl: details?.invoiceUrl,
       createdAt: Date.now(),
     };
     this.orders.set(order.id, order);
@@ -600,6 +609,9 @@ export async function createOrder(
     changeAmount?: string;
     deliveryNotes?: string;
     status?: OrderStatus;
+    invoiceNumber?: string;
+    invoiceId?: string;
+    invoiceUrl?: string;
   }
 ): Promise<Order> {
   const memOrder = getMemoryStore().createOrder(conversationId, items, total, details);
@@ -608,8 +620,8 @@ export async function createOrder(
       await ensureTursoReady();
       const client = getTursoClient();
       await client.execute({
-        sql: `INSERT INTO orders (id, conversation_id, customer_name, delivery_address, payment_method, items_summary, delivery_fee, change_amount, delivery_notes, status, total, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sql: `INSERT INTO orders (id, conversation_id, customer_name, delivery_address, payment_method, items_summary, delivery_fee, change_amount, delivery_notes, status, total, created_at, invoice_number, invoice_id, invoice_url)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           memOrder.id,
           conversationId,
@@ -623,6 +635,9 @@ export async function createOrder(
           memOrder.status,
           total,
           memOrder.createdAt,
+          details?.invoiceNumber || null,
+          details?.invoiceId || null,
+          details?.invoiceUrl || null,
         ],
       });
       try {
@@ -695,6 +710,9 @@ export async function updateOrderStatus(id: string, status: OrderStatus): Promis
           deliveryNotes: r.delivery_notes ? String(r.delivery_notes) : undefined,
           status: (r.status as OrderStatus) || status,
           total: Number(r.total ?? r.amount ?? 0),
+          invoiceNumber: r.invoice_number ? String(r.invoice_number) : undefined,
+          invoiceId: r.invoice_id ? String(r.invoice_id) : undefined,
+          invoiceUrl: r.invoice_url ? String(r.invoice_url) : undefined,
           createdAt: parseTimestamp(r.created_at),
         };
       }
@@ -704,6 +722,34 @@ export async function updateOrderStatus(id: string, status: OrderStatus): Promis
   }
 
   return memOrder || null;
+}
+
+export async function updateOrderInvoice(
+  id: string,
+  invoiceNumber: string,
+  invoiceId?: string,
+  invoiceUrl?: string
+): Promise<void> {
+  const mem = getMemoryStore();
+  const memOrder = mem.orders.get(id);
+  if (memOrder) {
+    memOrder.invoiceNumber = invoiceNumber;
+    memOrder.invoiceId = invoiceId;
+    memOrder.invoiceUrl = invoiceUrl;
+  }
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: "UPDATE orders SET invoice_number = ?, invoice_id = ?, invoice_url = ? WHERE id = ?",
+        args: [invoiceNumber, invoiceId || null, invoiceUrl || null, id],
+      });
+    } catch (err) {
+      console.error("[store] updateOrderInvoice error:", err);
+    }
+  }
 }
 
 export async function getOrders(): Promise<Order[]> {
@@ -728,6 +774,9 @@ export async function getOrders(): Promise<Order[]> {
       deliveryNotes: r.delivery_notes ? String(r.delivery_notes) : undefined,
       status: (r.status as Order["status"]) || "confirmed",
       total: Number(r.total ?? r.amount ?? 0),
+      invoiceNumber: r.invoice_number ? String(r.invoice_number) : undefined,
+      invoiceId: r.invoice_id ? String(r.invoice_id) : undefined,
+      invoiceUrl: r.invoice_url ? String(r.invoice_url) : undefined,
       createdAt: parseTimestamp(r.created_at),
     }));
   } catch (err) {

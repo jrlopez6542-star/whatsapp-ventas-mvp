@@ -7,9 +7,11 @@ import {
   getProducts,
   setConversationStatus,
   setConversationCustomerName,
+  updateOrderInvoice,
   type Message,
   type Product,
 } from "@/lib/store";
+import { createInvoiceInContabilidad } from "@/lib/contabilidad";
 
 export interface SalesMessageResult {
   reply: string;
@@ -463,6 +465,44 @@ async function tryExtractAndRegisterOrder(
     await setConversationCustomerName(conversationKey, customerName).catch(() => {});
   }
 
+  // Generar factura oficial automáticamente en Buñuelandia Contabilidad (Opción 1)
+  try {
+    const invRes = await createInvoiceInContabilidad({
+      orderId: order.id,
+      customerName,
+      phone: conversationKey.replace(/^whatsapp:/i, ""),
+      deliveryAddress: address,
+      deliveryNotes: detectedNotes,
+      paymentMethod,
+      changeAmount: detectedChange,
+      items: orderItems.map((it) => {
+        const prod = products.find((p) => p.sku === it.sku);
+        return {
+          sku: it.sku,
+          name: prod?.name || it.sku,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+        };
+      }),
+      deliveryFee: detectedFee,
+      total: detectedTotal,
+    });
+
+    if (invRes.ok && invRes.invoiceNumber) {
+      await updateOrderInvoice(
+        order.id,
+        invRes.invoiceNumber,
+        invRes.invoiceId,
+        invRes.invoiceUrl
+      );
+      order.invoiceNumber = invRes.invoiceNumber;
+      order.invoiceId = invRes.invoiceId;
+      order.invoiceUrl = invRes.invoiceUrl;
+    }
+  } catch (invErr) {
+    console.error("[sales-agent] Error generando factura automática:", invErr);
+  }
+
   return order;
 }
 
@@ -772,8 +812,7 @@ export async function handleSalesMessage(
             }
           }
 
-          const reply = response.text?.trim() || settings.welcomeMessage;
-          await appendMessage(conversationKey, "assistant", reply);
+          let reply = response.text?.trim() || settings.welcomeMessage;
 
           const maybeOrder = await tryExtractAndRegisterOrder(
             conversationKey,
@@ -782,6 +821,12 @@ export async function handleSalesMessage(
             products,
             pushName
           );
+
+          if (maybeOrder?.invoiceNumber) {
+            reply = `${reply}\n\n🧾 *Factura Oficial Registrada:* #${maybeOrder.invoiceNumber}`;
+          }
+
+          await appendMessage(conversationKey, "assistant", reply);
 
           const shouldSendQr = Boolean(
             settings.transferQrImage && shouldSendTransferQr(text, reply)
@@ -818,8 +863,7 @@ export async function handleSalesMessage(
         max_tokens: 1500,
       });
 
-      const reply = res.choices[0]?.message?.content?.trim() || settings.welcomeMessage;
-      await appendMessage(conversationKey, "assistant", reply);
+      let reply = res.choices[0]?.message?.content?.trim() || settings.welcomeMessage;
 
       const maybeOrder = await tryExtractAndRegisterOrder(
         conversationKey,
@@ -828,6 +872,12 @@ export async function handleSalesMessage(
         products,
         pushName
       );
+
+      if (maybeOrder?.invoiceNumber) {
+        reply = `${reply}\n\n🧾 *Factura Oficial Registrada:* #${maybeOrder.invoiceNumber}`;
+      }
+
+      await appendMessage(conversationKey, "assistant", reply);
 
       const shouldSendQr = Boolean(
         settings.transferQrImage && shouldSendTransferQr(text, reply)
@@ -914,9 +964,39 @@ export async function handleSalesMessage(
       await setConversationCustomerName(conversationKey, clientName).catch(() => {});
     }
 
+    let invoiceNotice = "";
+    try {
+      const invRes = await createInvoiceInContabilidad({
+        orderId: order.id,
+        customerName: clientName,
+        phone: conversationKey.replace(/^whatsapp:/i, ""),
+        deliveryAddress: finalAddress,
+        paymentMethod: finalPayment,
+        items: finalItems.map((it) => ({
+          sku: it.sku,
+          name: it.name,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+        })),
+        total: finalTotal,
+      });
+      if (invRes.ok && invRes.invoiceNumber) {
+        await updateOrderInvoice(
+          order.id,
+          invRes.invoiceNumber,
+          invRes.invoiceId,
+          invRes.invoiceUrl
+        );
+        order.invoiceNumber = invRes.invoiceNumber;
+        invoiceNotice = `\n🧾 *Factura Oficial Registrada:* #${invRes.invoiceNumber}`;
+      }
+    } catch (invErr) {
+      console.warn("[sales-agent] Error generando factura en fallback:", invErr);
+    }
+
     const itemsListText = finalItems.map((it) => `- ${it.name} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
 
-    reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
+    reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*${invoiceNotice}\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
     mode = "order_created";
   } else if (extractedItems.length > 0) {
     const chosenProduct = extractedItems[0];

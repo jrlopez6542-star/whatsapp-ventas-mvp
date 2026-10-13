@@ -57,6 +57,9 @@ interface Order {
   deliveryNotes?: string;
   status: string;
   total: number;
+  invoiceNumber?: string;
+  invoiceId?: string;
+  invoiceUrl?: string;
   createdAt: number;
 }
 
@@ -1083,9 +1086,10 @@ export default function PanelDashboard() {
                             <option value="">▼ Seleccionar pedido para ver detalles ({clientOrders.length})...</option>
                             {clientOrders.map((ord) => {
                               const statusCfg = STATUS_CONFIG[ord.status] || STATUS_CONFIG.pending;
+                              const invLabel = ord.invoiceNumber ? ` • ${ord.invoiceNumber}` : "";
                               return (
                                 <option key={ord.id} value={ord.id}>
-                                  #{ord.id.slice(0, 8)} • ${ord.total.toLocaleString("es-CO")} • {statusCfg.label}
+                                  #{ord.id.slice(0, 8)}{invLabel} • ${ord.total.toLocaleString("es-CO")} • {statusCfg.label}
                                 </option>
                               );
                             })}
@@ -1104,11 +1108,27 @@ export default function PanelDashboard() {
                         return (
                           <div className="bg-[#162128] border border-[#2a3942] rounded-lg overflow-hidden shadow-sm transition">
                             <div className="p-3 bg-[#121b22] border-b border-[#2a3942]/60 flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2 min-w-0">
+                              <div className="flex items-center gap-2 min-w-0 flex-wrap">
                                 <span className="font-mono font-bold text-white text-xs">#{ord.id.slice(0, 8)}</span>
                                 <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${statusCfg.bg} ${statusCfg.text} ${statusCfg.border}`}>
                                   {statusCfg.label}
                                 </span>
+                                {ord.invoiceNumber && (
+                                  <a
+                                    href={
+                                      ord.invoiceUrl ||
+                                      `https://contabilidad-app-fawn.vercel.app/invoices/${ord.invoiceId || ""}`
+                                    }
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition cursor-pointer"
+                                    title="Abrir factura oficial en Buñuelandia Contabilidad"
+                                  >
+                                    <i className="ph-fill ph-receipt"></i>
+                                    <span>{ord.invoiceNumber}</span>
+                                    <i className="ph ph-arrow-square-out text-[9px]"></i>
+                                  </a>
+                                )}
                               </div>
                               <span className="text-emerald-400 font-bold font-mono text-xs">
                                 ${ord.total.toLocaleString("es-CO")}

@@ -15,6 +15,9 @@ interface OrderItemView {
   deliveryNotes?: string;
   status: string;
   total: number;
+  invoiceNumber?: string;
+  invoiceId?: string;
+  invoiceUrl?: string;
   createdAt: number;
 }
 
@@ -179,7 +182,26 @@ export function OrdersView({
                       className="hover:bg-[#162128] transition cursor-pointer"
                       onClick={() => setSelectedOrder(o)}
                     >
-                      <td className="p-4 font-mono font-bold text-[#007aff]">#{o.id.slice(0, 8)}</td>
+                      <td className="p-4">
+                        <div className="font-mono font-bold text-[#007aff]">#{o.id.slice(0, 8)}</div>
+                        {o.invoiceNumber && (
+                          <a
+                            href={
+                              o.invoiceUrl ||
+                              `https://contabilidad-app-fawn.vercel.app/invoices/${o.invoiceId || ""}`
+                            }
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition cursor-pointer"
+                            title="Abrir factura oficial en Buñuelandia Contabilidad"
+                          >
+                            <i className="ph-fill ph-receipt text-xs"></i>
+                            <span>Factura {o.invoiceNumber}</span>
+                            <i className="ph ph-arrow-square-out text-[10px]"></i>
+                          </a>
+                        )}
+                      </td>
                       <td className="p-4">
                         <div className="font-medium text-white">{o.customerName || "Sin Nombre"}</div>
                         <div className="text-xs text-slate-500">
@@ -321,6 +343,23 @@ export function OrdersView({
                 <div>
                   <div className="text-xs text-slate-500 mb-1">ID DEL PEDIDO</div>
                   <div className="font-mono text-[#007aff] font-bold">#{selectedOrder.id}</div>
+                  {selectedOrder.invoiceNumber && (
+                    <div className="mt-2">
+                      <a
+                        href={
+                          selectedOrder.invoiceUrl ||
+                          `https://contabilidad-app-fawn.vercel.app/invoices/${selectedOrder.invoiceId || ""}`
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition cursor-pointer"
+                      >
+                        <i className="ph-fill ph-receipt text-sm"></i>
+                        <span>Factura Oficial #{selectedOrder.invoiceNumber}</span>
+                        <i className="ph ph-arrow-square-out text-xs"></i>
+                      </a>
+                    </div>
+                  )}
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-slate-500 mb-1">FECHA Y HORA</div>
