@@ -567,6 +567,51 @@ export async function handleSalesMessage(
     }
   }
 
+  const etaTime = settings.estimatedDeliveryTime || "30 a 45 minutos";
+
+  // --- SI EL CLIENTE YA TIENE UN PEDIDO ACTIVO (En preparación, En camino o Pendiente) ---
+  const hasActiveOrder =
+    latestOrder &&
+    (latestOrder.status === "pending" ||
+     latestOrder.status === "confirmed" ||
+     latestOrder.status === "preparing" ||
+     latestOrder.status === "delivering");
+
+  const isAskingStatus =
+    lower.includes("estado") ||
+    lower.includes("dónde va") ||
+    lower.includes("donde va") ||
+    lower.includes("cuándo llega") ||
+    lower.includes("cuando llega") ||
+    lower.includes("cuanto demora") ||
+    lower.includes("cuánto demora") ||
+    lower.includes("demora") ||
+    lower.includes("mi pedido");
+
+  // Si ya tiene un pedido activo y NO está pidiendo productos nuevos explícitamente:
+  const isOrderingNewItems =
+    lower.includes("caja") ||
+    lower.includes("buñuelo") ||
+    lower.includes("gaseosa") ||
+    lower.includes("jugo") ||
+    lower.includes("café") ||
+    lower.includes("cafe");
+
+  if (hasActiveOrder && !isOrderingNewItems) {
+    const statusText =
+      latestOrder.status === "delivering"
+        ? "en camino con el domiciliario 🛵"
+        : latestOrder.status === "preparing"
+        ? "en preparación en cocina 👨‍🍳🔥"
+        : latestOrder.status === "confirmed"
+        ? "confirmado y en fila de preparación ✅"
+        : "registrado en nuestro sistema ⏳";
+
+    const reply = `¡Hola! 👋 Te recordamos que tu pedido *#${latestOrder.id.slice(0, 8)}* ya se encuentra *${statusText}*.\n\n🛵 Tiempo estimado de entrega: ${etaTime}.\n\nSi necesitas algo adicional, escribe *asesor*. Si deseas hacer otro pedido diferente, escribe *nuevo pedido*.`;
+    await appendMessage(conversationKey, "assistant", reply);
+    return { reply, mode: "keyword" };
+  }
+
   // Filtrar el historial si ya existe un pedido previo del cliente,
   // para que NINGÚN producto o dirección de pedidos anteriores se mezcle con el nuevo chat
   const rawPrevious = await getMessages(conversationKey);
@@ -584,7 +629,6 @@ export async function handleSalesMessage(
   const brebKey = settings.brebKey || "3228964947";
   const deliveryFee = parseInt(settings.deliveryFee || "4000", 10) || 4000;
   const freeThreshold = parseInt(settings.freeDeliveryThreshold || "40000", 10) || 40000;
-  const etaTime = settings.estimatedDeliveryTime || "30 a 45 minutos";
 
   const upsellDrinks = settings.upsellDrinksEnabled !== "false";
 
@@ -832,8 +876,8 @@ export async function handleSalesMessage(
       .map((p) => `• *${p.name}*\n  Precio: ${formatCop(p.price)} - _${p.description || "Delicioso y crujiente"}_`)
       .join("\n\n");
     reply = `🧀 *Menú Oficial de BUÑUELANDIA:*\n\n${items}\n\nPara pedir, indícanos qué productos deseas (ejemplo: *1 CAJA x8 Surtida y 2 Buñuelos de Mora*).`;
-  } else if (extractedItems.length > 0 && foundAddress && foundPayment) {
-    // SÓLO cuando el cliente eligió productos reales (extractedItems.length > 0), dio dirección Y eligió medio de pago
+  } else if (!hasActiveOrder && extractedItems.length > 0 && foundAddress && foundPayment) {
+    // SÓLO cuando el cliente eligió productos reales (extractedItems.length > 0), dio dirección Y eligió medio de pago, y no tiene ya una orden activa
     const finalItems = extractedItems;
     const finalTotal = extractedTotal;
     const finalPayment = foundPayment;

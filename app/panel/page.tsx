@@ -59,6 +59,54 @@ interface Order {
   createdAt: number;
 }
 
+const STATUS_CONFIG: Record<
+  string,
+  { label: string; bg: string; text: string; border: string; icon: string }
+> = {
+  pending: {
+    label: "Pendiente",
+    bg: "bg-amber-500/10",
+    text: "text-amber-400",
+    border: "border-amber-500/20",
+    icon: "ph-clock",
+  },
+  confirmed: {
+    label: "Confirmado",
+    bg: "bg-blue-500/10",
+    text: "text-blue-400",
+    border: "border-blue-500/20",
+    icon: "ph-check",
+  },
+  preparing: {
+    label: "En Preparación",
+    bg: "bg-orange-500/10",
+    text: "text-orange-400",
+    border: "border-orange-500/20",
+    icon: "ph-fire",
+  },
+  delivering: {
+    label: "En Camino",
+    bg: "bg-indigo-500/10",
+    text: "text-indigo-400",
+    border: "border-indigo-500/20",
+    icon: "ph-moped",
+  },
+  delivered: {
+    label: "Entregado",
+    bg: "bg-emerald-500/10",
+    text: "text-emerald-400",
+    border: "border-emerald-500/20",
+    icon: "ph-check-circle",
+  },
+  cancelled: {
+    label: "Cancelado",
+    bg: "bg-red-500/10",
+    text: "text-red-400",
+    border: "border-red-500/20",
+    icon: "ph-x-circle",
+  },
+};
+
 interface OrgSettings {
   name: string;
   tone: string;
@@ -456,6 +504,19 @@ export default function PanelDashboard() {
     } catch {}
   };
 
+  const handleUpdateOrderStatus = async (orderId: string, newStatus: string) => {
+    try {
+      const res = await fetch(`/api/panel/orders/${encodeURIComponent(orderId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus, notifyCustomer: true }),
+      });
+      if (res.ok) {
+        await loadOrders();
+      }
+    } catch {}
+  };
+
   const handleSendReply = async (e?: any) => {
     e.preventDefault();
     if (!selectedConvId || !replyText.trim() || sending) return;
@@ -538,6 +599,13 @@ export default function PanelDashboard() {
   });
 
   const selectedConv = conversations.find((c) => c.id === selectedConvId);
+  const selectedConvDigits = selectedConvId ? selectedConvId.replace(/\D/g, "").slice(-10) : "";
+  const clientOrders = orders.filter((o) => {
+    if (!selectedConvId) return false;
+    if (o.conversationId === selectedConvId) return true;
+    if (selectedConvDigits && o.conversationId.replace(/\D/g, "").includes(selectedConvDigits)) return true;
+    return false;
+  });
 
     return (
     <>
@@ -879,6 +947,71 @@ export default function PanelDashboard() {
                       <span className="text-xs text-[#f59e0b] bg-[#f59e0b]/10 px-2 py-1 rounded border border-[#f59e0b]/20 font-medium">[Prioridad]</span>
                     )}
                   </div>
+                </div>
+
+                {/* PEDIDOS DEL CLIENTE CON SELECTOR DE ESTADOS */}
+                <div className="p-5 border-b border-[#1f2c34]">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-bold text-white text-base flex items-center gap-2">
+                      <i className="ph-fill ph-package text-[#007aff]"></i>
+                      Pedidos ({clientOrders.length})
+                    </h3>
+                    {clientOrders.length > 0 && (
+                      <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 font-medium">
+                        Notifica por WhatsApp
+                      </span>
+                    )}
+                  </div>
+
+                  {clientOrders.length === 0 ? (
+                    <p className="text-xs text-slate-400 italic">No hay pedidos registrados para este cliente.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {clientOrders.map((ord) => {
+                        const statusCfg = STATUS_CONFIG[ord.status] || STATUS_CONFIG.pending;
+                        return (
+                          <div key={ord.id} className="bg-[#162128] border border-[#2a3942] rounded-lg p-3 text-xs space-y-2 shadow-sm">
+                            <div className="flex items-center justify-between font-mono">
+                              <span className="font-bold text-white">#{ord.id.slice(0, 8)}</span>
+                              <span className="text-emerald-400 font-bold">${ord.total.toLocaleString("es-CO")}</span>
+                            </div>
+
+                            {ord.itemsSummary && (
+                              <p className="text-slate-300 text-[11px] leading-snug font-sans">
+                                {ord.itemsSummary}
+                              </p>
+                            )}
+
+                            {ord.deliveryAddress && (
+                              <div className="text-[11px] text-slate-400 flex items-start gap-1">
+                                <i className="ph ph-map-pin text-slate-500 shrink-0 mt-0.5"></i>
+                                <span className="truncate">{ord.deliveryAddress}</span>
+                              </div>
+                            )}
+
+                            {/* SELECTOR DESPLEGABLE DE ESTADO */}
+                            <div className="pt-2 border-t border-[#2a3942]/60">
+                              <label className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">
+                                Estado del Pedido:
+                              </label>
+                              <select
+                                value={ord.status}
+                                onChange={(e) => handleUpdateOrderStatus(ord.id, e.target.value)}
+                                className={`w-full text-xs font-semibold px-2 py-1.5 rounded border ${statusCfg.bg} ${statusCfg.text} ${statusCfg.border} bg-[#121b22] focus:outline-none cursor-pointer`}
+                              >
+                                <option value="pending">⏳ Pendiente</option>
+                                <option value="confirmed">✅ Confirmado</option>
+                                <option value="preparing">👨‍🍳 En Preparación</option>
+                                <option value="delivering">🛵 En Camino</option>
+                                <option value="delivered">🎉 Entregado</option>
+                                <option value="cancelled">❌ Cancelado</option>
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div className="p-5 border-b border-[#1f2c34]">
