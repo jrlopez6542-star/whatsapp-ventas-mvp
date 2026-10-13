@@ -2,6 +2,7 @@ import {
   appendMessage,
   createOrder,
   getMessages,
+  getOrders,
   getOrgSettings,
   getProducts,
   setConversationStatus,
@@ -72,17 +73,63 @@ function extractPaymentMethod(text: string): string | null {
 
 // Verifica si el cliente o la respuesta hace referencia a pagar por Nequi o Bre-B (o QR/transferencia)
 function shouldSendTransferQr(userText: string, assistantReply: string): boolean {
-  const combined = `${userText} ${assistantReply}`.toLowerCase();
-  return (
-    combined.includes("nequi") ||
-    combined.includes("breb") ||
-    combined.includes("bre-b") ||
-    combined.includes("bre b") ||
-    combined.includes("transferencia") ||
-    combined.includes("código qr") ||
-    combined.includes("codigo qr") ||
-    /\bqr\b/i.test(combined)
-  );
+  const u = (userText || "").toLowerCase().trim();
+  const a = (assistantReply || "").toLowerCase();
+
+  // Si el usuario eligió efectivo, JAMÁS enviar QR
+  if (
+    u.includes("efectivo") ||
+    u.includes("contra entrega") ||
+    u.includes("contraentrega") ||
+    u === "3" ||
+    u.startsWith("3.") ||
+    u.startsWith("3 ")
+  ) {
+    return false;
+  }
+
+  // 1. El usuario seleccionó explícitamente Nequi, Bre-B o QR
+  const userExplicitlySelectedQr =
+    u.includes("nequi") ||
+    u.includes("bre-b") ||
+    u.includes("breb") ||
+    u.includes("bre b") ||
+    u.includes("transferencia") ||
+    u.includes("código qr") ||
+    u.includes("codigo qr") ||
+    /\bqr\b/i.test(u) ||
+    u === "1" ||
+    u === "2" ||
+    u.startsWith("1.") ||
+    u.startsWith("2.") ||
+    u.startsWith("1 ") ||
+    u.startsWith("2 ");
+
+  // 2. El asistente indica explícitamente que adjunta o envía la imagen del QR oficial
+  const assistantSendingQr =
+    a.includes("código qr oficial") ||
+    a.includes("codigo qr oficial") ||
+    a.includes("te envío el código qr") ||
+    a.includes("te envio el codigo qr") ||
+    a.includes("te adjunto el qr") ||
+    a.includes("aquí tienes el código qr") ||
+    a.includes("aqui tienes el codigo qr") ||
+    a.includes("aquí te dejamos el qr") ||
+    a.includes("escanea el código qr") ||
+    a.includes("escanea este qr") ||
+    a.includes("envío la imagen del qr");
+
+  // El QR se envía si el asistente confirmó el envío del QR,
+  // O si el usuario eligió Nequi/Bre-B y el asistente está gestionando el pago de Nequi/Bre-B
+  if (assistantSendingQr) return true;
+  if (
+    userExplicitlySelectedQr &&
+    (a.includes("nequi") || a.includes("bre-b") || a.includes("breb") || a.includes("llave"))
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 // Extrae productos y cantidades mencionadas
@@ -465,7 +512,52 @@ export async function handleSalesMessage(
     return { reply, mode: "human_escalated" };
   }
 
-  const previous = await getMessages(conversationKey);
+  // --- VERIFICACIÓN DE PEDIDO PREVIO Y CORTESÍA / AGRADECIMIENTO ---
+  const allOrders = await getOrders().catch(() => []);
+  const customerDigits = conversationKey.replace(/\D/g, "").slice(-10);
+  const userOrders = allOrders.filter((o) => {
+    if (o.conversationId === conversationKey) return true;
+    if (customerDigits && o.conversationId.replace(/\D/g, "").includes(customerDigits)) return true;
+    return false;
+  });
+  const latestOrder = userOrders[0]; // La orden más reciente del cliente
+
+  const isGratitudeOrClosing =
+    /^(?:muchas\s+)?gracias(?:[!\s.]*)$/i.test(text) ||
+    /^(?:mil\s+)?gracias(?:[!\s.]*)$/i.test(text) ||
+    /^(?:muchas\s+)?gracias\s+(?:a\s+ustedes|por\s+todo|amigo|amiga|vecino|buñuelandia|muy\s+amable)(?:[!\s.]*)$/i.test(text) ||
+    /^(?:muy\s+amable|perfecto|excelente|s[uú]per|listo|ok|vale|buen\s+provecho|feliz\s+d[ií]a|hasta\s+luego|chao)(?:[!\s.]*)$/i.test(text);
+
+  if (latestOrder && isGratitudeOrClosing) {
+    if (latestOrder.status === "delivered") {
+      const reply =
+        "¡Con muchísimo gusto! 🎉 Qué alegría atenderte. Esperamos que disfrutes un montón tus buñuelos calienticos y crujientes. ¡Aquí siempre a la orden en BUÑUELANDIA! 🥟❤️ ¡Que tengas un excelente día!";
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "keyword" };
+    }
+    if (latestOrder.status === "delivering") {
+      const reply =
+        "¡Con mucho gusto! 🛵 Tu domiciliario va en camino con tus buñuelos calienticos. ¡Atento a la puerta o portería! Buen provecho. 🥟✨";
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "keyword" };
+    }
+    if (latestOrder.status === "preparing") {
+      const reply =
+        "¡Con todo el gusto! 👨‍🍳 En cocina estamos dorando tus buñuelos para que te lleguen frescos, crujientes y calienticos. ¡Te avisamos apenas salgan! 🥟🔥";
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "keyword" };
+    }
+  }
+
+  // Filtrar el historial si el pedido anterior ya fue entregado o cancelado,
+  // para que la IA no intente cobrarle de nuevo los productos del pedido anterior
+  const rawPrevious = await getMessages(conversationKey);
+  let previous = rawPrevious;
+  if (latestOrder && (latestOrder.status === "delivered" || latestOrder.status === "cancelled")) {
+    const orderTime = latestOrder.createdAt || 0;
+    const sinceOrder = rawPrevious.filter((m) => m.createdAt > orderTime);
+    previous = sinceOrder;
+  }
   const catalogText = products
     .map((p) => `- ${p.name}: ${formatCop(p.price)} (${p.description || "Deliciosos y frescos"})`)
     .join("\n");
@@ -560,11 +652,10 @@ export async function handleSalesMessage(
   if (process.env.GEMINI_API_KEY?.trim()) {
     const rawEnvModel = process.env.GEMINI_MODEL?.trim();
     const candidateGeminiModels = [
-      rawEnvModel === "gemini-2.5-flash" ? "gemini-3.5-flash-lite" : rawEnvModel,
-      "gemini-3.5-flash-lite",
-      "gemini-3.8-flash",
-      "gemini-3-flash-preview",
+      rawEnvModel,
       "gemini-2.5-flash",
+      "gemini-2.0-flash",
+      "gemini-1.5-flash",
     ].filter(Boolean) as string[];
 
     const uniqueModels = Array.from(new Set(candidateGeminiModels));
