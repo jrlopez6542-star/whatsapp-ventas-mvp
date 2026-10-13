@@ -52,8 +52,8 @@ export async function createInvoiceInContabilidad(
         "x-bot-api-key": BOT_INVOICE_SECRET,
       },
       body: JSON.stringify(params),
-      // Timeout prudente de 8 segundos para no bloquear la respuesta de WhatsApp
-      signal: AbortSignal.timeout(8000),
+      // Timeout de 15 segundos para dar margen al registro y cálculo
+      signal: AbortSignal.timeout(15000),
     });
 
     if (!res.ok) {
