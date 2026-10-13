@@ -431,12 +431,16 @@ export default function PanelDashboard() {
 
   const handleDeleteConversation = async (convId: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    if (!confirm("¿Deseas eliminar esta conversación del panel?")) return;
+    if (!confirm("¿Deseas eliminar esta conversación? Se borrará del panel y se sincronizará la eliminación en la app de WhatsApp.")) return;
     try {
-      await fetch(`/api/panel/conversations/${encodeURIComponent(convId)}`, { cache: "no-store",
+      await fetch(`/api/panel/conversations/${encodeURIComponent(convId)}`, {
+        cache: "no-store",
         method: "DELETE",
       });
-      if (selectedConvId === convId) setSelectedConvId(null);
+      if (selectedConvId === convId) {
+        setSelectedConvId(null);
+        setMessages([]);
+      }
       loadConversations();
     } catch {}
   };
@@ -768,35 +772,10 @@ export default function PanelDashboard() {
 
                     <div className="flex items-center gap-2">
                       {isMobileMode && (
-                        <button onClick={() => setShowMobileDetails(true)} className="text-slate-300 hover:text-white p-2 text-xl rounded-lg hover:bg-[#202c33] transition">
+                        <button onClick={() => setShowMobileDetails(true)} className="text-slate-300 hover:text-white p-2 text-xl rounded-lg hover:bg-[#202c33] transition" title="Detalles del contacto">
                           <i className="ph ph-info"></i>
                         </button>
                       )}
-
-                      {/* BOTÓN GENERAL PARA REINICIAR EL BOT */}
-                      <button
-                        onClick={() => handleToggleBot(selectedConvId, "bot")}
-                        title="Reiniciar Bot (Activar atención automática)"
-                        className="flex items-center gap-1.5 bg-[#202c33] hover:bg-[#2a3942] text-emerald-400 hover:text-emerald-300 font-medium text-xs md:text-sm p-2 md:px-3 md:py-2 rounded-lg border border-[#2a3942] transition shadow-sm"
-                      >
-                        <i className="ph-bold ph-arrows-clockwise text-base"></i>
-                        <span className="hidden md:inline">Reiniciar Bot</span>
-                      </button>
-
-                      {conversations.find(c => c.id === selectedConvId)?.status === "bot" ? (
-                        <button onClick={() => handleToggleBot(selectedConvId, "human")} title="Pausar Bot / Tomar Control Manual" className="flex items-center gap-2 bg-[#007aff] hover:bg-[#005bb5] text-white font-semibold text-xs md:text-sm p-2 md:px-4 md:py-2 rounded-lg shadow-sm transition">
-                          <i className="ph-fill ph-pause"></i>
-                          <span className="hidden md:inline">Pausar Bot</span>
-                        </button>
-                      ) : (
-                        <button onClick={() => handleToggleBot(selectedConvId, "bot")} title="Reactivar Bot Automático" className="flex items-center gap-2 bg-[#007aff] hover:bg-[#005bb5] text-white font-semibold text-xs md:text-sm p-2 md:px-4 md:py-2 rounded-lg shadow-sm transition">
-                          <i className="ph-fill ph-play"></i>
-                          <span className="hidden md:inline">Activar Bot</span>
-                        </button>
-                      )}
-                      <button onClick={() => handleToggleBot(selectedConvId, "closed")} title="Cerrar Caso" className="flex items-center gap-2 text-slate-300 hover:text-white p-2 md:px-3 md:py-2 text-xs md:text-sm rounded-lg border border-[#2a3942] hover:bg-[#202c33] transition">
-                        <i className="ph ph-x"></i> <span className="hidden md:inline">Cerrar Caso</span>
-                      </button>
                     </div>
                   </header>
 
@@ -914,13 +893,52 @@ export default function PanelDashboard() {
 
                 <div className="p-5">
                   <h3 className="font-bold text-white text-base mb-4">Acciones Rápidas</h3>
-                  <div className="space-y-3">
-                    <button onClick={() => handleToggleBot(selectedConvId, "human")} className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 text-sm py-2 rounded-lg border border-[#2a3942] transition">
-                      <i className="ph-fill ph-user"></i> Asignar a Asesor
+                  <div className="space-y-2.5">
+                    {/* Botón Cerrar Caso */}
+                    <button
+                      onClick={() => handleToggleBot(selectedConvId, "closed")}
+                      className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 hover:text-white text-sm py-2.5 rounded-lg border border-[#2a3942] transition shadow-sm font-medium"
+                    >
+                      <i className="ph-bold ph-check-circle text-base text-emerald-400"></i> Cerrar Caso
                     </button>
-                    <button onClick={() => handleToggleBot(selectedConvId, "bot")} className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 text-sm py-2 rounded-lg border border-[#2a3942] transition">
-                      <i className="ph-fill ph-arrows-clockwise"></i> Reiniciar Bot
+
+                    {/* Botón Pausar / Activar Bot */}
+                    {conversations.find(c => c.id === selectedConvId)?.status === "bot" ? (
+                      <button
+                        onClick={() => handleToggleBot(selectedConvId, "human")}
+                        className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 hover:text-white text-sm py-2.5 rounded-lg border border-[#2a3942] transition shadow-sm font-medium"
+                      >
+                        <i className="ph-fill ph-pause text-base text-amber-400"></i> Pausar Bot (Asignar Asesor)
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleToggleBot(selectedConvId, "bot")}
+                        className="w-full flex items-center justify-center gap-2 bg-[#007aff]/15 hover:bg-[#007aff]/25 text-[#007aff] hover:text-[#3894ff] text-sm py-2.5 rounded-lg border border-[#007aff]/30 transition shadow-sm font-medium"
+                      >
+                        <i className="ph-fill ph-play text-base"></i> Activar Bot Automático
+                      </button>
+                    )}
+
+                    {/* Botón Reiniciar Bot */}
+                    <button
+                      onClick={() => handleToggleBot(selectedConvId, "bot")}
+                      className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-300 hover:text-white text-xs py-2 rounded-lg border border-[#2a3942] transition"
+                    >
+                      <i className="ph-bold ph-arrows-clockwise text-sm text-emerald-400"></i> Reiniciar Bot
                     </button>
+
+                    {/* Botón Eliminar Conversación */}
+                    <div className="pt-3 border-t border-[#1f2c34] mt-3">
+                      <button
+                        onClick={() => handleDeleteConversation(selectedConvId)}
+                        className="w-full flex items-center justify-center gap-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 text-xs py-2.5 rounded-lg border border-red-500/20 transition font-medium"
+                      >
+                        <i className="ph-bold ph-trash text-sm"></i> Eliminar Conversación
+                      </button>
+                      <p className="text-[10px] text-slate-500 text-center mt-1">
+                        Sincroniza el borrado en el panel y en WhatsApp
+                      </p>
+                    </div>
                   </div>
                 </div>
 

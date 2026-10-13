@@ -512,6 +512,24 @@ export async function handleSalesMessage(
     return { reply, mode: "human_escalated" };
   }
 
+  // --- INTENCIÓN DE NUEVO PEDIDO / REINICIAR PEDIDO ---
+  const isNewOrderIntent =
+    lower.includes("nuevo pedido") ||
+    lower.includes("otro pedido") ||
+    lower.includes("pedir de nuevo") ||
+    lower.includes("otra orden") ||
+    lower.includes("nueva orden") ||
+    lower.includes("quiero pedir de nuevo") ||
+    lower.includes("hacer otro pedido") ||
+    lower.includes("quiero hacer un nuevo pedido") ||
+    lower.includes("hacer un nuevo pedido");
+
+  if (isNewOrderIntent) {
+    const reply = `¡Hola, hola! 🥳 ¡Con muchísimo gusto te tomamos un nuevo pedido en *BUÑUELANDIA*! 🥟🔥\n\n¿Qué se te antoja hoy?\n\n📦 *Nuestras Cajas:* \n• *Caja x4 Tradicional:* $16.000\n• *Caja x8 Tradicional:* $32.000\n• *Caja x4 Surtida:* $18.000 _(con salsas de Mora, Arequipe, Queso o Bocadillo)_\n• *Caja x8 Surtida:* $36.000 _(con salsas de Mora, Arequipe, Queso o Bocadillo)_\n\n¿Qué caja te gustaría ordenar?`;
+    await appendMessage(conversationKey, "assistant", reply);
+    return { reply, mode: "keyword" };
+  }
+
   // --- VERIFICACIÓN DE PEDIDO PREVIO Y CORTESÍA / AGRADECIMIENTO ---
   const allOrders = await getOrders().catch(() => []);
   const customerDigits = conversationKey.replace(/\D/g, "").slice(-10);
@@ -549,11 +567,11 @@ export async function handleSalesMessage(
     }
   }
 
-  // Filtrar el historial si el pedido anterior ya fue entregado o cancelado,
-  // para que la IA no intente cobrarle de nuevo los productos del pedido anterior
+  // Filtrar el historial si ya existe un pedido previo del cliente,
+  // para que NINGÚN producto o dirección de pedidos anteriores se mezcle con el nuevo chat
   const rawPrevious = await getMessages(conversationKey);
   let previous = rawPrevious;
-  if (latestOrder && (latestOrder.status === "delivered" || latestOrder.status === "cancelled")) {
+  if (latestOrder) {
     const orderTime = latestOrder.createdAt || 0;
     const sinceOrder = rawPrevious.filter((m) => m.createdAt > orderTime);
     previous = sinceOrder;
@@ -782,10 +800,11 @@ export async function handleSalesMessage(
   let reply = "";
   let mode: SalesMessageResult["mode"] = "keyword";
 
-  const allChatText = [...previous.map((m) => m.content), text].join("\n");
-  const foundAddress = extractAddress(text) || extractAddress(allChatText);
-  const foundPayment = extractPaymentMethod(text) || extractPaymentMethod(allChatText);
-  const { items: extractedItems, total: extractedTotal } = extractProductsFromText(allChatText, products);
+  // IMPORTANTE: Extraer productos e intenciones ÚNICAMENTE de los mensajes del usuario
+  const userChatText = [...previous.filter((m) => m.role === "user").map((m) => m.content), text].join("\n");
+  const foundAddress = extractAddress(text) || (previous.length > 0 ? extractAddress(userChatText) : null);
+  const foundPayment = extractPaymentMethod(text) || (previous.length > 0 ? extractPaymentMethod(userChatText) : null);
+  const { items: extractedItems, total: extractedTotal } = extractProductsFromText(userChatText, products);
 
   const isGreeting =
     lower === "hola" ||
@@ -802,31 +821,22 @@ export async function handleSalesMessage(
     lower.includes("precios") ||
     lower.includes("productos");
 
-  const isAffirmation =
-    lower === "esa" ||
-    lower === "sí" ||
-    lower === "si" ||
-    lower === "dale" ||
-    lower === "de una" ||
-    lower === "ok" ||
-    lower === "listo" ||
-    lower.includes("quiero esa") ||
-    lower.includes("esa misma") ||
-    lower.includes("confirmo");
-
-  if (isGreeting && previous.length <= 1) {
-    reply = `${settings.welcomeMessage}\n\nEscribe *catálogo* para ver todos nuestros buñuelos y cajas surtidas o tradicionales, o dinos directamente qué deseas ordenar.`;
+  if (isGreeting || isNewOrderIntent) {
+    const items = products
+      .filter((p) => p.sku.startsWith("C"))
+      .map((p) => `• *${p.name}:* ${formatCop(p.price)}`)
+      .join("\n");
+    reply = `${settings.welcomeMessage}\n\n📦 *Nuestras Cajas:*\n${items}\n\n¿Qué caja te gustaría pedir hoy?`;
   } else if (isAskingCatalog) {
     const items = products
       .map((p) => `• *${p.name}*\n  Precio: ${formatCop(p.price)} - _${p.description || "Delicioso y crujiente"}_`)
       .join("\n\n");
     reply = `🧀 *Menú Oficial de BUÑUELANDIA:*\n\n${items}\n\nPara pedir, indícanos qué productos deseas (ejemplo: *1 CAJA x8 Surtida y 2 Buñuelos de Mora*).`;
-  } else if (foundAddress && (foundPayment || isAffirmation || lower.includes("nequi") || lower.includes("breb") || lower.includes("bre-b") || lower.includes("efectivo") || lower.includes("daviplata"))) {
-    // Si ya tenemos dirección y pago, o confirmación: ¡CERRAR PEDIDO CON ÉXITO!
-    const defaultProduct = products.find((p) => p.sku === "C8S") || products[0];
-    const finalItems = extractedItems.length > 0 ? extractedItems : [{ sku: defaultProduct.sku, name: defaultProduct.name, quantity: 1, unitPrice: defaultProduct.price }];
-    const finalTotal = extractedTotal > 0 ? extractedTotal : defaultProduct.price;
-    const finalPayment = foundPayment || "Efectivo contra entrega";
+  } else if (extractedItems.length > 0 && foundAddress && foundPayment) {
+    // SÓLO cuando el cliente eligió productos reales (extractedItems.length > 0), dio dirección Y eligió medio de pago
+    const finalItems = extractedItems;
+    const finalTotal = extractedTotal;
+    const finalPayment = foundPayment;
     const finalAddress = foundAddress;
     const clientName = pushName || `Cliente WhatsApp ${conversationKey.replace(/[^0-9]/g, "").slice(-4) || ""}`;
 
@@ -850,15 +860,18 @@ export async function handleSalesMessage(
 
     reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
     mode = "order_created";
-  } else if (extractedItems.length > 0 || isAffirmation || lower.includes("caja") || lower.includes("buñuelo") || lower.includes("quiero") || lower.includes("pedido")) {
-    const chosenProduct = extractedItems[0] || products.find((p) => p.sku === "C8S") || products[0];
+  } else if (extractedItems.length > 0) {
+    const chosenProduct = extractedItems[0];
     const totalEst = extractedTotal > 0 ? extractedTotal : chosenProduct.unitPrice;
-    reply = `¡Excelente elección! 🤤 Hemos tomado nota de tu selección:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviarte tu pedido calientico, por favor facilítanos:\n1. 👤 *Tu Nombre Completo*\n2. 📍 *Dirección exacta de Entrega y Barrio*\n3. 💵 *Medio de Pago*:\n   1️⃣ *Nequi*\n   2️⃣ *Bre-B*\n   3️⃣ *Efectivo contra entrega*`;
+    if (!foundAddress) {
+      reply = `¡Excelente elección! 🤤 Hemos tomado nota de tu pedido:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviártelo calientito, por favor compártenos:\n📍 *Dirección exacta de Entrega y Barrio*\n🏢 *Indicaciones de entrega (torre/apto/portería)*`;
+    } else {
+      reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
+    }
   } else if (foundAddress && !foundPayment) {
-    reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
+    reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\n¿Qué buñuelos o bebidas deseas agregar a tu pedido? (Escribe *catálogo* para ver las opciones).`;
   } else if (previous.length > 1) {
-    // Si ya hay conversación previa, NO reiniciar al saludo de bienvenida
-    reply = `¡Con gusto! Para confirmar tu pedido en BUÑUELANDIA, por favor compártenos tu *Dirección de entrega* y *Medio de pago* (1️⃣ Nequi, 2️⃣ Bre-B o 3️⃣ Efectivo contra entrega), o escribe *catálogo* si deseas ver más opciones.`;
+    reply = `¡Con gusto! Para tomar tu pedido en BUÑUELANDIA, indícanos qué productos deseas (ej: *1 Caja x8 Surtida*), o escribe *catálogo* si deseas ver todas las opciones.`;
   } else {
     reply = `${settings.welcomeMessage}\n\nPuedes escribir *catálogo*, *hacer pedido* o *escalar a humano* para que te atienda un asesor.`;
   }

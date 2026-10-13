@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deleteConversation, setConversationCustomerName } from "@/lib/store";
+import { deleteEvolutionChat } from "@/lib/evolution";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,6 +13,8 @@ export async function DELETE(
   const decodedId = decodeURIComponent(id);
   try {
     await deleteConversation(decodedId);
+    // Intentar sincronizar borrado / vaciado de chat en la app de WhatsApp vía Evolution
+    await deleteEvolutionChat(decodedId).catch(() => {});
     return NextResponse.json({ ok: true, deletedId: decodedId });
   } catch (error) {
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });

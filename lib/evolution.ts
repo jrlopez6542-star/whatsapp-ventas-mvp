@@ -829,3 +829,50 @@ export async function getEvolutionMediaBase64(
   }
   return null;
 }
+
+/**
+ * Elimina o vacía la conversación directamente en la app de WhatsApp
+ * a través de la API de Evolution (deleteChat / clearChat).
+ */
+export async function deleteEvolutionChat(identifier: string): Promise<boolean> {
+  const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, "");
+  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const instance = process.env.EVOLUTION_INSTANCE?.trim();
+  if (!base || !apiKey || !instance) return false;
+
+  let remoteJid = identifier.replace(/^whatsapp:/i, "");
+  if (!remoteJid.includes("@")) {
+    const digits = remoteJid.replace(/\D/g, "");
+    remoteJid = `${digits}@s.whatsapp.net`;
+  }
+
+  try {
+    // 1. DELETE /chat/deleteChat/{instance}
+    const deleteUrl = `${base}/chat/deleteChat/${encodeURIComponent(instance)}`;
+    await fetch(deleteUrl, {
+      method: "DELETE",
+      headers: {
+        apikey: apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ remoteJid }),
+    }).catch(() => {});
+
+    // 2. DELETE /chat/clearChat/{instance}
+    const clearUrl = `${base}/chat/clearChat/${encodeURIComponent(instance)}`;
+    await fetch(clearUrl, {
+      method: "DELETE",
+      headers: {
+        apikey: apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ remoteJid }),
+    }).catch(() => {});
+
+    return true;
+  } catch (err) {
+    console.warn("[evolution] deleteEvolutionChat error:", err);
+    return false;
+  }
+}
+
