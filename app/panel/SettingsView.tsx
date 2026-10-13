@@ -8,6 +8,11 @@ export function SettingsView() {
     welcomeMessage: "",
     rules: "",
     transferQrImage: "",
+    nequiNumber: "",
+    brebKey: "",
+    deliveryFee: "",
+    freeDeliveryThreshold: "",
+    estimatedDeliveryTime: "",
   });
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -24,6 +29,11 @@ export function SettingsView() {
             welcomeMessage: d.settings.welcomeMessage || "",
             rules: d.settings.rules || "",
             transferQrImage: d.settings.transferQrImage || "",
+            nequiNumber: d.settings.nequiNumber || "",
+            brebKey: d.settings.brebKey || "",
+            deliveryFee: d.settings.deliveryFee || "",
+            freeDeliveryThreshold: d.settings.freeDeliveryThreshold || "",
+            estimatedDeliveryTime: d.settings.estimatedDeliveryTime || "",
           });
         }
       })
@@ -162,6 +172,82 @@ export function SettingsView() {
                 className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-4 py-2.5 transition outline-none resize-none font-mono text-sm"
                 placeholder="- No damos descuentos..."
               />
+            </div>
+
+            {/* SECCIÓN PAGOS MÓVILES (NEQUI / BRE-B) */}
+            <div className="pt-4 border-t border-[#1f2c34]">
+              <h3 className="text-sm font-semibold text-white mb-1 flex items-center gap-2">
+                <i className="ph-fill ph-device-mobile text-emerald-400 text-lg"></i> Datos de Pago Móvil (Copia Rápida)
+              </h3>
+              <p className="text-xs text-slate-400 mb-4">
+                El bot enviará estos datos en un formato limpio para que el cliente pueda presionar y copiar en su app bancaria en 3 segundos.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Número Nequi</label>
+                  <input
+                    type="text"
+                    value={settings.nequiNumber}
+                    onChange={(e) => setSettings({ ...settings, nequiNumber: e.target.value })}
+                    className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-3 py-2 text-sm outline-none"
+                    placeholder="Ej. 3228964947"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Llave Bre-B</label>
+                  <input
+                    type="text"
+                    value={settings.brebKey}
+                    onChange={(e) => setSettings({ ...settings, brebKey: e.target.value })}
+                    className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-3 py-2 text-sm outline-none"
+                    placeholder="Ej. 3228964947"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* SECCIÓN DOMICILIO Y TIEMPOS */}
+            <div className="pt-4 border-t border-[#1f2c34]">
+              <h3 className="text-sm font-semibold text-white mb-1 flex items-center gap-2">
+                <i className="ph-fill ph-moped text-amber-400 text-lg"></i> Costo de Domicilio y Tiempo de Entrega (ETA)
+              </h3>
+              <p className="text-xs text-slate-400 mb-4">
+                Parámetros para el cálculo automático del domicilio y el tiempo estimado que el bot le indica al cliente.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Costo Domicilio ($ COP)</label>
+                  <input
+                    type="number"
+                    value={settings.deliveryFee}
+                    onChange={(e) => setSettings({ ...settings, deliveryFee: e.target.value })}
+                    className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-3 py-2 text-sm outline-none"
+                    placeholder="Ej. 4000"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Envío Gratis Desde ($ COP)</label>
+                  <input
+                    type="number"
+                    value={settings.freeDeliveryThreshold}
+                    onChange={(e) => setSettings({ ...settings, freeDeliveryThreshold: e.target.value })}
+                    className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-3 py-2 text-sm outline-none"
+                    placeholder="Ej. 40000"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">Tiempo Estimado (ETA)</label>
+                  <input
+                    type="text"
+                    value={settings.estimatedDeliveryTime}
+                    onChange={(e) => setSettings({ ...settings, estimatedDeliveryTime: e.target.value })}
+                    className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-3 py-2 text-sm outline-none"
+                    placeholder="Ej. 30 a 45 minutos"
+                  />
+                </div>
+              </div>
             </div>
 
             {/* SECCIÓN IMAGEN QR DE TRANSFERENCIA */}

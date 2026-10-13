@@ -46,10 +46,14 @@ interface Order {
   id: string;
   conversationId: string;
   customerName?: string;
+  phone?: string;
   deliveryAddress?: string;
   paymentMethod?: string;
   itemsSummary?: string;
-  status: "pending" | "confirmed" | "cancelled";
+  deliveryFee?: number;
+  changeAmount?: string;
+  deliveryNotes?: string;
+  status: string;
   total: number;
   createdAt: number;
 }

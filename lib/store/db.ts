@@ -105,6 +105,9 @@ export async function ensureTursoReady(): Promise<void> {
       "status TEXT DEFAULT 'confirmed'",
       "created_at INTEGER DEFAULT 0",
       "conversation_id TEXT",
+      "delivery_fee INTEGER DEFAULT 0",
+      "change_amount TEXT",
+      "delivery_notes TEXT",
     ];
     for (const col of alterOrders) {
       try {
@@ -152,6 +155,11 @@ export async function ensureTursoReady(): Promise<void> {
       "extra_prompt TEXT",
       "bot_objective TEXT",
       "transfer_qr_image TEXT",
+      "nequi_number TEXT",
+      "breb_key TEXT",
+      "delivery_fee INTEGER DEFAULT 0",
+      "free_delivery_threshold INTEGER DEFAULT 0",
+      "estimated_delivery_time TEXT",
     ];
     for (const col of alterOrgSettings) {
       try {

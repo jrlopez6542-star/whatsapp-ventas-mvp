@@ -2,36 +2,128 @@
 import React, { useState } from "react";
 import { formatOrderDateTime } from "@/lib/date-utils";
 
-export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onOrdersChange?: () => void }) {
-  const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+interface OrderItemView {
+  id: string;
+  conversationId: string;
+  customerName?: string;
+  phone?: string;
+  deliveryAddress?: string;
+  paymentMethod?: string;
+  itemsSummary?: string;
+  deliveryFee?: number;
+  changeAmount?: string;
+  deliveryNotes?: string;
+  status: string;
+  total: number;
+  createdAt: number;
+}
+
+const STATUS_CONFIG: Record<
+  string,
+  { label: string; bg: string; text: string; border: string; icon: string }
+> = {
+  pending: {
+    label: "Pendiente",
+    bg: "bg-amber-500/10",
+    text: "text-amber-400",
+    border: "border-amber-500/20",
+    icon: "ph-clock",
+  },
+  confirmed: {
+    label: "Confirmado",
+    bg: "bg-blue-500/10",
+    text: "text-blue-400",
+    border: "border-blue-500/20",
+    icon: "ph-check",
+  },
+  preparing: {
+    label: "En Preparación",
+    bg: "bg-orange-500/10",
+    text: "text-orange-400",
+    border: "border-orange-500/20",
+    icon: "ph-fire",
+  },
+  delivering: {
+    label: "En Camino",
+    bg: "bg-indigo-500/10",
+    text: "text-indigo-400",
+    border: "border-indigo-500/20",
+    icon: "ph-moped",
+  },
+  delivered: {
+    label: "Entregado",
+    bg: "bg-emerald-500/10",
+    text: "text-emerald-400",
+    border: "border-emerald-500/20",
+    icon: "ph-check-circle",
+  },
+  cancelled: {
+    label: "Cancelado",
+    bg: "bg-red-500/10",
+    text: "text-red-400",
+    border: "border-red-500/20",
+    icon: "ph-x-circle",
+  },
+};
+
+export function OrdersView({
+  orders = [],
+  onOrdersChange,
+}: {
+  orders: OrderItemView[];
+  onOrdersChange?: () => void;
+}) {
+  const [selectedOrder, setSelectedOrder] = useState<OrderItemView | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+
   const deleteOrder = async (id: string) => {
-    if (!confirm("¿Estás seguro de que quieres eliminar este pedido? Esta acción no se puede deshacer.")) return;
-    setIsDeleting(true);
+    if (!confirm("¿Estás seguro de que quieres eliminar este pedido? Esta acción no se puede deshacer."))
+      return;
     try {
-      const res = await fetch(`/api/panel/orders/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/panel/orders/${id}`, { method: "DELETE" });
       if (res.ok) {
+        if (selectedOrder?.id === id) setSelectedOrder(null);
         if (onOrdersChange) onOrdersChange();
       } else {
         alert("Error al eliminar el pedido.");
       }
-    } catch (err) {
+    } catch {
       alert("Error de conexión al eliminar el pedido.");
-    } finally {
-      setIsDeleting(false);
     }
   };
 
+  const handleStatusChange = async (id: string, newStatus: string) => {
+    setUpdatingId(id);
+    try {
+      const res = await fetch(`/api/panel/orders/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus, notifyCustomer: true }),
+      });
+      if (res.ok) {
+        if (onOrdersChange) onOrdersChange();
+        if (selectedOrder && selectedOrder.id === id) {
+          setSelectedOrder((prev) => (prev ? { ...prev, status: newStatus } : null));
+        }
+      } else {
+        alert("No se pudo actualizar el estado del pedido.");
+      }
+    } catch {
+      alert("Error de conexión al actualizar el estado.");
+    } finally {
+      setUpdatingId(null);
+    }
+  };
 
   return (
     <div className="p-6 pt-16 md:pt-6 text-slate-300 w-full h-full overflow-y-auto relative">
       <div className="flex justify-between items-center mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white mb-1 flex items-center gap-2">
-            <i className="ph-fill ph-package text-[#007aff]"></i> Pedidos Confirmados
+            <i className="ph-fill ph-package text-[#007aff]"></i> Gestión de Pedidos
           </h1>
           <p className="text-sm text-slate-400">
-            Aquí se registran automáticamente los pedidos cerrados por la IA con dirección y medio de pago.
+            Control de pedidos en tiempo real con notificaciones automáticas por WhatsApp a cada cambio de estado.
           </p>
         </div>
       </div>
@@ -41,7 +133,9 @@ export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onO
           <div className="text-center py-16 text-slate-500">
             <i className="ph ph-receipt text-6xl mb-4 text-[#1f2c34]"></i>
             <p className="font-semibold text-lg text-slate-300">No hay pedidos confirmados todavía.</p>
-            <p className="text-sm mt-2">Cuando un cliente confirme por WhatsApp con su dirección, aparecerá aquí inmediatamente.</p>
+            <p className="text-sm mt-2">
+              Cuando un cliente confirme por WhatsApp con su dirección, aparecerá aquí inmediatamente.
+            </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -52,48 +146,115 @@ export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onO
                   <th className="p-4 font-semibold">Cliente / Teléfono</th>
                   <th className="p-4 font-semibold">Productos</th>
                   <th className="p-4 font-semibold">Dirección de Entrega</th>
-                  <th className="p-4 font-semibold">Pago</th>
+                  <th className="p-4 font-semibold">Pago / Cambio</th>
                   <th className="p-4 font-semibold">Total (COP)</th>
-                  <th className="p-4 font-semibold">Estado</th>
+                  <th className="p-4 font-semibold">Estado (Notifica WhatsApp)</th>
                   <th className="p-4 font-semibold">Fecha</th>
-                    <th className="p-4 font-semibold text-right">Acciones</th>
+                  <th className="p-4 font-semibold text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#1f2c34]">
-                {orders.map((o) => (
-                  <tr 
-                    key={o.id} 
-                    className="hover:bg-[#162128] transition cursor-pointer"
-                    onClick={() => setSelectedOrder(o)}
-                  >
-                    <td className="p-4 font-mono font-bold text-[#007aff]">#{o.id.slice(0, 8)}</td>
-                    <td className="p-4">
-                      <div className="font-medium text-white">{o.customerName || "Sin Nombre"}</div>
-                      <div className="text-xs text-slate-500">{o.phone || o.conversationId.split('@')[0]}</div>
-                    </td>
-                    <td className="p-4 text-slate-400 max-w-[200px] truncate" title={o.itemsSummary}>{o.itemsSummary}</td>
-                    <td className="p-4 text-slate-400 max-w-[200px] truncate" title={o.deliveryAddress}>{o.deliveryAddress || "N/A"}</td>
-                    <td className="p-4 text-slate-400">{o.paymentMethod || "N/A"}</td>
-                    <td className="p-4 font-medium text-emerald-500">${o.total?.toLocaleString("es-CO")}</td>
-                    <td className="p-4">
-                      <span className="bg-amber-500/10 text-amber-500 border border-amber-500/20 px-2 py-1 rounded text-xs font-medium">
-                        {o.status === "pending" ? "Pendiente" : o.status}
-                      </span>
-                    </td>
-                    <td className="p-4 text-slate-500 text-xs">
-                      {formatOrderDateTime(o.createdAt)}
-                    </td>
-                    <td className="p-4 text-right">
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); deleteOrder(o.id); }}
-                        className="text-slate-500 hover:text-red-500 transition p-2 rounded-md hover:bg-red-500/10"
-                        title="Eliminar pedido"
+                {orders.map((o) => {
+                  const cfg = STATUS_CONFIG[o.status] || STATUS_CONFIG.confirmed;
+                  const isBusy = updatingId === o.id;
+
+                  return (
+                    <tr
+                      key={o.id}
+                      className="hover:bg-[#162128] transition cursor-pointer"
+                      onClick={() => setSelectedOrder(o)}
+                    >
+                      <td className="p-4 font-mono font-bold text-[#007aff]">#{o.id.slice(0, 8)}</td>
+                      <td className="p-4">
+                        <div className="font-medium text-white">{o.customerName || "Sin Nombre"}</div>
+                        <div className="text-xs text-slate-500">
+                          {o.phone || o.conversationId.replace(/^whatsapp:/, "").split("@")[0]}
+                        </div>
+                      </td>
+                      <td
+                        className="p-4 text-slate-400 max-w-[200px] truncate"
+                        title={o.itemsSummary}
                       >
-                        <i className="ph ph-trash text-lg"></i>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                        {o.itemsSummary}
+                      </td>
+                      <td
+                        className="p-4 text-slate-300 max-w-[220px]"
+                        title={o.deliveryAddress}
+                      >
+                        <div className="truncate font-medium">{o.deliveryAddress || "N/A"}</div>
+                        {o.deliveryNotes && (
+                          <div className="text-xs text-amber-400/90 truncate flex items-center gap-1 mt-0.5">
+                            <i className="ph-fill ph-note text-[11px]"></i> {o.deliveryNotes}
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-4 text-slate-300">
+                        <span className="font-medium">{o.paymentMethod || "N/A"}</span>
+                        {o.changeAmount && (
+                          <div className="text-xs text-emerald-400 font-mono mt-0.5">
+                            💵 {o.changeAmount}
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-4">
+                        <div className="font-bold text-emerald-400 text-base">
+                          ${o.total?.toLocaleString("es-CO")}
+                        </div>
+                        {o.deliveryFee ? (
+                          <div className="text-[11px] text-slate-400">
+                            +${o.deliveryFee.toLocaleString("es-CO")} envío
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-emerald-500/80">Envío gratis</div>
+                        )}
+                      </td>
+                      <td className="p-4" onClick={(e) => e.stopPropagation()}>
+                        <div className="relative inline-block">
+                          <select
+                            disabled={isBusy}
+                            value={o.status || "confirmed"}
+                            onChange={(e) => handleStatusChange(o.id, e.target.value)}
+                            className={`${cfg.bg} ${cfg.text} ${cfg.border} border text-xs font-semibold rounded-lg px-2.5 py-1.5 outline-none cursor-pointer hover:brightness-110 transition disabled:opacity-50`}
+                          >
+                            <option value="pending" className="bg-[#121b22] text-amber-400">
+                              ⏳ Pendiente
+                            </option>
+                            <option value="confirmed" className="bg-[#121b22] text-blue-400">
+                              👍 Confirmado
+                            </option>
+                            <option value="preparing" className="bg-[#121b22] text-orange-400">
+                              👨‍🍳 En Preparación
+                            </option>
+                            <option value="delivering" className="bg-[#121b22] text-indigo-400">
+                              🛵 En Camino
+                            </option>
+                            <option value="delivered" className="bg-[#121b22] text-emerald-400">
+                              ✅ Entregado
+                            </option>
+                            <option value="cancelled" className="bg-[#121b22] text-red-400">
+                              ❌ Cancelado
+                            </option>
+                          </select>
+                        </div>
+                      </td>
+                      <td className="p-4 text-slate-500 text-xs">
+                        {formatOrderDateTime(o.createdAt)}
+                      </td>
+                      <td className="p-4 text-right">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteOrder(o.id);
+                          }}
+                          className="text-slate-500 hover:text-red-500 transition p-2 rounded-md hover:bg-red-500/10"
+                          title="Eliminar pedido"
+                        >
+                          <i className="ph ph-trash text-lg"></i>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -103,20 +264,44 @@ export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onO
       {/* MODAL DETALLES DEL PEDIDO */}
       {selectedOrder && (
         <div className="fixed inset-0 bg-black/60 z-[99999] flex items-center justify-center p-4">
-          <div className="bg-[#121b22] border border-[#1f2c34] rounded-xl w-full max-w-lg shadow-2xl flex flex-col">
+          <div className="bg-[#121b22] border border-[#1f2c34] rounded-xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh]">
             <div className="p-5 border-b border-[#1f2c34] flex justify-between items-center bg-[#162128] rounded-t-xl">
               <h3 className="font-bold text-white text-lg flex items-center gap-2">
                 <i className="ph-fill ph-receipt text-[#007aff]"></i> Detalle del Pedido
               </h3>
-              <button 
-                onClick={() => setSelectedOrder(null)} 
+              <button
+                onClick={() => setSelectedOrder(null)}
                 className="text-slate-400 hover:text-white transition"
               >
                 <i className="ph ph-x text-xl"></i>
               </button>
             </div>
-            
-            <div className="p-6 space-y-5 overflow-y-auto">
+
+            <div className="p-6 space-y-4 overflow-y-auto">
+              {/* ESTADO CON NOTIFICACIÓN POR WHATSAPP */}
+              <div className="bg-[#162128] border border-[#2a3942] p-4 rounded-xl">
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5 flex items-center gap-1.5">
+                  <i className="ph-fill ph-bell-ringing text-[#007aff]"></i> ESTADO Y NOTIFICACIÓN WHATSAPP
+                </label>
+                <div className="flex items-center gap-3">
+                  <select
+                    value={selectedOrder.status}
+                    onChange={(e) => handleStatusChange(selectedOrder.id, e.target.value)}
+                    className="flex-1 bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] text-white text-sm font-semibold rounded-lg px-3 py-2 outline-none cursor-pointer"
+                  >
+                    <option value="pending">⏳ Pendiente</option>
+                    <option value="confirmed">👍 Confirmado</option>
+                    <option value="preparing">👨‍🍳 En Preparación (Notifica al cliente)</option>
+                    <option value="delivering">🛵 En Camino (Notifica al domiciliario/cliente)</option>
+                    <option value="delivered">✅ Entregado (Mensaje de buen provecho)</option>
+                    <option value="cancelled">❌ Cancelado (Aviso de cancelación)</option>
+                  </select>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-2">
+                  📲 Al cambiar el estado, el cliente recibe un mensaje automático al instante en su WhatsApp.
+                </p>
+              </div>
+
               <div className="flex justify-between items-start">
                 <div>
                   <div className="text-xs text-slate-500 mb-1">ID DEL PEDIDO</div>
@@ -124,32 +309,61 @@ export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onO
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-slate-500 mb-1">FECHA Y HORA</div>
-                  <div className="text-sm text-slate-300">{formatOrderDateTime(selectedOrder.createdAt)}</div>
+                  <div className="text-sm text-slate-300">
+                    {formatOrderDateTime(selectedOrder.createdAt)}
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4 pt-4 border-t border-[#1f2c34]">
+              <div className="grid grid-cols-2 gap-4 pt-3 border-t border-[#1f2c34]">
                 <div>
                   <div className="text-xs text-slate-500 mb-1">CLIENTE</div>
-                  <div className="text-sm font-medium text-white">{selectedOrder.customerName || "No especificado"}</div>
+                  <div className="text-sm font-medium text-white">
+                    {selectedOrder.customerName || "No especificado"}
+                  </div>
                 </div>
                 <div>
                   <div className="text-xs text-slate-500 mb-1">TELÉFONO</div>
-                  <div className="text-sm font-medium text-white">{selectedOrder.phone || selectedOrder.conversationId.split('@')[0]}</div>
+                  <div className="text-sm font-medium text-white">
+                    {selectedOrder.phone ||
+                      selectedOrder.conversationId.replace(/^whatsapp:/, "").split("@")[0]}
+                  </div>
                 </div>
               </div>
 
-              <div className="pt-4 border-t border-[#1f2c34]">
-                <div className="text-xs text-slate-500 mb-2">DIRECCIÓN DE ENTREGA</div>
-                <div className="text-sm text-slate-300 bg-[#162128] p-3 rounded-lg border border-[#1f2c34]">{selectedOrder.deliveryAddress || "No especificada"}</div>
+              <div className="pt-3 border-t border-[#1f2c34]">
+                <div className="text-xs text-slate-500 mb-1">DIRECCIÓN DE ENTREGA</div>
+                <div className="text-sm text-slate-200 bg-[#162128] p-3 rounded-lg border border-[#1f2c34]">
+                  {selectedOrder.deliveryAddress || "No especificada"}
+                </div>
+                {selectedOrder.deliveryNotes && (
+                  <div className="mt-2 text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 p-2.5 rounded-lg flex items-start gap-2">
+                    <i className="ph-fill ph-info text-base mt-0.5"></i>
+                    <div>
+                      <span className="font-semibold">Notas de entrega:</span> {selectedOrder.deliveryNotes}
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div className="pt-4 border-t border-[#1f2c34]">
-                <div className="text-xs text-slate-500 mb-2">MÉTODO DE PAGO</div>
-                <div className="text-sm font-medium text-white">{selectedOrder.paymentMethod || "No especificado"}</div>
+              <div className="grid grid-cols-2 gap-4 pt-3 border-t border-[#1f2c34]">
+                <div>
+                  <div className="text-xs text-slate-500 mb-1">MÉTODO DE PAGO</div>
+                  <div className="text-sm font-medium text-white">
+                    {selectedOrder.paymentMethod || "No especificado"}
+                  </div>
+                </div>
+                {selectedOrder.changeAmount && (
+                  <div>
+                    <div className="text-xs text-slate-500 mb-1">CAMBIO SOLICITADO</div>
+                    <div className="text-sm font-semibold text-emerald-400">
+                      💵 {selectedOrder.changeAmount}
+                    </div>
+                  </div>
+                )}
               </div>
 
-              <div className="pt-4 border-t border-[#1f2c34]">
+              <div className="pt-3 border-t border-[#1f2c34]">
                 <div className="text-xs text-slate-500 mb-2">PRODUCTOS / RESUMEN</div>
                 <div className="text-sm text-slate-300 whitespace-pre-wrap bg-[#162128] p-3 rounded-lg border border-[#1f2c34] leading-relaxed">
                   {selectedOrder.itemsSummary || "No hay detalle de productos"}
@@ -158,13 +372,21 @@ export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onO
             </div>
 
             <div className="p-5 border-t border-[#1f2c34] bg-[#162128] rounded-b-xl flex justify-between items-center">
-              <span className="text-slate-400 font-medium">TOTAL A PAGAR</span>
-              <span className="text-2xl font-bold text-emerald-500">${selectedOrder.total?.toLocaleString("es-CO")}</span>
+              <div>
+                <span className="text-slate-400 font-medium block text-xs">TOTAL A PAGAR</span>
+                {selectedOrder.deliveryFee ? (
+                  <span className="text-xs text-slate-500">
+                    Incluye +${selectedOrder.deliveryFee.toLocaleString("es-CO")} de domicilio
+                  </span>
+                ) : null}
+              </div>
+              <span className="text-2xl font-bold text-emerald-500">
+                ${selectedOrder.total?.toLocaleString("es-CO")}
+              </span>
             </div>
           </div>
         </div>
       )}
-
     </div>
   );
 }

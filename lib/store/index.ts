@@ -36,6 +36,8 @@ export interface OrderItem {
   unitPrice: number;
 }
 
+export type OrderStatus = "pending" | "confirmed" | "preparing" | "delivering" | "delivered" | "cancelled";
+
 export interface Order {
   id: string;
   conversationId: string;
@@ -43,7 +45,10 @@ export interface Order {
   deliveryAddress?: string;
   paymentMethod?: string;
   itemsSummary?: string;
-  status: "pending" | "confirmed" | "cancelled";
+  deliveryFee?: number;
+  changeAmount?: string;
+  deliveryNotes?: string;
+  status: OrderStatus;
   total: number;
   items?: OrderItem[];
   createdAt: number;
@@ -61,6 +66,11 @@ export interface OrgSettings {
   botObjective?: string;
   rules: string;
   transferQrImage?: string;
+  nequiNumber?: string;
+  brebKey?: string;
+  deliveryFee?: string;
+  freeDeliveryThreshold?: string;
+  estimatedDeliveryTime?: string;
 }
 
 const DEFAULT_SETTINGS: OrgSettings = {
@@ -75,6 +85,11 @@ const DEFAULT_SETTINGS: OrgSettings = {
   welcomeMessage: "¡Hola! 🤤 Bienvenido a *BUÑUELANDIA*. Los mejores buñuelos frescos, crujientes y calienticos recién hechos. ¿Te gustaría ver nuestro menú de buñuelos y cajas?",
   rules: "Ofrece el catálogo oficial de BUÑUELANDIA. Para pedidos confirma: productos y cantidades, nombre completo del cliente, dirección exacta de entrega y medio de pago (Nequi, Bre-B o Efectivo contra entrega). Si solicitan hablar con una persona, escala a humano.",
   transferQrImage: "",
+  nequiNumber: "3228964947",
+  brebKey: "3228964947",
+  deliveryFee: "4000",
+  freeDeliveryThreshold: "40000",
+  estimatedDeliveryTime: "30 a 45 minutos",
 };
 
 const SEED_PRODUCTS: Product[] = [
@@ -105,6 +120,27 @@ const SEED_PRODUCTS: Product[] = [
     price: 36000,
     active: true,
     description: "Caja de 8 buñuelos surtidos. Salsas a elección: Mora, Arequipe, Bocadillo, Suero Costeño.",
+  },
+  {
+    sku: "BEB_CAFE",
+    name: "Café Campesino",
+    price: 3500,
+    active: true,
+    description: "Café campesino recién colado, aromático y calientito.",
+  },
+  {
+    sku: "BEB_GAS",
+    name: "Gaseosa 400ml",
+    price: 4500,
+    active: true,
+    description: "Gaseosa fría bien helada (Coca-Cola / Colombiana / Manzana).",
+  },
+  {
+    sku: "BEB_JUGO",
+    name: "Jugo Natural de Mora",
+    price: 6000,
+    active: true,
+    description: "Jugo natural refrescante en agua o en leche.",
   },
 ];
 
@@ -183,7 +219,16 @@ class MemoryStore {
     conversationId: string,
     items: OrderItem[],
     total: number,
-    details?: { customerName?: string; deliveryAddress?: string; paymentMethod?: string; itemsSummary?: string }
+    details?: {
+      customerName?: string;
+      deliveryAddress?: string;
+      paymentMethod?: string;
+      itemsSummary?: string;
+      deliveryFee?: number;
+      changeAmount?: string;
+      deliveryNotes?: string;
+      status?: OrderStatus;
+    }
   ): Order {
     const order: Order = {
       id: randomUUID(),
@@ -192,7 +237,10 @@ class MemoryStore {
       deliveryAddress: details?.deliveryAddress,
       paymentMethod: details?.paymentMethod,
       itemsSummary: details?.itemsSummary,
-      status: "confirmed",
+      deliveryFee: details?.deliveryFee,
+      changeAmount: details?.changeAmount,
+      deliveryNotes: details?.deliveryNotes,
+      status: details?.status || "confirmed",
       total,
       items,
       createdAt: Date.now(),
@@ -527,7 +575,16 @@ export async function createOrder(
   conversationId: string,
   items: OrderItem[],
   total: number,
-  details?: { customerName?: string; deliveryAddress?: string; paymentMethod?: string; itemsSummary?: string }
+  details?: {
+    customerName?: string;
+    deliveryAddress?: string;
+    paymentMethod?: string;
+    itemsSummary?: string;
+    deliveryFee?: number;
+    changeAmount?: string;
+    deliveryNotes?: string;
+    status?: OrderStatus;
+  }
 ): Promise<Order> {
   const memOrder = getMemoryStore().createOrder(conversationId, items, total, details);
   if (isTursoConfigured()) {
@@ -535,8 +592,8 @@ export async function createOrder(
       await ensureTursoReady();
       const client = getTursoClient();
       await client.execute({
-        sql: `INSERT INTO orders (id, conversation_id, customer_name, delivery_address, payment_method, items_summary, status, total, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sql: `INSERT INTO orders (id, conversation_id, customer_name, delivery_address, payment_method, items_summary, delivery_fee, change_amount, delivery_notes, status, total, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           memOrder.id,
           conversationId,
@@ -544,6 +601,9 @@ export async function createOrder(
           details?.deliveryAddress || null,
           details?.paymentMethod || null,
           details?.itemsSummary || null,
+          details?.deliveryFee ?? 0,
+          details?.changeAmount || null,
+          details?.deliveryNotes || null,
           memOrder.status,
           total,
           memOrder.createdAt,
@@ -586,6 +646,50 @@ export async function deleteOrder(id: string): Promise<void> {
   }
 }
 
+export async function updateOrderStatus(id: string, status: OrderStatus): Promise<Order | null> {
+  const mem = getMemoryStore();
+  const memOrder = mem.orders.get(id);
+  if (memOrder) {
+    memOrder.status = status;
+  }
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: "UPDATE orders SET status = ? WHERE id = ?",
+        args: [status, id],
+      });
+      const res = await client.execute({
+        sql: "SELECT * FROM orders WHERE id = ? LIMIT 1",
+        args: [id],
+      });
+      if (res.rows.length) {
+        const r: any = res.rows[0];
+        return {
+          id: String(r.id),
+          conversationId: String(r.conversation_id || r.conversationId || ""),
+          customerName: r.customer_name ? String(r.customer_name) : undefined,
+          deliveryAddress: r.delivery_address ? String(r.delivery_address) : undefined,
+          paymentMethod: r.payment_method ? String(r.payment_method) : undefined,
+          itemsSummary: r.items_summary ? String(r.items_summary) : undefined,
+          deliveryFee: r.delivery_fee != null ? Number(r.delivery_fee) : 0,
+          changeAmount: r.change_amount ? String(r.change_amount) : undefined,
+          deliveryNotes: r.delivery_notes ? String(r.delivery_notes) : undefined,
+          status: (r.status as OrderStatus) || status,
+          total: Number(r.total ?? r.amount ?? 0),
+          createdAt: parseTimestamp(r.created_at),
+        };
+      }
+    } catch (err) {
+      console.error("[store] updateOrderStatus error:", err);
+    }
+  }
+
+  return memOrder || null;
+}
+
 export async function getOrders(): Promise<Order[]> {
   if (!isTursoConfigured()) {
     return getMemoryStore().getOrders();
@@ -603,6 +707,9 @@ export async function getOrders(): Promise<Order[]> {
       deliveryAddress: r.delivery_address ? String(r.delivery_address) : undefined,
       paymentMethod: r.payment_method ? String(r.payment_method) : undefined,
       itemsSummary: r.items_summary ? String(r.items_summary) : undefined,
+      deliveryFee: r.delivery_fee != null ? Number(r.delivery_fee) : 0,
+      changeAmount: r.change_amount ? String(r.change_amount) : undefined,
+      deliveryNotes: r.delivery_notes ? String(r.delivery_notes) : undefined,
       status: (r.status as Order["status"]) || "confirmed",
       total: Number(r.total ?? r.amount ?? 0),
       createdAt: parseTimestamp(r.created_at),
@@ -635,6 +742,11 @@ export async function getOrgSettings(): Promise<OrgSettings> {
       extraPrompt: r.extra_prompt != null ? String(r.extra_prompt) : DEFAULT_SETTINGS.extraPrompt,
       botObjective: r.bot_objective != null ? String(r.bot_objective) : DEFAULT_SETTINGS.botObjective,
       transferQrImage: r.transfer_qr_image != null ? String(r.transfer_qr_image) : DEFAULT_SETTINGS.transferQrImage,
+      nequiNumber: r.nequi_number != null ? String(r.nequi_number) : DEFAULT_SETTINGS.nequiNumber,
+      brebKey: r.breb_key != null ? String(r.breb_key) : DEFAULT_SETTINGS.brebKey,
+      deliveryFee: r.delivery_fee != null ? String(r.delivery_fee) : DEFAULT_SETTINGS.deliveryFee,
+      freeDeliveryThreshold: r.free_delivery_threshold != null ? String(r.free_delivery_threshold) : DEFAULT_SETTINGS.freeDeliveryThreshold,
+      estimatedDeliveryTime: r.estimated_delivery_time != null ? String(r.estimated_delivery_time) : DEFAULT_SETTINGS.estimatedDeliveryTime,
     };
     return settings;
   } catch (err) {
@@ -675,6 +787,11 @@ export async function updateOrgSettings(patch: Partial<OrgSettings>): Promise<Or
       if (patch.extraPrompt !== undefined) { sets.push("extra_prompt = ?"); args.push(patch.extraPrompt); }
       if (patch.botObjective !== undefined) { sets.push("bot_objective = ?"); args.push(patch.botObjective); }
       if (patch.transferQrImage !== undefined) { sets.push("transfer_qr_image = ?"); args.push(patch.transferQrImage); }
+      if (patch.nequiNumber !== undefined) { sets.push("nequi_number = ?"); args.push(patch.nequiNumber); }
+      if (patch.brebKey !== undefined) { sets.push("breb_key = ?"); args.push(patch.brebKey); }
+      if (patch.deliveryFee !== undefined) { sets.push("delivery_fee = ?"); args.push(patch.deliveryFee); }
+      if (patch.freeDeliveryThreshold !== undefined) { sets.push("free_delivery_threshold = ?"); args.push(patch.freeDeliveryThreshold); }
+      if (patch.estimatedDeliveryTime !== undefined) { sets.push("estimated_delivery_time = ?"); args.push(patch.estimatedDeliveryTime); }
 
       args.push(1);
       await client.execute({

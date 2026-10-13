@@ -12,6 +12,7 @@ import {
   getProducts,
   parseTimestamp,
   setConversationStatus,
+  updateOrderStatus,
   updateOrgSettings,
   upsertProduct,
   type Conversation,
@@ -19,6 +20,7 @@ import {
   type Message,
   type Order,
   type OrderItem,
+  type OrderStatus,
   type OrgSettings,
   type Product,
 } from "./index";
@@ -37,6 +39,7 @@ export interface IStore {
   upsertProduct(product: Product): Promise<void>;
   createOrder(conversationId: string, items: OrderItem[], total: number): Promise<Order>;
   getOrders(): Promise<Order[]>;
+  updateOrderStatus(id: string, status: OrderStatus): Promise<Order | null>;
   getOrgSettings(): Promise<OrgSettings>;
   updateOrgSettings(patch: Partial<OrgSettings>): Promise<OrgSettings>;
 }
@@ -88,6 +91,7 @@ export async function getStore(): Promise<IStore> {
     upsertProduct,
     createOrder,
     getOrders,
+    updateOrderStatus,
     getOrgSettings,
     updateOrgSettings,
   };

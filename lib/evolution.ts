@@ -23,6 +23,10 @@ export type ParsedEvolutionInbound = {
   fromMe: boolean;
   isGroup: boolean;
   pushName?: string;
+  isMedia?: boolean;
+  mediaType?: "image" | "video" | "audio" | "document" | "unknown";
+  mediaBase64?: string;
+  rawMsg?: Record<string, unknown>;
 };
 
 export function isEvolutionConfigured(): boolean {
@@ -353,7 +357,32 @@ export function parseEvolutionUpsert(
     }
   }
 
-  const text = extractTextFromMessage(asRecord(msg.message) || msg).trim();
+  const messageObj = asRecord(msg.message) || msg;
+  const imageMsg = asRecord(messageObj.imageMessage);
+  const msgType = String(msg.messageType || "").toLowerCase();
+  const isImage = Boolean(imageMsg || msgType.includes("image"));
+  const isVideo = Boolean(messageObj.videoMessage || msgType.includes("video"));
+  const isAudio = Boolean(messageObj.audioMessage || msgType.includes("audio"));
+  const isDoc = Boolean(messageObj.documentMessage || msgType.includes("document"));
+  const isMedia = isImage || isVideo || isAudio || isDoc;
+  const mediaType: "image" | "video" | "audio" | "document" | "unknown" = isImage
+    ? "image"
+    : isVideo
+    ? "video"
+    : isAudio
+    ? "audio"
+    : isDoc
+    ? "document"
+    : "unknown";
+
+  let mediaBase64: string | undefined = undefined;
+  if (typeof msg.base64 === "string" && msg.base64) {
+    mediaBase64 = msg.base64;
+  } else if (imageMsg && typeof imageMsg.base64 === "string" && imageMsg.base64) {
+    mediaBase64 = imageMsg.base64;
+  }
+
+  const text = extractTextFromMessage(messageObj).trim();
   const pushName =
     typeof msg.pushName === "string" ? msg.pushName : undefined;
 
@@ -376,6 +405,10 @@ export function parseEvolutionUpsert(
     fromMe,
     isGroup,
     pushName,
+    isMedia,
+    mediaType,
+    mediaBase64,
+    rawMsg: msg,
   };
 }
 
@@ -731,4 +764,68 @@ export async function sendEvolutionMedia(
   } catch (err: any) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * Recupera el Base64 de un mensaje multimedia desde Evolution API v2:
+ * POST /chat/getBase64FromMediaMessage/{instance}
+ */
+export async function getEvolutionMediaBase64(
+  messageId: string,
+  rawMsg?: Record<string, unknown>
+): Promise<{ base64: string; mimeType: string } | null> {
+  const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "");
+  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const instance = process.env.EVOLUTION_INSTANCE?.trim();
+  if (!base || !apiKey || !instance) return null;
+
+  const url = `${base}/chat/getBase64FromMediaMessage/${encodeURIComponent(instance)}`;
+  try {
+    const keyObj = (rawMsg && asRecord(rawMsg.key)) || { id: messageId };
+    const bodyPayload = {
+      message: rawMsg ? rawMsg : { key: keyObj },
+      convertToMp4: false,
+    };
+
+    let res = await fetch(url, {
+      method: "POST",
+      headers: {
+        apikey: apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(bodyPayload),
+    });
+
+    if (!res.ok) {
+      // Reintento con key básico
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          apikey: apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: { key: { id: messageId } },
+          convertToMp4: false,
+        }),
+      });
+    }
+
+    if (!res.ok) {
+      console.warn("[evolution] getBase64FromMediaMessage status:", res.status);
+      return null;
+    }
+
+    const data = await res.json().catch(() => null);
+    const b64 = data?.base64 || data?.data;
+    if (b64 && typeof b64 === "string") {
+      return {
+        base64: b64,
+        mimeType: (data?.mimetype as string) || (data?.mimeType as string) || "image/jpeg",
+      };
+    }
+  } catch (err) {
+    console.warn("[evolution] getEvolutionMediaBase64 error:", err);
+  }
+  return null;
 }

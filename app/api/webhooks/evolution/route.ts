@@ -1,5 +1,5 @@
 import { after, NextRequest, NextResponse } from "next/server";
-import { markEvolutionMessageAsRead } from "@/lib/evolution";
+import { markEvolutionMessageAsRead, getEvolutionMediaBase64 } from "@/lib/evolution";
 import {
   isLidJid,
   isMessagesUpsertEvent,
@@ -10,12 +10,15 @@ import { sendDelayedOutboundWhatsApp } from "@/lib/outbound-queue";
 import { sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
 import { claimWebhookEvent } from "@/lib/webhook-dedupe";
 import { handleSalesMessage } from "@/lib/agent/sales-agent";
+import { verifyReceiptWithGemini } from "@/lib/agent/receipt-verifier";
 import {
   appendMessage,
   getConversation,
   getOrCreateConversation,
   setConversationStatus,
   setConversationCustomerName,
+  getOrders,
+  updateOrderStatus,
 } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -89,8 +92,9 @@ export async function POST(request: NextRequest) {
       return jsonOk({ skipped: "group" });
     }
 
+    const isImage = Boolean(parsed.isMedia && parsed.mediaType === "image");
     const text = (parsed.text || "").trim();
-    if (!text) {
+    if (!text && !isImage) {
       return jsonOk({ skipped: "empty_body" });
     }
 
@@ -108,6 +112,7 @@ export async function POST(request: NextRequest) {
       replyJid: parsed.replyJid,
       textLen: text.length,
       pushName: parsed.pushName,
+      isImage,
     });
 
     const fromKey = parsed.from;
@@ -118,8 +123,13 @@ export async function POST(request: NextRequest) {
       await setConversationCustomerName(fromKey, parsed.pushName).catch(() => {});
     }
 
+    const replyTo = replyTargetFromParsed(parsed);
+
     // Guardar el mensaje del usuario de inmediato en el historial de chat del panel
-    await appendMessage(fromKey, "user", text);
+    const userMessageContent = isImage
+      ? (text ? `[Foto adjunta: ${text}]` : "📷 [Comprobante o Imagen adjunta]")
+      : text;
+    await appendMessage(fromKey, "user", userMessageContent);
 
     if (conv.status === "human") {
       console.log("[evolution] human mode — skip AI", { from: fromKey });
@@ -130,9 +140,105 @@ export async function POST(request: NextRequest) {
       await setConversationStatus(fromKey, "bot");
     }
 
+    // SI ES UNA IMAGEN: Intentar verificar como comprobante de pago con Gemini Visión
+    if (isImage) {
+      console.log("[evolution] Analizando imagen entrante con Gemini Visión...", { from: fromKey });
+      
+      let imageBase64 = parsed.mediaBase64;
+      let mimeType = "image/jpeg";
+      if (!imageBase64 && parsed.messageId) {
+        const fetched = await getEvolutionMediaBase64(parsed.messageId, parsed.rawMsg);
+        if (fetched) {
+          imageBase64 = fetched.base64;
+          mimeType = fetched.mimeType || "image/jpeg";
+        }
+      }
+
+      // Buscar si el cliente tiene un pedido activo esperando comprobante
+      const allOrders = await getOrders().catch(() => []);
+      const pendingOrder = allOrders.find(
+        (o) =>
+          (o.conversationId === fromKey || (conv.phone && o.conversationId.includes(conv.phone))) &&
+          (o.status === "pending" || o.status === "confirmed")
+      );
+
+      if (imageBase64) {
+        const verification = await verifyReceiptWithGemini(
+          imageBase64,
+          mimeType,
+          pendingOrder?.total
+        );
+
+        console.log("[evolution receipt verification]", verification);
+
+        if (verification.isReceipt) {
+          if (pendingOrder) {
+            await updateOrderStatus(pendingOrder.id, "preparing").catch((err) => {
+              console.error("[evolution] error updating order status to preparing:", err);
+            });
+          }
+
+          const bankName = verification.bank || "transferencia";
+          const amountFormatted = verification.amount
+            ? `$${verification.amount.toLocaleString("es-CO")} COP`
+            : pendingOrder
+            ? `$${pendingOrder.total.toLocaleString("es-CO")} COP`
+            : "";
+          const refPart = verification.reference
+            ? `\n🧾 *Aprobación / Comprobante:* #${verification.reference}`
+            : "";
+
+          const receiptReply = `¡Comprobante de ${bankName} verificado con éxito${amountFormatted ? ` por ${amountFormatted}` : ""}! 🎉${refPart}\n\nTu pedido ya entró a preparación en cocina 👨‍🍳🔥 En unos momentos tus buñuelos estarán doraditos, crujientes y listos para salir a domicilio. ¡Muchas gracias!`;
+
+          await appendMessage(fromKey, "assistant", receiptReply);
+
+          after(async () => {
+            try {
+              await sendDelayedOutboundWhatsApp(fromKey, replyTo, receiptReply, parsed.messageId);
+            } catch (err) {
+              console.error("[evolution] error sending receipt confirmation:", err);
+            }
+          });
+
+          return jsonOk({ verifiedReceipt: true });
+        }
+
+        // Si la imagen NO es comprobante de pago y no vino con texto explicativo:
+        if (!text) {
+          const notReceiptReply =
+            "Recibimos tu imagen 📸, pero no pudimos identificar con claridad los datos de un comprobante de pago exitoso (valor, fecha o entidad bancaria). Por favor verifica y envíanos la captura clara del comprobante de Nequi o Bre-B, o cuéntanos si necesitas ayuda con otro medio de pago.";
+          await appendMessage(fromKey, "assistant", notReceiptReply);
+
+          after(async () => {
+            try {
+              await sendDelayedOutboundWhatsApp(fromKey, replyTo, notReceiptReply, parsed.messageId);
+            } catch (err) {
+              console.error("[evolution] error sending notReceipt reply:", err);
+            }
+          });
+
+          return jsonOk({ imageNotReceipt: true });
+        }
+      } else if (!text) {
+        // No se pudo descargar la imagen y no hay texto: enviar mensaje amigable
+        const fallbackReply =
+          "¡Recibimos tu imagen! 📸 Nuestro equipo en Buñuelandia la está revisando en este momento para continuar con tu pedido. 👨‍🍳";
+        await appendMessage(fromKey, "assistant", fallbackReply);
+
+        after(async () => {
+          try {
+            await sendDelayedOutboundWhatsApp(fromKey, replyTo, fallbackReply, parsed.messageId);
+          } catch (err) {
+            console.error("[evolution] error sending fallback reply:", err);
+          }
+        });
+
+        return jsonOk({ imageFallback: true });
+      }
+    }
+
     const effectiveName = parsed.pushName || conv.customerName;
     const { reply, mode, mediaUrl } = await handleSalesMessage(fromKey, text, effectiveName);
-    const replyTo = replyTargetFromParsed(parsed);
     console.log("[evolution reply]", {
       from: fromKey,
       replyTo,
