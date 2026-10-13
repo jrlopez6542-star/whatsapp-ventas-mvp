@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { QrModal } from "./QrModal";
 import Script from 'next/script';
 import Link from "next/link";
@@ -285,7 +285,7 @@ export default function PanelDashboard() {
   // Load initial health and data
   const loadHealth = async () => {
     try {
-      const res = await fetch("/api/health");
+      const res = await fetch(`/api/health?_t=${Date.now()}`, { cache: "no-store" });
       const data = await res.json();
       setHealth(data);
     } catch {}
@@ -293,7 +293,7 @@ export default function PanelDashboard() {
 
   const loadConversations = async () => {
     try {
-      const res = await fetch("/api/panel/conversations");
+      const res = await fetch(`/api/panel/conversations?_t=${Date.now()}`, { cache: "no-store" });
       const data = await res.json();
       if (data.ok) setConversations(data.conversations || []);
     } catch {}
@@ -301,7 +301,7 @@ export default function PanelDashboard() {
 
   const loadOrders = async () => {
     try {
-      const res = await fetch("/api/panel/orders");
+      const res = await fetch(`/api/panel/orders?_t=${Date.now()}`, { cache: "no-store" });
       const data = await res.json();
       if (data.ok) setOrders(data.orders || []);
     } catch {}
@@ -444,32 +444,88 @@ export default function PanelDashboard() {
     }
   }, [tab]);
 
-  // Periodic polling every 4s for real-time updates in chats and orders
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (tab === "chats") loadConversations();
-      if (tab === "orders") loadOrders();
-    }, 4000);
-    return () => clearInterval(timer);
-  }, [tab]);
+  // --- SISTEMA DE AUTO-REFRESCO AUTOMÁTICO EN TIEMPO REAL ---
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
+  const [refreshInterval, setRefreshInterval] = useState(5); // en segundos
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date>(new Date());
 
-  // Load messages when conversation selected
+  // Cargar preferencias guardadas en localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const savedAuto = localStorage.getItem("crm_auto_refresh");
+      if (savedAuto !== null) setAutoRefreshEnabled(savedAuto === "true");
+      const savedInterval = localStorage.getItem("crm_refresh_interval");
+      if (savedInterval !== null) {
+        const val = parseInt(savedInterval, 10);
+        if (!isNaN(val) && val >= 2) setRefreshInterval(val);
+      }
+    }
+  }, []);
+
+  const loadMessagesForConv = useCallback(async (convId: string) => {
+    if (!convId) return;
+    try {
+      const res = await fetch(`/api/panel/conversations/${encodeURIComponent(convId)}/messages?_t=${Date.now()}`, { cache: "no-store" });
+      const data = await res.json();
+      if (data.ok) setMessages(data.messages || []);
+    } catch {}
+  }, []);
+
+  const refreshAll = useCallback(async (silent = false) => {
+    if (!silent) setIsRefreshing(true);
+    try {
+      const tasks: Promise<any>[] = [
+        loadConversations(),
+        loadOrders(),
+        loadHealth(),
+      ];
+      if (selectedConvId) {
+        tasks.push(loadMessagesForConv(selectedConvId));
+      }
+      await Promise.allSettled(tasks);
+      setLastRefreshedAt(new Date());
+    } finally {
+      if (!silent) {
+        setTimeout(() => setIsRefreshing(false), 400);
+      }
+    }
+  }, [selectedConvId, loadMessagesForConv]);
+
+  // Cargar mensajes inmediatamente al cambiar de chat
   useEffect(() => {
     if (!selectedConvId) {
       setMessages([]);
       return;
     }
-    const loadMessages = async () => {
-      try {
-        const res = await fetch(`/api/panel/conversations/${encodeURIComponent(selectedConvId)}/messages`, { cache: "no-store" });
-        const data = await res.json();
-        if (data.ok) setMessages(data.messages || []);
-      } catch {}
-    };
-    loadMessages();
-    const timer = setInterval(loadMessages, 3000);
+    loadMessagesForConv(selectedConvId);
+  }, [selectedConvId, loadMessagesForConv]);
+
+  // Intervalo de auto-refresco periódico
+  useEffect(() => {
+    if (!autoRefreshEnabled) return;
+    const intervalMs = Math.max(2, refreshInterval) * 1000;
+    const timer = setInterval(() => {
+      refreshAll(true);
+    }, intervalMs);
     return () => clearInterval(timer);
-  }, [selectedConvId]);
+  }, [autoRefreshEnabled, refreshInterval, refreshAll]);
+
+  // Refrescar inmediatamente al regresar a la pestaña del navegador (focus / visibilidad)
+  useEffect(() => {
+    const handleFocus = () => {
+      refreshAll(false);
+    };
+    window.addEventListener("focus", handleFocus);
+    const handleVis = () => {
+      if (document.visibilityState === "visible") handleFocus();
+    };
+    document.addEventListener("visibilitychange", handleVis);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVis);
+    };
+  }, [refreshAll]);
 
   const handleToggleStatus = async (convId: string, currentStatus: string) => {
     const nextStatus = currentStatus === "human" ? "bot" : "human";
@@ -690,6 +746,73 @@ export default function PanelDashboard() {
               </label>
             </div>
 
+            {/* WIDGET AUTO-REFRESCO AUTOMÁTICO */}
+            <div className="mx-2 mb-2 p-2.5 bg-[#162128] border border-[#2a3942] rounded-lg shadow-sm">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="relative flex h-2 w-2">
+                    {autoRefreshEnabled && (
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    )}
+                    <span className={`relative inline-flex rounded-full h-2 w-2 ${autoRefreshEnabled ? 'bg-emerald-500' : 'bg-slate-500'}`}></span>
+                  </span>
+                  <span className="text-[11px] font-bold text-white uppercase tracking-wider">
+                    Auto-Refresco
+                  </span>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0" title={autoRefreshEnabled ? "Pausar refresco automático" : "Activar refresco automático"}>
+                  <input
+                    type="checkbox"
+                    className="sr-only peer"
+                    checked={autoRefreshEnabled}
+                    onChange={(e) => {
+                      const val = e.target.checked;
+                      setAutoRefreshEnabled(val);
+                      if (typeof window !== "undefined") localStorage.setItem("crm_auto_refresh", String(val));
+                    }}
+                  />
+                  <div className="w-7 h-3.5 bg-[#202c33] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[1px] after:left-[1px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-2.5 after:w-2.5 after:transition-all peer-checked:bg-[#007aff]"></div>
+                </label>
+              </div>
+
+              {/* Selector de intervalo y botón de refresco */}
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={refreshInterval}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setRefreshInterval(val);
+                    if (typeof window !== "undefined") localStorage.setItem("crm_refresh_interval", String(val));
+                  }}
+                  className="flex-1 bg-[#121b22] text-slate-300 text-[10px] font-medium px-1.5 py-1 rounded border border-[#2a3942] focus:outline-none focus:border-[#007aff] cursor-pointer"
+                  title="Frecuencia de actualización automática"
+                >
+                  <option value={3}>Cada 3 seg</option>
+                  <option value={5}>Cada 5 seg</option>
+                  <option value={10}>Cada 10 seg</option>
+                  <option value={30}>Cada 30 seg</option>
+                </select>
+
+                <button
+                  onClick={() => refreshAll(false)}
+                  disabled={isRefreshing}
+                  className="bg-[#202c33] hover:bg-[#2a3942] text-slate-200 hover:text-white px-2 py-1 rounded border border-[#2a3942] transition flex items-center gap-1 text-[10px] font-medium shrink-0 shadow-sm"
+                  title="Refrescar todos los datos ahora"
+                >
+                  <i className={`ph-bold ph-arrows-clockwise text-xs ${isRefreshing ? 'animate-spin text-[#007aff]' : ''}`}></i>
+                  <span>{isRefreshing ? 'Sincro...' : 'Refrescar'}</span>
+                </button>
+              </div>
+
+              {/* Timestamp última sincronización */}
+              <div className="mt-1.5 pt-1 border-t border-[#1f2c34] flex items-center justify-between text-[9px] text-slate-400">
+                <span>Última sincronización:</span>
+                <span className="font-mono text-emerald-400 font-medium">
+                  {lastRefreshedAt.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                </span>
+              </div>
+            </div>
+
             <nav className="px-2 mt-2 space-y-1 text-[13px] font-medium text-slate-400">
               <button onClick={() => { setTab("real_orders" as any); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='real_orders' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <i className="ph ph-receipt text-lg"></i> Pedidos
@@ -741,13 +864,24 @@ export default function PanelDashboard() {
             {/* 2. BANDEJA DE CHATS */}
             <section className={`${isMobileMode ? (selectedConvId ? 'hidden' : 'w-full') : 'w-[340px]'} bg-[#111b21] border-r border-[#1f2c34] flex flex-col shrink-0`}>
               <div className="p-4 pb-2 border-b border-[#1f2c34]">
-                <div className="flex items-center gap-3 mb-4">
-                  {isMobileMode && (
-                    <button onClick={() => setShowMobileSidebar(true)} className="text-white p-1 hover:bg-[#202c33] rounded">
-                      <i className="ph ph-list text-2xl"></i>
-                    </button>
-                  )}
-                  <h2 className="text-xl font-bold text-white">Chats en Vivo</h2>
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <div className="flex items-center gap-3">
+                    {isMobileMode && (
+                      <button onClick={() => setShowMobileSidebar(true)} className="text-white p-1 hover:bg-[#202c33] rounded">
+                        <i className="ph ph-list text-2xl"></i>
+                      </button>
+                    )}
+                    <h2 className="text-xl font-bold text-white">Chats en Vivo</h2>
+                  </div>
+                  <button
+                    onClick={() => refreshAll(false)}
+                    disabled={isRefreshing}
+                    className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-[#202c33] transition flex items-center gap-1.5 text-xs shadow-sm"
+                    title="Refrescar chats y pedidos"
+                  >
+                    <i className={`ph-bold ph-arrows-clockwise text-sm ${isRefreshing ? 'animate-spin text-[#007aff]' : ''}`}></i>
+                    <span className="text-[11px] hidden sm:inline">{isRefreshing ? 'Actualizando' : 'Refrescar'}</span>
+                  </button>
                 </div>
                 <div className="relative mb-4">
                   <i className="ph ph-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-base"></i>
@@ -1180,7 +1314,14 @@ export default function PanelDashboard() {
         {tab !== "chats" && (
           <main className="flex-1 overflow-y-auto bg-[#0b141a]">
             {tab === "orders" && <DashboardView conversations={conversations} orders={orders} />}
-            {tab === "real_orders" && <OrdersView orders={orders} onOrdersChange={loadOrders} />}
+            {tab === "real_orders" && (
+              <OrdersView
+                orders={orders}
+                onOrdersChange={loadOrders}
+                onRefresh={() => refreshAll(false)}
+                isRefreshing={isRefreshing}
+              />
+            )}
             {tab === "catalog" && <CatalogView />}
             {tab === "hours" && <HoursView />}
             {tab === "settings" && <SettingsView />}

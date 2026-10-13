@@ -69,9 +69,13 @@ const STATUS_CONFIG: Record<
 export function OrdersView({
   orders = [],
   onOrdersChange,
+  onRefresh,
+  isRefreshing,
 }: {
   orders: OrderItemView[];
   onOrdersChange?: () => void;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
 }) {
   const [selectedOrder, setSelectedOrder] = useState<OrderItemView | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -117,7 +121,7 @@ export function OrdersView({
 
   return (
     <div className="p-6 pt-16 md:pt-6 text-slate-300 w-full h-full overflow-y-auto relative">
-      <div className="flex justify-between items-center mb-8">
+      <div className="flex justify-between items-center mb-8 gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-white mb-1 flex items-center gap-2">
             <i className="ph-fill ph-package text-[#007aff]"></i> Gestión de Pedidos
@@ -126,6 +130,17 @@ export function OrdersView({
             Control de pedidos en tiempo real con notificaciones automáticas por WhatsApp a cada cambio de estado.
           </p>
         </div>
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            disabled={isRefreshing}
+            className="bg-[#162128] hover:bg-[#202c33] text-slate-200 hover:text-white px-3.5 py-2 rounded-lg border border-[#2a3942] transition flex items-center gap-2 text-xs font-semibold shadow-sm shrink-0"
+            title="Refrescar pedidos ahora"
+          >
+            <i className={`ph-bold ph-arrows-clockwise text-sm ${isRefreshing ? 'animate-spin text-[#007aff]' : ''}`}></i>
+            <span>{isRefreshing ? 'Actualizando...' : 'Refrescar Pedidos'}</span>
+          </button>
+        )}
       </div>
 
       <div className="bg-[#121b22] border border-[#1f2c34] rounded-xl overflow-hidden shadow-sm">
