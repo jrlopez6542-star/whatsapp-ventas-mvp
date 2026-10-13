@@ -570,7 +570,7 @@ export async function getOrders(): Promise<Order[]> {
       itemsSummary: r.items_summary ? String(r.items_summary) : undefined,
       status: (r.status as Order["status"]) || "confirmed",
       total: Number(r.total ?? r.amount ?? 0),
-      createdAt: Number(r.created_at || Date.now()),
+      createdAt: parseTimestamp(r.created_at),
     }));
   } catch (err) {
     console.error("[store] getOrders Turso query failed:", err);

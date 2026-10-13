@@ -1,13 +1,20 @@
 "use client";
+import React, { useEffect, useRef, useState } from "react";
 import { QrModal } from "./QrModal";
 import Script from 'next/script';
-
-import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { DashboardView } from "./DashboardView";
 import { SettingsView } from "./SettingsView";
 import { OrdersView } from "./OrdersView";
 import { BotFlowsView } from "./BotFlowsView";
+import {
+  formatMessageTime,
+  formatConversationListTime,
+  getChatDateDivider,
+  getChatDateKey,
+  formatDateDisplay,
+} from "@/lib/date-utils";
+export { formatDateDisplay };
 import "../crm.css";
 
 interface Conversation {
@@ -108,31 +115,6 @@ export function formatPhoneDisplay(raw: string): string {
   }
 
   return str.startsWith("+") ? str : `+${str}`;
-}
-
-export function formatDateDisplay(ts: number | string | undefined): { time: string; date: string } {
-  if (!ts) return { time: "Reciente", date: "Hoy" };
-  let num = typeof ts === "number" ? ts : Number(ts);
-  if (isNaN(num) || num <= 86400000) {
-    if (typeof ts === "string") {
-      const parsed = Date.parse(ts);
-      if (!isNaN(parsed) && parsed > 86400000) {
-        num = parsed;
-      } else {
-        return { time: "Reciente", date: "Hoy" };
-      }
-    } else {
-      return { time: "Reciente", date: "Hoy" };
-    }
-  }
-  if (num < 10000000000) {
-    num *= 1000;
-  }
-  const d = new Date(num);
-  return {
-    time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    date: d.toLocaleDateString(),
-  };
 }
 
 export default function PanelDashboard() {
@@ -661,7 +643,7 @@ export default function PanelDashboard() {
                         <div className="flex-1 min-w-0">
                           <div className="flex justify-between items-baseline mb-1">
                             <h3 className="text-[15px] font-semibold text-white truncate">{formatPhoneLocal(conv.phone) || formatPhoneLocal(conv.id)}</h3>
-                            <span className="text-xs text-slate-400">{new Date(conv.updatedAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                            <span className="text-xs text-slate-400">{formatConversationListTime(conv.updatedAt)}</span>
                           </div>
                           
                           <div className="flex items-center gap-1.5 mb-1.5">
@@ -738,6 +720,8 @@ export default function PanelDashboard() {
                   <div className="flex-1 overflow-y-auto p-6 space-y-3">
                     {messages.map((m, idx) => {
                       const isBot = m.role === "assistant";
+                      const prevMsg = idx > 0 ? messages[idx - 1] : null;
+                      const isNewDay = !prevMsg || getChatDateKey(m.createdAt) !== getChatDateKey(prevMsg.createdAt);
                       
                       const btnRegex = /\[BOTONES:\s*(.+?)\]/i;
                       const match = m.content.match(btnRegex);
@@ -748,37 +732,44 @@ export default function PanelDashboard() {
                         buttons = match[1].split('|').map(b => b.trim()).filter(b => b);
                       }
 
-                      if (isBot) {
-                        return (
-                          <div key={idx} className="flex flex-col items-start w-full">
-                            <div className="bg-[#202c33] text-slate-200 p-3 rounded-lg rounded-tl-none text-[14.5px] max-w-md shadow-sm border border-transparent">
-                              <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
-                              <div className="text-[11px] text-slate-400 text-right mt-1">{new Date(m.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                      return (
+                        <React.Fragment key={m.id || idx}>
+                          {isNewDay && (
+                            <div className="flex justify-center my-3">
+                              <span className="bg-[#182229] text-slate-400 text-[11px] px-3 py-1 rounded-lg uppercase tracking-wider font-medium shadow-sm border border-[#222e35]">
+                                {getChatDateDivider(m.createdAt)}
+                              </span>
                             </div>
-                            {buttons.length > 0 && (
-                              <div className="w-full max-w-md mt-1 space-y-1">
-                                {buttons.map((b, i) => (
-                                  <div key={i} className="w-full bg-[#1e2a30]/30 border border-[#2a3942]/50 text-[#53bdeb]/50 text-[13px] py-1.5 px-3 rounded-lg flex items-center justify-center mt-1 cursor-default pointer-events-none opacity-80">
-                                    {b}
-                                  </div>
-                                ))}
+                          )}
+                          {isBot ? (
+                            <div className="flex flex-col items-start w-full">
+                              <div className="bg-[#202c33] text-slate-200 p-3 rounded-lg rounded-tl-none text-[14.5px] max-w-md shadow-sm border border-transparent">
+                                <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
+                                <div className="text-[11px] text-slate-400 text-right mt-1">{formatMessageTime(m.createdAt)}</div>
                               </div>
-                            )}
-                          </div>
-                        );
-                      } else {
-                        return (
-                          <div key={idx} className="flex flex-col items-end w-full">
-                            <div className="bg-[#005c4b] text-white p-3 rounded-lg rounded-tr-none text-[14.5px] max-w-md shadow-sm">
-                              <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
-                              <div className="flex items-center justify-end gap-1 text-[11px] text-teal-100/70 mt-1">
-                                <span>{new Date(m.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                                <i className="ph-fill ph-checks text-[#53bdeb] text-sm"></i>
+                              {buttons.length > 0 && (
+                                <div className="w-full max-w-md mt-1 space-y-1">
+                                  {buttons.map((b, i) => (
+                                    <div key={i} className="w-full bg-[#1e2a30]/30 border border-[#2a3942]/50 text-[#53bdeb]/50 text-[13px] py-1.5 px-3 rounded-lg flex items-center justify-center mt-1 cursor-default pointer-events-none opacity-80">
+                                      {b}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-end w-full">
+                              <div className="bg-[#005c4b] text-white p-3 rounded-lg rounded-tr-none text-[14.5px] max-w-md shadow-sm">
+                                <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
+                                <div className="flex items-center justify-end gap-1 text-[11px] text-teal-100/70 mt-1">
+                                  <span>{formatMessageTime(m.createdAt)}</span>
+                                  <i className="ph-fill ph-checks text-[#53bdeb] text-sm"></i>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        );
-                      }
+                          )}
+                        </React.Fragment>
+                      );
                     })}
                     <div ref={messagesEndRef} />
                   </div>

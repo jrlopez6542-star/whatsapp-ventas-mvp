@@ -1,5 +1,6 @@
 "use client";
 import React, { useState } from "react";
+import { formatOrderDateTime } from "@/lib/date-utils";
 
 export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onOrdersChange?: () => void }) {
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
@@ -80,7 +81,7 @@ export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onO
                       </span>
                     </td>
                     <td className="p-4 text-slate-500 text-xs">
-                      {new Date(o.createdAt).toLocaleString()}
+                      {formatOrderDateTime(o.createdAt)}
                     </td>
                     <td className="p-4 text-right">
                       <button 
@@ -123,7 +124,7 @@ export function OrdersView({ orders = [], onOrdersChange }: { orders: any[], onO
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-slate-500 mb-1">FECHA Y HORA</div>
-                  <div className="text-sm text-slate-300">{new Date(selectedOrder.createdAt).toLocaleString()}</div>
+                  <div className="text-sm text-slate-300">{formatOrderDateTime(selectedOrder.createdAt)}</div>
                 </div>
               </div>
 
