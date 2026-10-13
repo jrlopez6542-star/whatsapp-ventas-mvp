@@ -15,6 +15,7 @@ import {
   getConversation,
   getOrCreateConversation,
   setConversationStatus,
+  setConversationCustomerName,
 } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -112,6 +113,11 @@ export async function POST(request: NextRequest) {
     const fromKey = parsed.from;
     const conv = await getOrCreateConversation(fromKey);
 
+    // Si WhatsApp envía pushName y no teníamos nombre de cliente, asignarlo
+    if (parsed.pushName && !conv.customerName) {
+      await setConversationCustomerName(fromKey, parsed.pushName).catch(() => {});
+    }
+
     // Guardar el mensaje del usuario de inmediato en el historial de chat del panel
     await appendMessage(fromKey, "user", text);
 
@@ -124,7 +130,8 @@ export async function POST(request: NextRequest) {
       await setConversationStatus(fromKey, "bot");
     }
 
-    const { reply, mode, mediaUrl } = await handleSalesMessage(fromKey, text, parsed.pushName);
+    const effectiveName = parsed.pushName || conv.customerName;
+    const { reply, mode, mediaUrl } = await handleSalesMessage(fromKey, text, effectiveName);
     const replyTo = replyTargetFromParsed(parsed);
     console.log("[evolution reply]", {
       from: fromKey,

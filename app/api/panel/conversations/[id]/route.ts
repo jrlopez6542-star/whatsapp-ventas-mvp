@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { deleteConversation } from "@/lib/store";
+import { deleteConversation, setConversationCustomerName } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,6 +13,24 @@ export async function DELETE(
   try {
     await deleteConversation(decodedId);
     return NextResponse.json({ ok: true, deletedId: decodedId });
+  } catch (error) {
+    return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const decodedId = decodeURIComponent(id);
+  try {
+    const { customerName } = await request.json();
+    if (typeof customerName === "string") {
+      await setConversationCustomerName(decodedId, customerName);
+      return NextResponse.json({ ok: true, customerName });
+    }
+    return NextResponse.json({ ok: false, error: "customerName inválido" }, { status: 400 });
   } catch (error) {
     return NextResponse.json({ ok: false, error: String(error) }, { status: 500 });
   }

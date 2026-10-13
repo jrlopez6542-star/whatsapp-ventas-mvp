@@ -6,6 +6,7 @@ export type ConversationStatus = "bot" | "human" | "closed";
 export interface Conversation {
   id: string;
   phone: string;
+  customerName?: string;
   status: ConversationStatus;
   createdAt: number;
   updatedAt: number;
@@ -284,6 +285,7 @@ export async function getConversation(id: string): Promise<Conversation | null> 
     return {
       id: String(r.id),
       phone: decodeWhatsappIdentifier(rawPhone) || rawPhone,
+      customerName: r.customer_name ? String(r.customer_name) : undefined,
       status: (r.status as ConversationStatus) || "bot",
       createdAt: parseTimestamp(r.created_at),
       updatedAt: parseTimestamp(r.updated_at),
@@ -374,6 +376,32 @@ export async function setConversationStatus(id: string, status: ConversationStat
     }
   }
 }
+
+export async function setConversationCustomerName(
+  conversationId: string,
+  customerName: string
+): Promise<void> {
+  const trimmed = (customerName || "").trim();
+  if (!trimmed) return;
+
+  const mem = getMemoryStore();
+  const c = mem.conversations.get(conversationId);
+  if (c) c.customerName = trimmed;
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: "UPDATE conversations SET customer_name = ? WHERE id = ?",
+        args: [trimmed, conversationId],
+      });
+    } catch (err) {
+      console.warn("[store] setConversationCustomerName Turso error:", err);
+    }
+  }
+}
+
 
 export async function appendMessage(
   conversationId: string,
@@ -530,6 +558,13 @@ export async function createOrder(
         }
       } catch (itemErr) {
         console.warn("[store] order_items insert warning:", itemErr);
+      }
+
+      if (details?.customerName && !details.customerName.toLowerCase().startsWith("cliente whatsapp")) {
+        await client.execute({
+          sql: "UPDATE conversations SET customer_name = ? WHERE id = ?",
+          args: [details.customerName, conversationId],
+        }).catch(() => {});
       }
     } catch (err) {
       console.error("[store] createOrder Turso error:", err); throw err;

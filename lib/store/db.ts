@@ -50,6 +50,7 @@ export async function ensureTursoReady(): Promise<void> {
         `CREATE TABLE IF NOT EXISTS conversations (
           id TEXT PRIMARY KEY,
           phone TEXT NOT NULL,
+          customer_name TEXT,
           status TEXT NOT NULL DEFAULT 'bot',
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -116,6 +117,7 @@ export async function ensureTursoReady(): Promise<void> {
     const alterConversations = [
       "phone TEXT",
       "from_wa TEXT",
+      "customer_name TEXT",
       "status TEXT DEFAULT 'bot'",
       "created_at INTEGER DEFAULT 0",
       "updated_at INTEGER DEFAULT 0",

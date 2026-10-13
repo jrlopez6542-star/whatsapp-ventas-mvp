@@ -678,12 +678,15 @@ export async function sendEvolutionMedia(
 
   try {
     let mimetype = "image/jpeg";
+    let mediaPayload = mediaUrlOrBase64;
+
     if (mediaUrlOrBase64.startsWith("data:")) {
       const mimeMatch = mediaUrlOrBase64.match(/^data:([^;]+);base64,/);
       if (mimeMatch) mimetype = mimeMatch[1];
+      mediaPayload = mediaUrlOrBase64.replace(/^data:[^;]+;base64,/, "");
     }
 
-    const res = await fetch(url, {
+    let res = await fetch(url, {
       method: "POST",
       headers: {
         "apikey": apiKey,
@@ -693,11 +696,30 @@ export async function sendEvolutionMedia(
         number: resolved.number,
         mediatype: "image",
         mimetype,
-        fileName: "qr_transferencia.jpg",
-        media: mediaUrlOrBase64,
+        fileName: mimetype.includes("png") ? "qr_pago.png" : "qr_pago.jpg",
+        media: mediaPayload,
         caption: caption || "",
       }),
     });
+
+    if (!res.ok && mediaPayload !== mediaUrlOrBase64) {
+      // Si la versión de Evolution prefiere el data URI completo, reintentar con el original
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "apikey": apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          number: resolved.number,
+          mediatype: "image",
+          mimetype,
+          fileName: mimetype.includes("png") ? "qr_pago.png" : "qr_pago.jpg",
+          media: mediaUrlOrBase64,
+          caption: caption || "",
+        }),
+      });
+    }
 
     if (!res.ok) {
       const errText = await res.text().catch(() => "");

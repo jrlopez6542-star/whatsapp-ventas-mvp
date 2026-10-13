@@ -33,13 +33,40 @@ export function SettingsView() {
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 5 * 1024 * 1024) {
-      alert("La imagen no debe superar 5MB.");
+    if (file.size > 10 * 1024 * 1024) {
+      alert("La imagen no debe superar 10MB.");
       return;
     }
     const reader = new FileReader();
-    reader.onloadend = () => {
-      setSettings(prev => ({ ...prev, transferQrImage: reader.result as string }));
+    reader.onload = (event) => {
+      const src = event.target?.result as string;
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 800;
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const compressed = canvas.toDataURL("image/jpeg", 0.85);
+          setSettings(prev => ({ ...prev, transferQrImage: compressed }));
+        } else {
+          setSettings(prev => ({ ...prev, transferQrImage: src }));
+        }
+      };
+      img.src = src;
     };
     reader.readAsDataURL(file);
   };

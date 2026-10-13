@@ -20,6 +20,7 @@ import "../crm.css";
 interface Conversation {
   id: string;
   phone: string;
+  customerName?: string;
   status: "bot" | "human" | "closed";
   createdAt: number;
   updatedAt: number;
@@ -636,18 +637,23 @@ export default function PanelDashboard() {
                     <div key={conv.id} onClick={() => setSelectedConvId(conv.id)} className={`px-4 py-3 cursor-pointer transition border-b border-[#1f2c34] ${isActive ? 'bg-[#202c33]' : 'hover:bg-[#202c33]/50'}`}>
                       <div className="flex items-start gap-3">
                         <div className="relative shrink-0">
-                          <img src={`https://api.dicebear.com/7.x/initials/svg?seed=${conv.phone || conv.id}&backgroundColor=202c33&textColor=ffffff`} className="w-12 h-12 rounded-full object-cover border border-[#1f2c34]" alt="" />
+                          <img src={`https://api.dicebear.com/7.x/initials/svg?seed=${conv.customerName || conv.phone || conv.id}&backgroundColor=202c33&textColor=ffffff`} className="w-12 h-12 rounded-full object-cover border border-[#1f2c34]" alt="" />
                           {isHuman && <span className="absolute bottom-0 right-0 w-4 h-4 bg-[#f59e0b] border-2 border-[#111b21] rounded-full flex items-center justify-center"><i className="ph-fill ph-warning text-[10px] text-white"></i></span>}
                           {!isHuman && !isClosed && <span className="absolute bottom-0 right-0 w-4 h-4 bg-[#22c55e] border-2 border-[#111b21] rounded-full flex items-center justify-center"><i className="ph-fill ph-check text-[10px] text-white"></i></span>}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex justify-between items-baseline mb-1">
-                            <h3 className="text-[15px] font-semibold text-white truncate">{formatPhoneLocal(conv.phone) || formatPhoneLocal(conv.id)}</h3>
+                            <h3 className="text-[15px] font-semibold text-white truncate">{conv.customerName || formatPhoneLocal(conv.phone) || formatPhoneLocal(conv.id)}</h3>
                             <span className="text-xs text-slate-400">{formatConversationListTime(conv.updatedAt)}</span>
                           </div>
                           
                           <div className="flex items-center gap-1.5 mb-1.5">
                             <span className="text-xs text-slate-400 font-mono">{formatPhoneLocal(conv.phone) || formatPhoneLocal(conv.id)}</span>
+                            {conv.customerName && (
+                              <span className="text-[10px] bg-[#2a3942] text-slate-300 px-1.5 py-0.2 rounded font-sans">
+                                Cliente
+                              </span>
+                            )}
                           </div>
 
                           <div className="flex items-center gap-2 mb-1">
@@ -689,8 +695,13 @@ export default function PanelDashboard() {
                         </button>
                       )}
                       <div>
-                        <h2 className="text-[16px] font-bold text-white leading-tight">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</h2>
-                        <p className="text-xs text-slate-400">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</p>
+                        <h2 className="text-[16px] font-bold text-white leading-tight">
+                          {conversations.find(c => c.id === selectedConvId)?.customerName || selectedConvId.replace(/[^0-9]/g, '').slice(-10)}
+                        </h2>
+                        <p className="text-xs text-slate-400">
+                          {selectedConvId.replace(/[^0-9]/g, '').slice(-10)}
+                          {conversations.find(c => c.id === selectedConvId)?.customerName ? " • Cliente Registrado" : ""}
+                        </p>
                       </div>
                     </div>
 
@@ -700,18 +711,29 @@ export default function PanelDashboard() {
                           <i className="ph ph-info"></i>
                         </button>
                       )}
+
+                      {/* BOTÓN GENERAL PARA REINICIAR EL BOT */}
+                      <button
+                        onClick={() => handleToggleBot(selectedConvId, "bot")}
+                        title="Reiniciar Bot (Activar atención automática)"
+                        className="flex items-center gap-1.5 bg-[#202c33] hover:bg-[#2a3942] text-emerald-400 hover:text-emerald-300 font-medium text-xs md:text-sm p-2 md:px-3 md:py-2 rounded-lg border border-[#2a3942] transition shadow-sm"
+                      >
+                        <i className="ph-bold ph-arrows-clockwise text-base"></i>
+                        <span className="hidden md:inline">Reiniciar Bot</span>
+                      </button>
+
                       {conversations.find(c => c.id === selectedConvId)?.status === "bot" ? (
-                        <button onClick={() => handleToggleBot(selectedConvId, "human")} title="Pausar Bot / Tomar Control Manual" className="flex items-center gap-2 bg-[#007aff] hover:bg-[#005bb5] text-white font-semibold text-sm p-2 md:px-4 md:py-2 rounded-lg shadow-sm transition">
+                        <button onClick={() => handleToggleBot(selectedConvId, "human")} title="Pausar Bot / Tomar Control Manual" className="flex items-center gap-2 bg-[#007aff] hover:bg-[#005bb5] text-white font-semibold text-xs md:text-sm p-2 md:px-4 md:py-2 rounded-lg shadow-sm transition">
                           <i className="ph-fill ph-pause"></i>
                           <span className="hidden md:inline">Pausar Bot</span>
                         </button>
                       ) : (
-                        <button onClick={() => handleToggleBot(selectedConvId, "bot")} title="Reactivar Bot Automático" className="flex items-center gap-2 bg-[#007aff] hover:bg-[#005bb5] text-white font-semibold text-sm p-2 md:px-4 md:py-2 rounded-lg shadow-sm transition">
+                        <button onClick={() => handleToggleBot(selectedConvId, "bot")} title="Reactivar Bot Automático" className="flex items-center gap-2 bg-[#007aff] hover:bg-[#005bb5] text-white font-semibold text-xs md:text-sm p-2 md:px-4 md:py-2 rounded-lg shadow-sm transition">
                           <i className="ph-fill ph-play"></i>
                           <span className="hidden md:inline">Activar Bot</span>
                         </button>
                       )}
-                      <button onClick={() => handleToggleBot(selectedConvId, "closed")} title="Cerrar Caso" className="flex items-center gap-2 text-slate-300 hover:text-white p-2 md:px-3 md:py-2 text-sm rounded-lg border border-[#2a3942] hover:bg-[#202c33] transition">
+                      <button onClick={() => handleToggleBot(selectedConvId, "closed")} title="Cerrar Caso" className="flex items-center gap-2 text-slate-300 hover:text-white p-2 md:px-3 md:py-2 text-xs md:text-sm rounded-lg border border-[#2a3942] hover:bg-[#202c33] transition">
                         <i className="ph ph-x"></i> <span className="hidden md:inline">Cerrar Caso</span>
                       </button>
                     </div>
@@ -805,7 +827,9 @@ export default function PanelDashboard() {
                 <div className="p-5 border-b border-[#1f2c34]">
                   <h3 className="font-bold text-white text-base mb-4">Detalles del Contacto</h3>
                   <div className="mb-4">
-                    <h4 className="font-semibold text-slate-200 text-sm">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</h4>
+                    <h4 className="font-semibold text-slate-200 text-sm">
+                      {conversations.find(c => c.id === selectedConvId)?.customerName || selectedConvId.replace(/[^0-9]/g, '').slice(-10)}
+                    </h4>
                     <p className="text-xs text-slate-400 mt-1">{selectedConvId.replace(/[^0-9]/g, '').slice(-10)}</p>
                   </div>
                   

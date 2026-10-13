@@ -5,6 +5,7 @@ import {
   getOrgSettings,
   getProducts,
   setConversationStatus,
+  setConversationCustomerName,
   type Message,
   type Product,
 } from "@/lib/store";
@@ -24,16 +25,36 @@ function formatCop(amount: number): string {
   }).format(amount);
 }
 
-// Extrae direcciones colombianas típicas
+// Extrae direcciones colombianas típicas sin saltar líneas ni capturar medios de pago
 function extractAddress(text: string): string | null {
-  const match = text.match(
-    /\b(?:direcci[oó]n|enviar a|para la|despachar a|calle|carrera|cra|cll|diagonal|diag|transversal|trans|av|avenida|manzana|mz|barrio|apto|casa|conjunto)\b[^:\n,.]*[:\s]+([^.\n,]+)/i
-  );
-  if (match) return match[1].trim();
+  if (!text) return null;
+  const lines = text.split(/[\r\n]+/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
 
-  // Buscar nomenclaturas comunes ej: Calle 45 # 12-30 o Cra 80 No 25-10
-  const streetMatch = text.match(/(?:calle|cll|cra|carrera|diagonal|diag|transversal|trans|av|avenida)\s+\d+[a-zA-Z]?\s*(?:#|no|nro|número)?\s*\d+[a-zA-Z]?\s*[-–]\s*\d+(?:\s*(?:apto|int|torre|casa|barrio)\s*[^.,\n]*)?/i);
-  if (streetMatch) return streetMatch[0].trim();
+    // 1. Etiqueta directa en la línea: "Dirección: Cra 3a 7 26"
+    const labeledMatch = trimmed.match(
+      /^(?:📍\s*)?(?:direcci[oó]n|enviar a|para la|despachar a)[:\s]+([^,\n]+)/i
+    );
+    if (labeledMatch && labeledMatch[1]) {
+      const val = labeledMatch[1].trim();
+      if (val.length >= 4 && !val.toLowerCase().includes("indicada en chat")) return val;
+    }
+
+    // 2. Nomenclatura urbana colombiana en la línea
+    // Ej: Cra 3a 7 26 / Calle 45 # 12-30 / Carrera 80 No 25 10 / Av 19 # 100-20
+    const streetMatch = trimmed.match(
+      /(?:calle|cll|cra|carrera|diagonal|diag|transversal|trans|av|avenida)\s+\d+[a-zA-Z]?\s*(?:#|no|nro|número|\s)?\s*\d+[a-zA-Z]?\s*[-–\s]\s*\d+(?:\s*(?:apto|int|torre|casa|barrio|piso)\s*[^.,\n]*)?/i
+    );
+    if (streetMatch) return streetMatch[0].trim();
+  }
+
+  // 3. Búsqueda en texto completo si viene en un solo bloque
+  const fallbackMatch = text.match(
+    /(?:calle|cll|cra|carrera|diagonal|diag|transversal|trans|av|avenida)\s+\d+[a-zA-Z]?\s*(?:#|no|nro|número|\s)?\s*\d+[a-zA-Z]?\s*[-–\s]\s*\d+(?:\s*(?:apto|int|torre|casa|barrio|piso)\s*[^.,\n]*)?/i
+  );
+  if (fallbackMatch) return fallbackMatch[0].trim();
 
   return null;
 }
@@ -59,7 +80,8 @@ function shouldSendTransferQr(userText: string, assistantReply: string): boolean
     combined.includes("bre b") ||
     combined.includes("transferencia") ||
     combined.includes("código qr") ||
-    combined.includes("codigo qr")
+    combined.includes("codigo qr") ||
+    /\bqr\b/i.test(combined)
   );
 }
 
@@ -254,30 +276,108 @@ async function tryExtractAndRegisterOrder(
     detectedTotal = defaultProduct.price;
   }
 
-  if (detectedTotal === 0) {
+  // 1. Extraer dirección de entrega: primero de la confirmación estructurada del asistente
+  let address: string | null = null;
+  const assistantAddrMatch = assistantReply.match(
+    /(?:📍\s*)?\*?Direcci[oó]n(?: de entrega)?:\*?\s*([^\n\r*]+)/i
+  );
+  if (assistantAddrMatch && assistantAddrMatch[1]) {
+    const cand = assistantAddrMatch[1].replace(/^[\[\(]|[\]\)]$/g, "").trim();
+    if (cand.length >= 4 && !cand.toLowerCase().includes("indicada en chat") && !cand.toLowerCase().includes("ingresada")) {
+      address = cand;
+    }
+  }
+  // Si no está en el asistente, extraer del mensaje del usuario
+  if (!address) {
+    address = extractAddress(userText);
+  }
+  if (!address) {
+    address = "Dirección indicada en chat";
+  }
+
+  // 2. Extraer nombre del cliente
+  let customerName = clientName;
+  const assistantNameMatch = assistantReply.match(
+    /(?:👤\s*)?\*?Cliente:\*?\s*([^\n\r*]+)/i
+  );
+  if (assistantNameMatch && assistantNameMatch[1]) {
+    const cand = assistantNameMatch[1].replace(/^[\[\(]|[\]\)]$/g, "").trim();
+    if (
+      cand.length >= 2 &&
+      !cand.toLowerCase().includes("cliente") &&
+      !cand.toLowerCase().includes("nombre del cliente")
+    ) {
+      customerName = cand;
+    }
+  }
+  if (!customerName || customerName.toLowerCase().startsWith("cliente whatsapp")) {
+    const lines = userText.split(/[\r\n]+/);
+    for (const l of lines) {
+      const nm = l.match(/(?:mi nombre es|nombre(?:\s+completo)?:\s*|soy\s+)([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{3,35})/i);
+      if (nm && nm[1]) {
+        const cand = nm[1].trim();
+        if (!cand.toLowerCase().includes("nequi") && !cand.toLowerCase().includes("breb") && !cand.toLowerCase().includes("efectivo")) {
+          customerName = cand;
+          break;
+        }
+      }
+    }
+  }
+  if (!customerName) {
+    customerName = `Cliente WhatsApp ${conversationKey.replace(/[^0-9]/g, "").slice(-4) || ""}`;
+  }
+
+  // 3. Extraer medio de pago
+  let paymentMethod: string | null = null;
+  const assistantPayMatch = assistantReply.match(
+    /(?:💳\s*)?\*?Medio de pago:\*?\s*([^\n\r*]+)/i
+  );
+  if (assistantPayMatch && assistantPayMatch[1]) {
+    const cand = assistantPayMatch[1].replace(/^[\[\(]|[\]\)]$/g, "").trim();
+    paymentMethod = extractPaymentMethod(cand);
+  }
+  if (!paymentMethod) {
+    paymentMethod = extractPaymentMethod(userText) || extractPaymentMethod(combined) || "Efectivo contra entrega";
+  }
+
+  // 4. Extraer total de la confirmación si está explícito
+  const totalAssistantMatch = assistantReply.match(
+    /(?:💰|\*?Total a pagar:\*?)[^\d]*?([\d.,]+)/i
+  );
+  if (totalAssistantMatch && totalAssistantMatch[1]) {
+    const parsedTotal = parseInt(totalAssistantMatch[1].replace(/[.,]/g, ""), 10);
+    if (!isNaN(parsedTotal) && parsedTotal > 0) {
+      detectedTotal = parsedTotal;
+    }
+  } else if (detectedTotal === 0) {
     const totalMatch = combined.match(/total[^\d]*?(\d[\d.,]*)/i);
     if (totalMatch) {
       detectedTotal = parseInt(totalMatch[1].replace(/[.,]/g, ""), 10);
     }
   }
 
-  const address = extractAddress(combined) || "Dirección indicada en chat";
-  const paymentMethod = extractPaymentMethod(combined) || "Efectivo contra entrega";
-  
+  // 5. Extraer resumen de productos
   let summary = orderItems.map((it) => `${it.sku} x${it.quantity}`).join(", ");
-  const detMatch = assistantReply.match(/\*Detalle del Pedido:\*([\s\S]*?)(?:\*Total a pagar:\*|💵)/i);
+  const detMatch = assistantReply.match(/(?:\*?Detalle del Pedido:\*?|🛒[^\n]*)[\r\n]+([\s\S]*?)(?=(?:💰|\*?Total a pagar|\*?Direcci[oó]n|💵|$))/i);
   if (detMatch && detMatch[1]) {
-    summary = detMatch[1].trim();
+    const cleanDet = detMatch[1].trim();
+    if (cleanDet.length > 0 && !cleanDet.startsWith("[")) {
+      summary = cleanDet;
+    }
   }
 
-  const customerName = clientName || `Cliente WhatsApp ${conversationKey.replace(/[^0-9]/g, "").slice(-4) || ""}`;
-
-  return await createOrder(conversationKey, orderItems, detectedTotal, {
+  const order = await createOrder(conversationKey, orderItems, detectedTotal, {
     customerName,
     deliveryAddress: address,
     paymentMethod,
     itemsSummary: summary,
   });
+
+  if (customerName && !customerName.toLowerCase().startsWith("cliente whatsapp")) {
+    await setConversationCustomerName(conversationKey, customerName).catch(() => {});
+  }
+
+  return order;
 }
 
 export async function handleSalesMessage(
@@ -381,7 +481,11 @@ export async function handleSalesMessage(
     2️⃣ *Bre-B*
     3️⃣ *Efectivo contra entrega*
 
-  ${settings.transferQrImage ? '📌 PAGO POR NEQUI O BRE-B / QR: Si el cliente elige pagar con Nequi o Bre-B (o transferencia), indícale con entusiasmo que le estás enviando el código QR de pago oficial para que realice el pago y envíe el comprobante.\n' : ''}${settings.extraPrompt ? `📌 INSTRUCCIONES ADICIONALES (¡Síguelas al pie de la letra!):\n  ${settings.extraPrompt}` : ''}`;
+  📌 REGLAS SOBRE CÓDIGO QR Y PAGOS (NEQUI / BRE-B):
+  - Si el cliente elige pagar con Nequi o Bre-B, o pide el código QR, infórmale alegremente que le estás enviando el código QR oficial de pago para que transfiera y nos comparta el comprobante por este chat.
+  - 🚨 ¡PROHIBICIÓN ESTRICTA!: NUNCA escribas frases como "*(Imagina aquí el Código QR...)*", ni inventes texto entre paréntesis simulando imágenes, ni inventes cuentas bancarias. El sistema de WhatsApp enviará automáticamente la imagen real del código QR oficial de BUÑUELANDIA.
+
+  ${settings.extraPrompt ? `📌 INSTRUCCIONES ADICIONALES (¡Síguelas al pie de la letra!):\n  ${settings.extraPrompt}` : ''}`;
   // 2. Intentar con Google Gemini (probando modelos disponibles: gemini-3.8-flash, gemini-2.0-flash, gemini-1.5-flash)
   if (process.env.GEMINI_API_KEY?.trim()) {
     const rawEnvModel = process.env.GEMINI_MODEL?.trim();
@@ -576,6 +680,10 @@ export async function handleSalesMessage(
         itemsSummary: finalItems.map((it) => `${it.sku} x${it.quantity}`).join(", "),
       }
     );
+
+    if (clientName && !clientName.toLowerCase().startsWith("cliente whatsapp")) {
+      await setConversationCustomerName(conversationKey, clientName).catch(() => {});
+    }
 
     const itemsListText = finalItems.map((it) => `- ${it.name} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
 

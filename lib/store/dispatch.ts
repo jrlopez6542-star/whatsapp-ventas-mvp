@@ -64,6 +64,7 @@ export async function getStore(): Promise<IStore> {
           return {
             id: rawId,
             phone,
+            customerName: r.customer_name ? String(r.customer_name) : undefined,
             status: (r.status as ConversationStatus) || "bot",
             createdAt: parseTimestamp(r.created_at),
             updatedAt: parseTimestamp(r.updated_at),
