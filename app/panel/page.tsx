@@ -726,10 +726,10 @@ export default function PanelDashboard() {
                       const btnRegex = /\[BOTONES:\s*(.+?)\]/i;
                       const match = m.content.match(btnRegex);
                       let text = m.content;
-                      let buttons: string[] = [];
                       if (match) {
-                        text = m.content.replace(btnRegex, '').trim();
-                        buttons = match[1].split('|').map(b => b.trim()).filter(b => b);
+                        const buttons = match[1].split('|').map(b => b.trim()).filter(b => b);
+                        const optionsText = buttons.length > 0 ? '\n\n' + buttons.map((b, i) => `${i + 1}️⃣ ${b}`).join('\n') : '';
+                        text = m.content.replace(btnRegex, '').trim() + optionsText;
                       }
 
                       return (
@@ -747,15 +747,6 @@ export default function PanelDashboard() {
                                 <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
                                 <div className="text-[11px] text-slate-400 text-right mt-1">{formatMessageTime(m.createdAt)}</div>
                               </div>
-                              {buttons.length > 0 && (
-                                <div className="w-full max-w-md mt-1 space-y-1">
-                                  {buttons.map((b, i) => (
-                                    <div key={i} className="w-full bg-[#1e2a30]/30 border border-[#2a3942]/50 text-[#53bdeb]/50 text-[13px] py-1.5 px-3 rounded-lg flex items-center justify-center mt-1 cursor-default pointer-events-none opacity-80">
-                                      {b}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
                             </div>
                           ) : (
                             <div className="flex flex-col items-end w-full">

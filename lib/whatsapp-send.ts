@@ -1,4 +1,4 @@
-import { isEvolutionConfigured, sendEvolutionText, sendEvolutionButtons, sendEvolutionMedia } from "@/lib/evolution";
+import { isEvolutionConfigured, sendEvolutionText, sendEvolutionMedia } from "@/lib/evolution";
 import { isTwilioSendConfigured, sendWhatsAppMessage } from "@/lib/twilio";
 
 export type OutboundWhatsAppResult =
@@ -34,38 +34,25 @@ export async function sendOutboundWhatsApp(
   to: string,
   body: string
 ): Promise<OutboundWhatsAppResult> {
+  // Desactivar botones: Si el texto contiene [BOTONES:...], convertir a lista numerada en el texto
   const buttonsRegex = /\[BOTONES:\s*(.+?)\]/i;
   const match = body.match(buttonsRegex);
   
   let cleanBody = body;
-  let buttons: string[] = [];
-  
   if (match) {
-    cleanBody = body.replace(buttonsRegex, '').trim();
-    buttons = match[1].split('|').map(b => b.trim()).filter(b => b);
+    const buttons = match[1].split('|').map(b => b.trim()).filter(b => b);
+    const optionsText = buttons.length > 0 ? '\n\n' + buttons.map((b, i) => `${i + 1}️⃣ *${b}*`).join('\n') : '';
+    cleanBody = body.replace(buttonsRegex, '').trim() + optionsText;
   }
 
   if (isEvolutionConfigured()) {
-    let r: any = { ok: true, id: 'none', error: '' };
-    if (cleanBody) {
-      r = await sendEvolutionText(to, cleanBody);
-    }
-    
-    if (buttons.length > 0) {
-      const pollRes = await sendEvolutionButtons(to, "Opciones:", buttons);
-      if (!cleanBody && !pollRes.ok) {
-        return { ok: false, error: pollRes.error, channel: "evolution" };
-      }
-      if (pollRes.ok) r = { ok: true, id: pollRes.id, error: '' };
-    }
-
+    const r = await sendEvolutionText(to, cleanBody);
     if (r.ok) return { ok: true, id: r.id, channel: "evolution" };
     return { ok: false, error: r.error, channel: "evolution" };
   }
 
   if (isTwilioSendConfigured()) {
-    const fallbackText = buttons.length > 0 ? `\n\nOpciones:\n` + buttons.map((b, i) => `${i+1}. ${b}`).join('\n') : '';
-    const r = await sendWhatsAppMessage(to, cleanBody + fallbackText);
+    const r = await sendWhatsAppMessage(to, cleanBody);
     if (r.ok) return { ok: true, id: r.sid, channel: "twilio" };
     return { ok: false, error: r.error, channel: "twilio" };
   }

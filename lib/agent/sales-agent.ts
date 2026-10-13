@@ -374,14 +374,12 @@ export async function handleSalesMessage(
   - NUNCA inventes precios ni sumes mal.
   - NO confirmes el pedido hasta tener dirección, método de pago y las salsas elegidas si pidió una caja surtida.
 
-  BOTONES INTERACTIVOS DE WHATSAPP (¡MUY IMPORTANTE!):
-  Puedes enviarle botones interactivos al cliente para facilitarle la respuesta. Para enviarlos, al puro final de tu mensaje añade exactamente esta estructura:
-  [BOTONES: Opción 1 | Opción 2]
-  Reglas de los botones:
-  - Máximo 3 botones.
-  - Cada opción debe ser corta (ej: "Ver Catálogo", "Comprar Caja x4", "Comprar Caja x8", "Hablar con Asesor").
-  - Úsalos estratégicamente para guiar al cliente al siguiente paso del flujo.
-  - Al preguntar por el medio de pago, incluye siempre al final: [BOTONES: Nequi | Bre-B | Efectivo]
+  OPCIONES Y FORMATO DE RESPUESTA:
+  - NO USES BOTONES NI ETIQUETAS [BOTONES:...]. Los botones están completamente desactivados.
+  - Presenta SIEMPRE las opciones directamente dentro del texto de tu mensaje de forma clara, amigable y enumerada, por ejemplo:
+    1️⃣ *Nequi*
+    2️⃣ *Bre-B*
+    3️⃣ *Efectivo contra entrega*
 
   ${settings.transferQrImage ? '📌 PAGO POR NEQUI O BRE-B / QR: Si el cliente elige pagar con Nequi o Bre-B (o transferencia), indícale con entusiasmo que le estás enviando el código QR de pago oficial para que realice el pago y envíe el comprobante.\n' : ''}${settings.extraPrompt ? `📌 INSTRUCCIONES ADICIONALES (¡Síguelas al pie de la letra!):\n  ${settings.extraPrompt}` : ''}`;
   // 2. Intentar con Google Gemini (probando modelos disponibles: gemini-3.8-flash, gemini-2.0-flash, gemini-1.5-flash)
@@ -586,12 +584,12 @@ export async function handleSalesMessage(
   } else if (extractedItems.length > 0 || isAffirmation || lower.includes("caja") || lower.includes("buñuelo") || lower.includes("quiero") || lower.includes("pedido")) {
     const chosenProduct = extractedItems[0] || products.find((p) => p.sku === "C8S") || products[0];
     const totalEst = extractedTotal > 0 ? extractedTotal : chosenProduct.unitPrice;
-    reply = `¡Excelente elección! 🤤 Hemos tomado nota de tu selección:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviarte tu pedido calientico, por favor facilítanos:\n1. 👤 *Tu Nombre Completo*\n2. 📍 *Dirección exacta de Entrega y Barrio*\n3. 💵 *Medio de Pago* (Nequi, Bre-B o Efectivo contra entrega)\n\n[BOTONES: Nequi | Bre-B | Efectivo]`;
+    reply = `¡Excelente elección! 🤤 Hemos tomado nota de tu selección:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviarte tu pedido calientico, por favor facilítanos:\n1. 👤 *Tu Nombre Completo*\n2. 📍 *Dirección exacta de Entrega y Barrio*\n3. 💵 *Medio de Pago*:\n   1️⃣ *Nequi*\n   2️⃣ *Bre-B*\n   3️⃣ *Efectivo contra entrega*`;
   } else if (foundAddress && !foundPayment) {
-    reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n- *Nequi*\n- *Bre-B*\n- *Efectivo contra entrega*\n\n[BOTONES: Nequi | Bre-B | Efectivo]`;
+    reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
   } else if (previous.length > 1) {
     // Si ya hay conversación previa, NO reiniciar al saludo de bienvenida
-    reply = `¡Con gusto! Para confirmar tu pedido en BUÑUELANDIA, por favor compártenos tu *Dirección de entrega* y *Medio de pago* (Nequi, Bre-B o Efectivo contra entrega), o escribe *catálogo* si deseas ver más opciones.\n\n[BOTONES: Nequi | Bre-B | Efectivo]`;
+    reply = `¡Con gusto! Para confirmar tu pedido en BUÑUELANDIA, por favor compártenos tu *Dirección de entrega* y *Medio de pago* (1️⃣ Nequi, 2️⃣ Bre-B o 3️⃣ Efectivo contra entrega), o escribe *catálogo* si deseas ver más opciones.`;
   } else {
     reply = `${settings.welcomeMessage}\n\nPuedes escribir *catálogo*, *hacer pedido* o *escalar a humano* para que te atienda un asesor.`;
   }
