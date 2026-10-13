@@ -14,6 +14,7 @@ import {
   getChatDateDivider,
   getChatDateKey,
   formatDateDisplay,
+  formatOrderDateTime,
 } from "@/lib/date-utils";
 export { formatDateDisplay };
 import "../crm.css";
@@ -258,6 +259,7 @@ export default function PanelDashboard() {
 
   // Orders
   const [orders, setOrders] = useState<Order[]>([]);
+  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
 
   // Catalog
   const [products, setProducts] = useState<Product[]>([]);
@@ -967,46 +969,113 @@ export default function PanelDashboard() {
                     <p className="text-xs text-slate-400 italic">No hay pedidos registrados para este cliente.</p>
                   ) : (
                     <div className="space-y-3">
-                      {clientOrders.map((ord) => {
+                      {clientOrders.map((ord, idx) => {
                         const statusCfg = STATUS_CONFIG[ord.status] || STATUS_CONFIG.pending;
+                        const isExpanded = expandedOrderId === ord.id || (expandedOrderId === null && idx === 0);
+                        const subtotal = Math.max(0, ord.total - (ord.deliveryFee || 0));
+
                         return (
-                          <div key={ord.id} className="bg-[#162128] border border-[#2a3942] rounded-lg p-3 text-xs space-y-2 shadow-sm">
-                            <div className="flex items-center justify-between font-mono">
-                              <span className="font-bold text-white">#{ord.id.slice(0, 8)}</span>
-                              <span className="text-emerald-400 font-bold">${ord.total.toLocaleString("es-CO")}</span>
+                          <div key={ord.id} className="bg-[#162128] border border-[#2a3942] rounded-lg overflow-hidden shadow-sm transition">
+                            {/* CABECERA CLICKEABLE PARA PLEGAR / DESPLEGAR */}
+                            <div
+                              onClick={() => setExpandedOrderId(isExpanded ? "" : ord.id)}
+                              className="p-3 cursor-pointer hover:bg-[#1a2730] transition flex items-center justify-between gap-2 select-none"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="font-mono font-bold text-white text-xs">#{ord.id.slice(0, 8)}</span>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${statusCfg.bg} ${statusCfg.text} ${statusCfg.border}`}>
+                                  {statusCfg.label}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <span className="text-emerald-400 font-bold font-mono text-xs">${ord.total.toLocaleString("es-CO")}</span>
+                                <i className={`ph-bold ph-caret-${isExpanded ? 'up' : 'down'} text-slate-400 text-sm`}></i>
+                              </div>
                             </div>
 
-                            {ord.itemsSummary && (
-                              <p className="text-slate-300 text-[11px] leading-snug font-sans">
-                                {ord.itemsSummary}
-                              </p>
-                            )}
+                            {/* CONTENIDO DESPLEGABLE CON TODA LA INFORMACIÓN DEL PEDIDO */}
+                            {isExpanded && (
+                              <div className="px-3 pb-3 pt-2 border-t border-[#2a3942]/60 text-xs space-y-2.5 bg-[#121b22]/40">
+                                <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                                  <span>Fecha del pedido:</span>
+                                  <span className="font-medium text-slate-300">{formatOrderDateTime(ord.createdAt)}</span>
+                                </div>
 
-                            {ord.deliveryAddress && (
-                              <div className="text-[11px] text-slate-400 flex items-start gap-1">
-                                <i className="ph ph-map-pin text-slate-500 shrink-0 mt-0.5"></i>
-                                <span className="truncate">{ord.deliveryAddress}</span>
+                                {/* PRODUCTOS / DETALLE */}
+                                <div className="bg-[#162128] p-2.5 rounded border border-[#2a3942]/70 space-y-1">
+                                  <span className="text-[10px] text-slate-400 font-semibold block uppercase">
+                                    🛒 Productos Ordenados:
+                                  </span>
+                                  <p className="text-slate-200 text-xs font-sans whitespace-pre-line leading-relaxed">
+                                    {ord.itemsSummary || "Caja de buñuelos"}
+                                  </p>
+                                </div>
+
+                                {/* DESGLOSE DE TOTALES */}
+                                <div className="space-y-1 text-[11px] bg-[#162128]/50 p-2 rounded border border-[#2a3942]/40">
+                                  <div className="flex justify-between text-slate-300">
+                                    <span>Subtotal productos:</span>
+                                    <span>${subtotal.toLocaleString("es-CO")}</span>
+                                  </div>
+                                  <div className="flex justify-between text-slate-300">
+                                    <span>Costo Domicilio:</span>
+                                    <span>{ord.deliveryFee && ord.deliveryFee > 0 ? `$${ord.deliveryFee.toLocaleString("es-CO")}` : "¡Gratis!"}</span>
+                                  </div>
+                                  <div className="flex justify-between font-bold text-white pt-1 border-t border-[#2a3942]/60">
+                                    <span>Total a pagar:</span>
+                                    <span className="text-emerald-400 font-mono">${ord.total.toLocaleString("es-CO")}</span>
+                                  </div>
+                                </div>
+
+                                {/* DIRECCIÓN DE ENTREGA */}
+                                <div className="text-[11px]">
+                                  <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                                    📍 Dirección de Entrega:
+                                  </span>
+                                  <p className="text-slate-200 font-medium">{ord.deliveryAddress || "Dirección en chat"}</p>
+                                </div>
+
+                                {/* NOTAS ESPECIALES (TORRE / APTO) */}
+                                {ord.deliveryNotes && (
+                                  <div className="text-[11px]">
+                                    <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                                      🏢 Indicaciones especiales:
+                                    </span>
+                                    <p className="text-amber-300/90 italic">{ord.deliveryNotes}</p>
+                                  </div>
+                                )}
+
+                                {/* MEDIO DE PAGO Y CAMBIO */}
+                                <div className="text-[11px]">
+                                  <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                                    💳 Medio de Pago:
+                                  </span>
+                                  <p className="text-slate-200 font-medium">
+                                    {ord.paymentMethod || "Efectivo contra entrega"}
+                                    {ord.changeAmount ? ` (Paga con: ${ord.changeAmount})` : ""}
+                                  </p>
+                                </div>
+
+                                {/* SELECTOR DESPLEGABLE DE ESTADO */}
+                                <div className="pt-2 border-t border-[#2a3942]/80">
+                                  <label className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">
+                                    Cambiar Estado (Notifica por WhatsApp):
+                                  </label>
+                                  <select
+                                    value={ord.status}
+                                    onChange={(e) => handleUpdateOrderStatus(ord.id, e.target.value)}
+                                    className={`w-full text-xs font-semibold px-2 py-1.5 rounded border ${statusCfg.bg} ${statusCfg.text} ${statusCfg.border} bg-[#121b22] focus:outline-none cursor-pointer`}
+                                  >
+                                    <option value="pending">⏳ Pendiente</option>
+                                    <option value="confirmed">✅ Confirmado</option>
+                                    <option value="preparing">👨‍🍳 En Preparación</option>
+                                    <option value="delivering">🛵 En Camino</option>
+                                    <option value="delivered">🎉 Entregado</option>
+                                    <option value="cancelled">❌ Cancelado</option>
+                                  </select>
+                                </div>
                               </div>
                             )}
-
-                            {/* SELECTOR DESPLEGABLE DE ESTADO */}
-                            <div className="pt-2 border-t border-[#2a3942]/60">
-                              <label className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">
-                                Estado del Pedido:
-                              </label>
-                              <select
-                                value={ord.status}
-                                onChange={(e) => handleUpdateOrderStatus(ord.id, e.target.value)}
-                                className={`w-full text-xs font-semibold px-2 py-1.5 rounded border ${statusCfg.bg} ${statusCfg.text} ${statusCfg.border} bg-[#121b22] focus:outline-none cursor-pointer`}
-                              >
-                                <option value="pending">⏳ Pendiente</option>
-                                <option value="confirmed">✅ Confirmado</option>
-                                <option value="preparing">👨‍🍳 En Preparación</option>
-                                <option value="delivering">🛵 En Camino</option>
-                                <option value="delivered">🎉 Entregado</option>
-                                <option value="cancelled">❌ Cancelado</option>
-                              </select>
-                            </div>
                           </div>
                         );
                       })}

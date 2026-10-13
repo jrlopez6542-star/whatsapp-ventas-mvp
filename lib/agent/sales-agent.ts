@@ -512,6 +512,8 @@ export async function handleSalesMessage(
     return { reply, mode: "human_escalated" };
   }
 
+  const upsellDrinks = settings.upsellDrinksEnabled !== "false";
+
   // --- INTENCIÓN DE NUEVO PEDIDO / REINICIAR PEDIDO ---
   const isNewOrderIntent =
     lower.includes("nuevo pedido") ||
@@ -525,7 +527,10 @@ export async function handleSalesMessage(
     lower.includes("hacer un nuevo pedido");
 
   if (isNewOrderIntent) {
-    const reply = `¡Hola, hola! 🥳 ¡Con muchísimo gusto te tomamos un nuevo pedido en *BUÑUELANDIA*! 🥟🔥\n\n¿Qué se te antoja hoy?\n\n📦 *Nuestras Cajas:* \n• *Caja x4 Tradicional:* $16.000\n• *Caja x8 Tradicional:* $32.000\n• *Caja x4 Surtida:* $18.000 _(con salsas de Mora, Arequipe, Queso o Bocadillo)_\n• *Caja x8 Surtida:* $36.000 _(con salsas de Mora, Arequipe, Queso o Bocadillo)_\n\n¿Qué caja te gustaría ordenar?`;
+    const drinksMention = upsellDrinks
+      ? `\n\n🥤 *Bebidas para acompañar:* Café campesino ($3.500), Chocolate caliente ($4.000), Gaseosa helada ($4.500), Jugo de mora ($6.000) o Agua ($3.000).`
+      : "";
+    const reply = `¡Hola, hola! 🥳 ¡Con muchísimo gusto te tomamos un nuevo pedido en *BUÑUELANDIA*! 🥟🔥\n\n¿Qué se te antoja hoy?\n\n📦 *Nuestras Cajas:* \n• *Caja x4 Tradicional:* $16.000\n• *Caja x8 Tradicional:* $32.000\n• *Caja x4 Surtida:* $18.000 _(con salsas de Mora, Arequipe, Queso o Bocadillo)_\n• *Caja x8 Surtida:* $36.000 _(con salsas de Mora, Arequipe, Queso o Bocadillo)_${drinksMention}\n\n¿Qué caja o productos te gustaría ordenar?`;
     await appendMessage(conversationKey, "assistant", reply);
     return { reply, mode: "keyword" };
   }
@@ -629,8 +634,6 @@ export async function handleSalesMessage(
   const brebKey = settings.brebKey || "3228964947";
   const deliveryFee = parseInt(settings.deliveryFee || "4000", 10) || 4000;
   const freeThreshold = parseInt(settings.freeDeliveryThreshold || "40000", 10) || 40000;
-
-  const upsellDrinks = settings.upsellDrinksEnabled !== "false";
 
   const systemPrompt = `Eres el asistente virtual y vendedor estrella por WhatsApp de "${settings.name}".
 
@@ -865,17 +868,28 @@ export async function handleSalesMessage(
     lower.includes("precios") ||
     lower.includes("productos");
 
+  const isAskingDrinks =
+    lower.includes("bebidas") ||
+    lower.includes("bebida") ||
+    lower.includes("de tomar") ||
+    lower.includes("algo de tomar") ||
+    lower.includes("qué tienen para tomar") ||
+    lower.includes("que tienen para tomar");
+
   if (isGreeting || isNewOrderIntent) {
     const items = products
       .filter((p) => p.sku.startsWith("C"))
       .map((p) => `• *${p.name}:* ${formatCop(p.price)}`)
       .join("\n");
-    reply = `${settings.welcomeMessage}\n\n📦 *Nuestras Cajas:*\n${items}\n\n¿Qué caja te gustaría pedir hoy?`;
+    const drinksHint = upsellDrinks ? "\n\n☕🥤 _También tenemos café campesino, chocolate caliente, gaseosas y jugos naturales para acompañar._" : "";
+    reply = `${settings.welcomeMessage}\n\n📦 *Nuestras Cajas:*\n${items}${drinksHint}\n\n¿Qué caja te gustaría pedir hoy?`;
   } else if (isAskingCatalog) {
     const items = products
       .map((p) => `• *${p.name}*\n  Precio: ${formatCop(p.price)} - _${p.description || "Delicioso y crujiente"}_`)
       .join("\n\n");
-    reply = `🧀 *Menú Oficial de BUÑUELANDIA:*\n\n${items}\n\nPara pedir, indícanos qué productos deseas (ejemplo: *1 CAJA x8 Surtida y 2 Buñuelos de Mora*).`;
+    reply = `🧀 *Menú Oficial de BUÑUELANDIA:*\n\n${items}\n\nPara pedir, indícanos qué productos deseas (ejemplo: *1 CAJA x8 Surtida y 1 Jugo de Mora*).`;
+  } else if (isAskingDrinks && upsellDrinks) {
+    reply = `☕🥤 *Menú de Bebidas en BUÑUELANDIA:*\n\n☕ *Bebidas Calientes:*\n• *Café Campesino recién colado:* $3.500\n• *Chocolate Caliente Tradicional:* $4.000\n\n🥤 *Bebidas Frías:*\n• *Gaseosa 400ml helada:* $4.500 (Coca-Cola, Colombiana, Manzana)\n• *Jugo Natural de Mora:* $6.000\n• *Agua Mineral 500ml:* $3.000\n\n¿Deseas agregar alguna bebida a tus buñuelos? 🤤`;
   } else if (!hasActiveOrder && extractedItems.length > 0 && foundAddress && foundPayment) {
     // SÓLO cuando el cliente eligió productos reales (extractedItems.length > 0), dio dirección Y eligió medio de pago, y no tiene ya una orden activa
     const finalItems = extractedItems;
@@ -907,10 +921,26 @@ export async function handleSalesMessage(
   } else if (extractedItems.length > 0) {
     const chosenProduct = extractedItems[0];
     const totalEst = extractedTotal > 0 ? extractedTotal : chosenProduct.unitPrice;
-    if (!foundAddress) {
-      reply = `¡Excelente elección! 🤤 Hemos tomado nota de tu pedido:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviártelo calientito, por favor compártenos:\n📍 *Dirección exacta de Entrega y Barrio*\n🏢 *Indicaciones de entrega (torre/apto/portería)*`;
+
+    // Verificar si ya tiene bebida o ya se le ofreció
+    const hasDrinkInCart = extractedItems.some((it) => it.sku.startsWith("BEB"));
+    const alreadyAskedDrinks = previous.some(
+      (m) => m.role === "assistant" && (m.content.includes("acompañar tus buñuelos") || m.content.includes("bebida bien fría"))
+    );
+    const hasDeclinedDrinks =
+      lower.includes("sin bebida") ||
+      lower.includes("no quiero bebida") ||
+      lower.includes("no gracias") ||
+      lower.includes("solo los buñuelos") ||
+      lower.includes("solo buñuelos") ||
+      lower === "no";
+
+    if (upsellDrinks && !hasDrinkInCart && !alreadyAskedDrinks && !hasDeclinedDrinks) {
+      reply = `¡Excelente elección! 🤤 Tomamos nota de tu pedido:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\n¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤\n• *Café Campesino recién colado:* $3.500\n• *Chocolate Caliente Tradicional:* $4.000\n• *Gaseosa helada (Coca-Cola, Colombiana, Manzana):* $4.500\n• *Jugo Natural de Mora:* $6.000\n• *Agua Mineral:* $3.000\n\n_(Indícanos qué bebida deseas agregar, o compártenos tu dirección de entrega si solo deseas los buñuelos)_ 🥟`;
+    } else if (!foundAddress) {
+      reply = `¡Perfecto! 🤤 Tenemos anotado:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviártelo calientito a tu casa, por favor compártenos:\n📍 *Dirección exacta de Entrega y Barrio*\n🏢 *Indicaciones de entrega (torre/apto/portería)*`;
     } else {
-      reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
+      reply = `¡Excelente! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
     }
   } else if (foundAddress && !foundPayment) {
     reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\n¿Qué buñuelos o bebidas deseas agregar a tu pedido? (Escribe *catálogo* para ver las opciones).`;
