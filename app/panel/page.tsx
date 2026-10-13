@@ -259,7 +259,11 @@ export default function PanelDashboard() {
 
   // Orders
   const [orders, setOrders] = useState<Order[]>([]);
-  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+  const [selectedSidebarOrderId, setSelectedSidebarOrderId] = useState<string>("");
+
+  useEffect(() => {
+    setSelectedSidebarOrderId("");
+  }, [selectedConvId]);
 
   // Catalog
   const [products, setProducts] = useState<Product[]>([]);
@@ -951,17 +955,21 @@ export default function PanelDashboard() {
                   </div>
                 </div>
 
-                {/* PEDIDOS DEL CLIENTE CON SELECTOR DE ESTADOS */}
+                {/* PEDIDOS DEL CLIENTE CON MENÚ DESPLEGABLE */}
                 <div className="p-5 border-b border-[#1f2c34]">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="font-bold text-white text-base flex items-center gap-2">
                       <i className="ph-fill ph-package text-[#007aff]"></i>
                       Pedidos ({clientOrders.length})
                     </h3>
-                    {clientOrders.length > 0 && (
-                      <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 font-medium">
-                        Notifica por WhatsApp
-                      </span>
+                    {selectedSidebarOrderId && (
+                      <button
+                        onClick={() => setSelectedSidebarOrderId("")}
+                        className="text-[11px] text-slate-400 hover:text-white flex items-center gap-1 transition"
+                        title="Ocultar información del pedido"
+                      >
+                        <i className="ph-bold ph-eye-slash"></i> Ocultar
+                      </button>
                     )}
                   </div>
 
@@ -969,116 +977,135 @@ export default function PanelDashboard() {
                     <p className="text-xs text-slate-400 italic">No hay pedidos registrados para este cliente.</p>
                   ) : (
                     <div className="space-y-3">
-                      {clientOrders.map((ord, idx) => {
+                      {/* MENÚ DESPLEGABLE PARA SELECCIONAR PEDIDO */}
+                      <div>
+                        <label className="text-[11px] text-slate-400 block mb-1.5 font-medium">
+                          Menú desplegable de pedidos:
+                        </label>
+                        <div className="relative">
+                          <select
+                            value={selectedSidebarOrderId}
+                            onChange={(e) => setSelectedSidebarOrderId(e.target.value)}
+                            className="w-full bg-[#162128] text-white text-xs font-semibold px-3 py-2.5 rounded-lg border border-[#2a3942] hover:border-[#007aff]/50 focus:border-[#007aff] focus:outline-none cursor-pointer appearance-none pr-8 transition shadow-sm"
+                          >
+                            <option value="">▼ Seleccionar pedido para ver detalles ({clientOrders.length})...</option>
+                            {clientOrders.map((ord) => {
+                              const statusCfg = STATUS_CONFIG[ord.status] || STATUS_CONFIG.pending;
+                              return (
+                                <option key={ord.id} value={ord.id}>
+                                  #{ord.id.slice(0, 8)} • ${ord.total.toLocaleString("es-CO")} • {statusCfg.label}
+                                </option>
+                              );
+                            })}
+                          </select>
+                          <i className="ph-bold ph-caret-down absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none text-xs"></i>
+                        </div>
+                      </div>
+
+                      {/* INFORMACIÓN DETALLADA DEL PEDIDO SELECCIONADO */}
+                      {(() => {
+                        const ord = clientOrders.find((o) => o.id === selectedSidebarOrderId);
+                        if (!ord) return null;
                         const statusCfg = STATUS_CONFIG[ord.status] || STATUS_CONFIG.pending;
-                        const isExpanded = expandedOrderId === ord.id || (expandedOrderId === null && idx === 0);
                         const subtotal = Math.max(0, ord.total - (ord.deliveryFee || 0));
 
                         return (
-                          <div key={ord.id} className="bg-[#162128] border border-[#2a3942] rounded-lg overflow-hidden shadow-sm transition">
-                            {/* CABECERA CLICKEABLE PARA PLEGAR / DESPLEGAR */}
-                            <div
-                              onClick={() => setExpandedOrderId(isExpanded ? "" : ord.id)}
-                              className="p-3 cursor-pointer hover:bg-[#1a2730] transition flex items-center justify-between gap-2 select-none"
-                            >
+                          <div className="bg-[#162128] border border-[#2a3942] rounded-lg overflow-hidden shadow-sm transition">
+                            <div className="p-3 bg-[#121b22] border-b border-[#2a3942]/60 flex items-center justify-between gap-2">
                               <div className="flex items-center gap-2 min-w-0">
                                 <span className="font-mono font-bold text-white text-xs">#{ord.id.slice(0, 8)}</span>
                                 <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold border ${statusCfg.bg} ${statusCfg.text} ${statusCfg.border}`}>
                                   {statusCfg.label}
                                 </span>
                               </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <span className="text-emerald-400 font-bold font-mono text-xs">${ord.total.toLocaleString("es-CO")}</span>
-                                <i className={`ph-bold ph-caret-${isExpanded ? 'up' : 'down'} text-slate-400 text-sm`}></i>
-                              </div>
+                              <span className="text-emerald-400 font-bold font-mono text-xs">
+                                ${ord.total.toLocaleString("es-CO")}
+                              </span>
                             </div>
 
-                            {/* CONTENIDO DESPLEGABLE CON TODA LA INFORMACIÓN DEL PEDIDO */}
-                            {isExpanded && (
-                              <div className="px-3 pb-3 pt-2 border-t border-[#2a3942]/60 text-xs space-y-2.5 bg-[#121b22]/40">
-                                <div className="text-[10px] text-slate-400 flex items-center justify-between">
-                                  <span>Fecha del pedido:</span>
-                                  <span className="font-medium text-slate-300">{formatOrderDateTime(ord.createdAt)}</span>
+                            <div className="p-3 text-xs space-y-2.5">
+                              <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                                <span>Fecha del pedido:</span>
+                                <span className="font-medium text-slate-300">{formatOrderDateTime(ord.createdAt)}</span>
+                              </div>
+
+                              {/* PRODUCTOS / DETALLE */}
+                              <div className="bg-[#121b22] p-2.5 rounded border border-[#2a3942]/70 space-y-1">
+                                <span className="text-[10px] text-slate-400 font-semibold block uppercase">
+                                  🛒 Productos Ordenados:
+                                </span>
+                                <p className="text-slate-200 text-xs font-sans whitespace-pre-line leading-relaxed">
+                                  {ord.itemsSummary || "Caja de buñuelos"}
+                                </p>
+                              </div>
+
+                              {/* DESGLOSE DE TOTALES */}
+                              <div className="space-y-1 text-[11px] bg-[#121b22]/50 p-2 rounded border border-[#2a3942]/40">
+                                <div className="flex justify-between text-slate-300">
+                                  <span>Subtotal productos:</span>
+                                  <span>${subtotal.toLocaleString("es-CO")}</span>
                                 </div>
-
-                                {/* PRODUCTOS / DETALLE */}
-                                <div className="bg-[#162128] p-2.5 rounded border border-[#2a3942]/70 space-y-1">
-                                  <span className="text-[10px] text-slate-400 font-semibold block uppercase">
-                                    🛒 Productos Ordenados:
-                                  </span>
-                                  <p className="text-slate-200 text-xs font-sans whitespace-pre-line leading-relaxed">
-                                    {ord.itemsSummary || "Caja de buñuelos"}
-                                  </p>
+                                <div className="flex justify-between text-slate-300">
+                                  <span>Costo Domicilio:</span>
+                                  <span>{ord.deliveryFee && ord.deliveryFee > 0 ? `$${ord.deliveryFee.toLocaleString("es-CO")}` : "¡Gratis!"}</span>
                                 </div>
-
-                                {/* DESGLOSE DE TOTALES */}
-                                <div className="space-y-1 text-[11px] bg-[#162128]/50 p-2 rounded border border-[#2a3942]/40">
-                                  <div className="flex justify-between text-slate-300">
-                                    <span>Subtotal productos:</span>
-                                    <span>${subtotal.toLocaleString("es-CO")}</span>
-                                  </div>
-                                  <div className="flex justify-between text-slate-300">
-                                    <span>Costo Domicilio:</span>
-                                    <span>{ord.deliveryFee && ord.deliveryFee > 0 ? `$${ord.deliveryFee.toLocaleString("es-CO")}` : "¡Gratis!"}</span>
-                                  </div>
-                                  <div className="flex justify-between font-bold text-white pt-1 border-t border-[#2a3942]/60">
-                                    <span>Total a pagar:</span>
-                                    <span className="text-emerald-400 font-mono">${ord.total.toLocaleString("es-CO")}</span>
-                                  </div>
-                                </div>
-
-                                {/* DIRECCIÓN DE ENTREGA */}
-                                <div className="text-[11px]">
-                                  <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
-                                    📍 Dirección de Entrega:
-                                  </span>
-                                  <p className="text-slate-200 font-medium">{ord.deliveryAddress || "Dirección en chat"}</p>
-                                </div>
-
-                                {/* NOTAS ESPECIALES (TORRE / APTO) */}
-                                {ord.deliveryNotes && (
-                                  <div className="text-[11px]">
-                                    <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
-                                      🏢 Indicaciones especiales:
-                                    </span>
-                                    <p className="text-amber-300/90 italic">{ord.deliveryNotes}</p>
-                                  </div>
-                                )}
-
-                                {/* MEDIO DE PAGO Y CAMBIO */}
-                                <div className="text-[11px]">
-                                  <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
-                                    💳 Medio de Pago:
-                                  </span>
-                                  <p className="text-slate-200 font-medium">
-                                    {ord.paymentMethod || "Efectivo contra entrega"}
-                                    {ord.changeAmount ? ` (Paga con: ${ord.changeAmount})` : ""}
-                                  </p>
-                                </div>
-
-                                {/* SELECTOR DESPLEGABLE DE ESTADO */}
-                                <div className="pt-2 border-t border-[#2a3942]/80">
-                                  <label className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">
-                                    Cambiar Estado (Notifica por WhatsApp):
-                                  </label>
-                                  <select
-                                    value={ord.status}
-                                    onChange={(e) => handleUpdateOrderStatus(ord.id, e.target.value)}
-                                    className={`w-full text-xs font-semibold px-2 py-1.5 rounded border ${statusCfg.bg} ${statusCfg.text} ${statusCfg.border} bg-[#121b22] focus:outline-none cursor-pointer`}
-                                  >
-                                    <option value="pending">⏳ Pendiente</option>
-                                    <option value="confirmed">✅ Confirmado</option>
-                                    <option value="preparing">👨‍🍳 En Preparación</option>
-                                    <option value="delivering">🛵 En Camino</option>
-                                    <option value="delivered">🎉 Entregado</option>
-                                    <option value="cancelled">❌ Cancelado</option>
-                                  </select>
+                                <div className="flex justify-between font-bold text-white pt-1 border-t border-[#2a3942]/60">
+                                  <span>Total a pagar:</span>
+                                  <span className="text-emerald-400 font-mono">${ord.total.toLocaleString("es-CO")}</span>
                                 </div>
                               </div>
-                            )}
+
+                              {/* DIRECCIÓN DE ENTREGA */}
+                              <div className="text-[11px]">
+                                <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                                  📍 Dirección de Entrega:
+                                </span>
+                                <p className="text-slate-200 font-medium">{ord.deliveryAddress || "Dirección en chat"}</p>
+                              </div>
+
+                              {/* NOTAS ESPECIALES (TORRE / APTO) */}
+                              {ord.deliveryNotes && (
+                                <div className="text-[11px]">
+                                  <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                                    🏢 Indicaciones especiales:
+                                  </span>
+                                  <p className="text-amber-300/90 italic">{ord.deliveryNotes}</p>
+                                </div>
+                              )}
+
+                              {/* MEDIO DE PAGO Y CAMBIO */}
+                              <div className="text-[11px]">
+                                <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                                  💳 Medio de Pago:
+                                </span>
+                                <p className="text-slate-200 font-medium">
+                                  {ord.paymentMethod || "Efectivo contra entrega"}
+                                  {ord.changeAmount ? ` (Paga con: ${ord.changeAmount})` : ""}
+                                </p>
+                              </div>
+
+                              {/* SELECTOR DESPLEGABLE DE ESTADO */}
+                              <div className="pt-2 border-t border-[#2a3942]/80">
+                                <label className="text-[10px] text-slate-400 uppercase font-semibold block mb-1">
+                                  Cambiar Estado (Notifica por WhatsApp):
+                                </label>
+                                <select
+                                  value={ord.status}
+                                  onChange={(e) => handleUpdateOrderStatus(ord.id, e.target.value)}
+                                  className={`w-full text-xs font-semibold px-2 py-1.5 rounded border ${statusCfg.bg} ${statusCfg.text} ${statusCfg.border} bg-[#121b22] focus:outline-none cursor-pointer`}
+                                >
+                                  <option value="pending">⏳ Pendiente</option>
+                                  <option value="confirmed">✅ Confirmado</option>
+                                  <option value="preparing">👨‍🍳 En Preparación</option>
+                                  <option value="delivering">🛵 En Camino</option>
+                                  <option value="delivered">🎉 Entregado</option>
+                                  <option value="cancelled">❌ Cancelado</option>
+                                </select>
+                              </div>
+                            </div>
                           </div>
                         );
-                      })}
+                      })()}
                     </div>
                   )}
                 </div>
