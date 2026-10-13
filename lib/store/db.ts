@@ -157,15 +157,23 @@ export async function ensureTursoReady(): Promise<void> {
       } catch {}
     }
 
-    // Data repair for legacy databases (fix 0/epoch-1969 dates and null phone columns)
+    // One-time data repair for legacy databases (fix 0/epoch-1969 dates and null phone columns).
+    // We track completion in _db_meta so this NEVER runs more than once even across serverless cold starts.
     try {
-      const nowMs = Date.now();
-      await client.execute(`UPDATE conversations SET updated_at = ${nowMs} WHERE updated_at IS NULL OR updated_at <= 86400000;`);
-      await client.execute(`UPDATE conversations SET created_at = updated_at WHERE created_at IS NULL OR created_at <= 86400000;`);
-      await client.execute(`UPDATE messages SET created_at = ${nowMs} WHERE created_at IS NULL OR created_at <= 86400000;`);
-      await client.execute(`UPDATE orders SET created_at = ${nowMs} WHERE created_at IS NULL OR created_at <= 86400000;`);
-      await client.execute(`UPDATE conversations SET phone = from_wa WHERE (phone IS NULL OR phone = '') AND from_wa IS NOT NULL;`);
-      await client.execute(`UPDATE conversations SET from_wa = phone WHERE (from_wa IS NULL OR from_wa = '') AND phone IS NOT NULL;`);
+      await client.execute(`CREATE TABLE IF NOT EXISTS _db_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+      const metaRow = await client.execute(`SELECT value FROM _db_meta WHERE key = 'repair_v1_done'`);
+      const repairAlreadyDone = metaRow.rows.length > 0;
+      if (!repairAlreadyDone) {
+        const nowMs = Date.now();
+        await client.execute(`UPDATE conversations SET updated_at = ${nowMs} WHERE updated_at IS NULL OR updated_at <= 86400000`);
+        await client.execute(`UPDATE conversations SET created_at = updated_at WHERE created_at IS NULL OR created_at <= 86400000`);
+        await client.execute(`UPDATE messages SET created_at = ${nowMs} WHERE created_at IS NULL OR created_at <= 86400000`);
+        await client.execute(`UPDATE orders SET created_at = ${nowMs} WHERE created_at IS NULL OR created_at <= 86400000`);
+        await client.execute(`UPDATE conversations SET phone = from_wa WHERE (phone IS NULL OR phone = '') AND from_wa IS NOT NULL`);
+        await client.execute(`UPDATE conversations SET from_wa = phone WHERE (from_wa IS NULL OR from_wa = '') AND phone IS NOT NULL`);
+        await client.execute(`INSERT OR IGNORE INTO _db_meta (key, value) VALUES ('repair_v1_done', '1')`);
+        console.log("[db] one-time data repair completed");
+      }
     } catch (repairErr) {
       console.warn("[db data repair notice]", repairErr);
     }
