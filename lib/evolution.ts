@@ -677,6 +677,12 @@ export async function sendEvolutionMedia(
   const url = `${base}/message/sendMedia/${encodeURIComponent(instance)}`;
 
   try {
+    let mimetype = "image/jpeg";
+    if (mediaUrlOrBase64.startsWith("data:")) {
+      const mimeMatch = mediaUrlOrBase64.match(/^data:([^;]+);base64,/);
+      if (mimeMatch) mimetype = mimeMatch[1];
+    }
+
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -686,6 +692,8 @@ export async function sendEvolutionMedia(
       body: JSON.stringify({
         number: resolved.number,
         mediatype: "image",
+        mimetype,
+        fileName: "qr_transferencia.jpg",
         media: mediaUrlOrBase64,
         caption: caption || "",
       }),

@@ -147,7 +147,11 @@ export async function POST(request: NextRequest) {
         const send = await sendDelayedOutboundWhatsApp(fromKey, replyTo, reply, parsed.messageId);
         if (mediaUrl) {
           try {
-            await sendOutboundWhatsAppMedia(replyTo, mediaUrl, "📲 Aquí tienes el código QR para realizar tu transferencia");
+            await sendOutboundWhatsAppMedia(
+              replyTo,
+              mediaUrl,
+              "📲 Aquí tienes el código QR para realizar tu pago por Nequi o Bre-B. Por favor envíanos el comprobante una vez realizado."
+            );
           } catch (mErr) {
             console.error("[evolution] media outbound error", mErr);
           }

@@ -42,10 +42,25 @@ function extractAddress(text: string): string | null {
 function extractPaymentMethod(text: string): string | null {
   const lower = text.toLowerCase();
   if (lower.includes("nequi")) return "Nequi";
-  if (lower.includes("daviplata")) return "Daviplata";
+  if (lower.includes("breb") || lower.includes("bre-b") || lower.includes("bre b")) return "Bre-B";
   if (lower.includes("efectivo") || lower.includes("contra entrega") || lower.includes("contraentrega")) return "Efectivo contra entrega";
-  if (lower.includes("bancolombia") || lower.includes("transferencia")) return "Transferencia Bancolombia";
+  if (lower.includes("daviplata")) return "Daviplata";
+  if (lower.includes("bancolombia") || lower.includes("transferencia")) return "Transferencia Bancaria";
   return null;
+}
+
+// Verifica si el cliente o la respuesta hace referencia a pagar por Nequi o Bre-B (o QR/transferencia)
+function shouldSendTransferQr(userText: string, assistantReply: string): boolean {
+  const combined = `${userText} ${assistantReply}`.toLowerCase();
+  return (
+    combined.includes("nequi") ||
+    combined.includes("breb") ||
+    combined.includes("bre-b") ||
+    combined.includes("bre b") ||
+    combined.includes("transferencia") ||
+    combined.includes("código qr") ||
+    combined.includes("codigo qr")
+  );
 }
 
 // Extrae productos y cantidades mencionadas
@@ -338,7 +353,7 @@ export async function handleSalesMessage(
      - Si el cliente elige una caja "Surtida", TIENES QUE PREGUNTARLE QUÉ SALSAS QUIERE. (Opciones de salsa: Mora, Arequipe, Bocadillo, Suero Costeño). Puedes mezclarlas como el cliente prefiera.
   3. RECOLECCIÓN DE DATOS: Para despachar el pedido, es OBLIGATORIO pedir con amabilidad estos datos:
      - Dirección exacta de entrega (con barrio).
-     - Medio de pago (Nequi, Daviplata, o Efectivo contra entrega).
+     - Medio de pago (Nequi, Bre-B o Efectivo contra entrega).
      🚨 NO confirmes el pedido si falta la dirección o el pago.
   4. CONFIRMACIÓN FINAL: SÓLO cuando tengas los productos, las salsas (si aplica), la dirección Y el medio de pago, enviarás el resumen final usando ESTE FORMATO EXACTO:
 
@@ -366,8 +381,9 @@ export async function handleSalesMessage(
   - Máximo 3 botones.
   - Cada opción debe ser corta (ej: "Ver Catálogo", "Comprar Caja x4", "Comprar Caja x8", "Hablar con Asesor").
   - Úsalos estratégicamente para guiar al cliente al siguiente paso del flujo.
+  - Al preguntar por el medio de pago, incluye siempre al final: [BOTONES: Nequi | Bre-B | Efectivo]
 
-  ${settings.transferQrImage ? '📌 PAGO POR TRANSFERENCIA / QR: Si el cliente elige pagar con Nequi, Daviplata o Transferencia Bancaria, indícale con entusiasmo que le estás enviando el código QR de pago oficial para que realice la transferencia y envíe el comprobante.\n' : ''}${settings.extraPrompt ? `📌 INSTRUCCIONES ADICIONALES (¡Síguelas al pie de la letra!):\n  ${settings.extraPrompt}` : ''}`;
+  ${settings.transferQrImage ? '📌 PAGO POR NEQUI O BRE-B / QR: Si el cliente elige pagar con Nequi o Bre-B (o transferencia), indícale con entusiasmo que le estás enviando el código QR de pago oficial para que realice el pago y envíe el comprobante.\n' : ''}${settings.extraPrompt ? `📌 INSTRUCCIONES ADICIONALES (¡Síguelas al pie de la letra!):\n  ${settings.extraPrompt}` : ''}`;
   // 2. Intentar con Google Gemini (probando modelos disponibles: gemini-3.8-flash, gemini-2.0-flash, gemini-1.5-flash)
   if (process.env.GEMINI_API_KEY?.trim()) {
     const rawEnvModel = process.env.GEMINI_MODEL?.trim();
@@ -439,9 +455,14 @@ export async function handleSalesMessage(
             pushName
           );
 
+          const shouldSendQr = Boolean(
+            settings.transferQrImage && shouldSendTransferQr(text, reply)
+          );
+
           return {
             reply,
             mode: maybeOrder ? "order_created" : "ai",
+            mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
           };
         } catch (mErr: any) {
           lastError = mErr;
@@ -480,9 +501,14 @@ export async function handleSalesMessage(
         pushName
       );
 
+      const shouldSendQr = Boolean(
+        settings.transferQrImage && shouldSendTransferQr(text, reply)
+      );
+
       return {
         reply,
         mode: maybeOrder ? "order_created" : "ai",
+        mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
       };
     } catch (openaiErr: any) {
       console.warn("[sales-agent] OpenAI falló (cuota o error de red); usando fallback inteligente de BUÑUELANDIA", openaiErr?.message || openaiErr);
@@ -532,7 +558,7 @@ export async function handleSalesMessage(
       .map((p) => `• *${p.name}*\n  Precio: ${formatCop(p.price)} - _${p.description || "Delicioso y crujiente"}_`)
       .join("\n\n");
     reply = `🧀 *Menú Oficial de BUÑUELANDIA:*\n\n${items}\n\nPara pedir, indícanos qué productos deseas (ejemplo: *1 CAJA x8 Surtida y 2 Buñuelos de Mora*).`;
-  } else if (foundAddress && (foundPayment || isAffirmation || lower.includes("nequi") || lower.includes("efectivo") || lower.includes("daviplata"))) {
+  } else if (foundAddress && (foundPayment || isAffirmation || lower.includes("nequi") || lower.includes("breb") || lower.includes("bre-b") || lower.includes("efectivo") || lower.includes("daviplata"))) {
     // Si ya tenemos dirección y pago, o confirmación: ¡CERRAR PEDIDO CON ÉXITO!
     const defaultProduct = products.find((p) => p.sku === "C8S") || products[0];
     const finalItems = extractedItems.length > 0 ? extractedItems : [{ sku: defaultProduct.sku, name: defaultProduct.name, quantity: 1, unitPrice: defaultProduct.price }];
@@ -560,16 +586,24 @@ export async function handleSalesMessage(
   } else if (extractedItems.length > 0 || isAffirmation || lower.includes("caja") || lower.includes("buñuelo") || lower.includes("quiero") || lower.includes("pedido")) {
     const chosenProduct = extractedItems[0] || products.find((p) => p.sku === "C8S") || products[0];
     const totalEst = extractedTotal > 0 ? extractedTotal : chosenProduct.unitPrice;
-    reply = `¡Excelente elección! 🤤 Hemos tomado nota de tu selección:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviarte tu pedido calientico, por favor facilítanos:\n1. 👤 *Tu Nombre Completo*\n2. 📍 *Dirección exacta de Entrega y Barrio*\n3. 💵 *Medio de Pago* (Nequi, Daviplata o Efectivo contra entrega)`;
+    reply = `¡Excelente elección! 🤤 Hemos tomado nota de tu selección:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviarte tu pedido calientico, por favor facilítanos:\n1. 👤 *Tu Nombre Completo*\n2. 📍 *Dirección exacta de Entrega y Barrio*\n3. 💵 *Medio de Pago* (Nequi, Bre-B o Efectivo contra entrega)\n\n[BOTONES: Nequi | Bre-B | Efectivo]`;
   } else if (foundAddress && !foundPayment) {
-    reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n- *Nequi*\n- *Daviplata*\n- *Efectivo contra entrega*`;
+    reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n- *Nequi*\n- *Bre-B*\n- *Efectivo contra entrega*\n\n[BOTONES: Nequi | Bre-B | Efectivo]`;
   } else if (previous.length > 1) {
     // Si ya hay conversación previa, NO reiniciar al saludo de bienvenida
-    reply = `¡Con gusto! Para confirmar tu pedido en BUÑUELANDIA, por favor compártenos tu *Dirección de entrega* y *Medio de pago* (Nequi, Daviplata o Efectivo contra entrega), o escribe *catálogo* si deseas ver más opciones.`;
+    reply = `¡Con gusto! Para confirmar tu pedido en BUÑUELANDIA, por favor compártenos tu *Dirección de entrega* y *Medio de pago* (Nequi, Bre-B o Efectivo contra entrega), o escribe *catálogo* si deseas ver más opciones.\n\n[BOTONES: Nequi | Bre-B | Efectivo]`;
   } else {
     reply = `${settings.welcomeMessage}\n\nPuedes escribir *catálogo*, *hacer pedido* o *escalar a humano* para que te atienda un asesor.`;
   }
 
+  const shouldSendQr = Boolean(
+    settings.transferQrImage && shouldSendTransferQr(text, reply)
+  );
+
   await appendMessage(conversationKey, "assistant", reply);
-  return { reply, mode };
+  return {
+    reply,
+    mode,
+    mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
+  };
 }

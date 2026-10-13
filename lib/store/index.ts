@@ -72,7 +72,7 @@ const DEFAULT_SETTINGS: OrgSettings = {
   extraPrompt: "",
   botObjective: "Vender la mayor cantidad de cajas de buñuelos posibles y recolectar dirección y método de pago.",
   welcomeMessage: "¡Hola! 🤤 Bienvenido a *BUÑUELANDIA*. Los mejores buñuelos frescos, crujientes y calienticos recién hechos. ¿Te gustaría ver nuestro menú de buñuelos y cajas?",
-  rules: "Ofrece el catálogo oficial de BUÑUELANDIA. Para pedidos confirma: productos y cantidades, nombre completo del cliente, dirección exacta de entrega y medio de pago (Nequi, Daviplata o Efectivo contra entrega). Si solicitan hablar con una persona, escala a humano.",
+  rules: "Ofrece el catálogo oficial de BUÑUELANDIA. Para pedidos confirma: productos y cantidades, nombre completo del cliente, dirección exacta de entrega y medio de pago (Nequi, Bre-B o Efectivo contra entrega). Si solicitan hablar con una persona, escala a humano.",
   transferQrImage: "",
 };
 
