@@ -12,6 +12,8 @@ import {
 export interface SalesMessageResult {
   reply: string;
   mode: "ai" | "keyword" | "human_escalated" | "order_created";
+  mediaUrl?: string;
+  mediaCaption?: string;
 }
 
 function formatCop(amount: number): string {
@@ -365,7 +367,7 @@ export async function handleSalesMessage(
   - Cada opción debe ser corta (ej: "Ver Catálogo", "Comprar Caja x4", "Comprar Caja x8", "Hablar con Asesor").
   - Úsalos estratégicamente para guiar al cliente al siguiente paso del flujo.
 
-  ${settings.extraPrompt ? `📌 INSTRUCCIONES ADICIONALES (¡Síguelas al pie de la letra!):\n  ${settings.extraPrompt}` : ''}`;
+  ${settings.transferQrImage ? '📌 PAGO POR TRANSFERENCIA / QR: Si el cliente elige pagar con Nequi, Daviplata o Transferencia Bancaria, indícale con entusiasmo que le estás enviando el código QR de pago oficial para que realice la transferencia y envíe el comprobante.\n' : ''}${settings.extraPrompt ? `📌 INSTRUCCIONES ADICIONALES (¡Síguelas al pie de la letra!):\n  ${settings.extraPrompt}` : ''}`;
   // 2. Intentar con Google Gemini (probando modelos disponibles: gemini-3.8-flash, gemini-2.0-flash, gemini-1.5-flash)
   if (process.env.GEMINI_API_KEY?.trim()) {
     const rawEnvModel = process.env.GEMINI_MODEL?.trim();

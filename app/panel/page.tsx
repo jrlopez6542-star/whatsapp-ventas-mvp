@@ -171,7 +171,22 @@ export default function PanelDashboard() {
   const [filter, setFilter] = useState<"all" | "bot" | "human" | "closed">("all");
   const [messages, setMessages] = useState<Message[]>([]);
   const [replyText, setReplyText] = useState("");
-  const handleToggleBot = async (id: string, newStatus: string) => { /* TODO: Implement */ };
+  const handleToggleBot = async (id: string, newStatus: string) => {
+    if (!id) return;
+    try {
+      setConversations(prev => prev.map(c => c.id === id ? { ...c, status: newStatus as any } : c));
+      const res = await fetch(`/api/panel/conversations/${encodeURIComponent(id)}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (res.ok) {
+        await loadConversations();
+      }
+    } catch (e) {
+      console.error("Error updating status:", e);
+    }
+  };
   const [sending, setSending] = useState(false);
 
   // Orders
@@ -833,11 +848,8 @@ export default function PanelDashboard() {
                 <div className="p-5">
                   <h3 className="font-bold text-white text-base mb-4">Acciones Rápidas</h3>
                   <div className="space-y-3">
-                    <button className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 text-sm py-2 rounded-lg border border-[#2a3942] transition">
+                    <button onClick={() => handleToggleBot(selectedConvId, "human")} className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 text-sm py-2 rounded-lg border border-[#2a3942] transition">
                       <i className="ph-fill ph-user"></i> Asignar a Asesor
-                    </button>
-                    <button className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 text-sm py-2 rounded-lg border border-[#2a3942] transition">
-                      <i className="ph-fill ph-envelope"></i> Enviar Plantilla HSM
                     </button>
                     <button onClick={() => handleToggleBot(selectedConvId, "bot")} className="w-full flex items-center justify-center gap-2 bg-[#202c33] hover:bg-[#2a3942] text-slate-200 text-sm py-2 rounded-lg border border-[#2a3942] transition">
                       <i className="ph-fill ph-arrows-clockwise"></i> Reiniciar Bot

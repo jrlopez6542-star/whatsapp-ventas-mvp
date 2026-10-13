@@ -7,6 +7,7 @@ import {
   verifyEvolutionWebhookSecret,
 } from "@/lib/evolution";
 import { sendDelayedOutboundWhatsApp } from "@/lib/outbound-queue";
+import { sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
 import { claimWebhookEvent } from "@/lib/webhook-dedupe";
 import { handleSalesMessage } from "@/lib/agent/sales-agent";
 import {
@@ -123,7 +124,7 @@ export async function POST(request: NextRequest) {
       await setConversationStatus(fromKey, "bot");
     }
 
-    const { reply, mode } = await handleSalesMessage(fromKey, text, parsed.pushName);
+    const { reply, mode, mediaUrl } = await handleSalesMessage(fromKey, text, parsed.pushName);
     const replyTo = replyTargetFromParsed(parsed);
     console.log("[evolution reply]", {
       from: fromKey,
@@ -144,6 +145,13 @@ export async function POST(request: NextRequest) {
         }
         // mark as read is now handled after the delay inside sendDelayedOutboundWhatsApp
         const send = await sendDelayedOutboundWhatsApp(fromKey, replyTo, reply, parsed.messageId);
+        if (mediaUrl) {
+          try {
+            await sendOutboundWhatsAppMedia(replyTo, mediaUrl, "📲 Aquí tienes el código QR para realizar tu transferencia");
+          } catch (mErr) {
+            console.error("[evolution] media outbound error", mErr);
+          }
+        }
         if (!send.ok) {
           console.error("[evolution] outbound failed", send);
         } else {

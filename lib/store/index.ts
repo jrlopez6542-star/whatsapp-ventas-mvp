@@ -59,6 +59,7 @@ export interface OrgSettings {
   extraPrompt?: string;
   botObjective?: string;
   rules: string;
+  transferQrImage?: string;
 }
 
 const DEFAULT_SETTINGS: OrgSettings = {
@@ -72,6 +73,7 @@ const DEFAULT_SETTINGS: OrgSettings = {
   botObjective: "Vender la mayor cantidad de cajas de buñuelos posibles y recolectar dirección y método de pago.",
   welcomeMessage: "¡Hola! 🤤 Bienvenido a *BUÑUELANDIA*. Los mejores buñuelos frescos, crujientes y calienticos recién hechos. ¿Te gustaría ver nuestro menú de buñuelos y cajas?",
   rules: "Ofrece el catálogo oficial de BUÑUELANDIA. Para pedidos confirma: productos y cantidades, nombre completo del cliente, dirección exacta de entrega y medio de pago (Nequi, Daviplata o Efectivo contra entrega). Si solicitan hablar con una persona, escala a humano.",
+  transferQrImage: "",
 };
 
 const SEED_PRODUCTS: Product[] = [
@@ -583,25 +585,25 @@ export async function getOrgSettings(): Promise<OrgSettings> {
   try {
     await ensureTursoReady();
     const client = getTursoClient();
-    const res = await client.execute("SELECT key, value FROM org_settings");
+    const res = await client.execute("SELECT * FROM org_settings LIMIT 1");
     if (!res.rows.length) return DEFAULT_SETTINGS;
-    const settings = { ...DEFAULT_SETTINGS };
-    for (const row of res.rows) {
-      const k = String(row.key);
-      const v = String(row.value);
-      if (k === "name") settings.name = v;
-      if (k === "tone") settings.tone = v;
-      if (k === "welcomeMessage") settings.welcomeMessage = v;
-      if (k === "rules") settings.rules = v;
-        if (k === "businessHoursEnabled") settings.businessHoursEnabled = v;
-        if (k === "businessHoursStart") settings.businessHoursStart = v;
-        if (k === "businessHoursEnd") settings.businessHoursEnd = v;
-        if (k === "outOfHoursMessage") settings.outOfHoursMessage = v;
-        if (k === "extraPrompt") settings.extraPrompt = v;
-        if (k === "botObjective") settings.botObjective = v;
-    }
+    const r: any = res.rows[0];
+    const settings: OrgSettings = {
+      name: String(r.business_name || r.name || DEFAULT_SETTINGS.name),
+      tone: String(r.tone || DEFAULT_SETTINGS.tone),
+      welcomeMessage: String(r.welcome_message || r.welcomeMessage || DEFAULT_SETTINGS.welcomeMessage),
+      rules: String(r.rules || DEFAULT_SETTINGS.rules),
+      businessHoursEnabled: r.business_hours_enabled != null ? String(r.business_hours_enabled) : DEFAULT_SETTINGS.businessHoursEnabled,
+      businessHoursStart: r.business_hours_start != null ? String(r.business_hours_start) : DEFAULT_SETTINGS.businessHoursStart,
+      businessHoursEnd: r.business_hours_end != null ? String(r.business_hours_end) : DEFAULT_SETTINGS.businessHoursEnd,
+      outOfHoursMessage: r.out_of_hours_message != null ? String(r.out_of_hours_message) : (r.after_hours_message ? String(r.after_hours_message) : DEFAULT_SETTINGS.outOfHoursMessage),
+      extraPrompt: r.extra_prompt != null ? String(r.extra_prompt) : DEFAULT_SETTINGS.extraPrompt,
+      botObjective: r.bot_objective != null ? String(r.bot_objective) : DEFAULT_SETTINGS.botObjective,
+      transferQrImage: r.transfer_qr_image != null ? String(r.transfer_qr_image) : DEFAULT_SETTINGS.transferQrImage,
+    };
     return settings;
-  } catch {
+  } catch (err) {
+    console.error("[store] getOrgSettings error:", err);
     return getMemoryStore().getOrgSettings();
   }
 }
@@ -612,17 +614,40 @@ export async function updateOrgSettings(patch: Partial<OrgSettings>): Promise<Or
     try {
       await ensureTursoReady();
       const client = getTursoClient();
-      for (const [k, v] of Object.entries(patch)) {
-        if (v != null) {
-          await client.execute({
-            sql: `INSERT INTO org_settings (key, value) VALUES (?, ?)
-                  ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-            args: [k, String(v)],
-          });
-        }
-      }
-    } catch {
-      // fallback
+      await client.execute({
+        sql: `INSERT OR IGNORE INTO org_settings (id, business_name, tone, welcome_message, rules, updated_at)
+              VALUES (1, ?, ?, ?, ?, ?)`,
+        args: [
+          patch.name || DEFAULT_SETTINGS.name,
+          patch.tone || DEFAULT_SETTINGS.tone,
+          patch.welcomeMessage || DEFAULT_SETTINGS.welcomeMessage,
+          patch.rules || DEFAULT_SETTINGS.rules,
+          new Date().toISOString()
+        ],
+      });
+
+      const sets: string[] = ["updated_at = ?"];
+      const args: any[] = [new Date().toISOString()];
+
+      if (patch.name !== undefined) { sets.push("business_name = ?"); args.push(patch.name); }
+      if (patch.tone !== undefined) { sets.push("tone = ?"); args.push(patch.tone); }
+      if (patch.welcomeMessage !== undefined) { sets.push("welcome_message = ?"); args.push(patch.welcomeMessage); }
+      if (patch.rules !== undefined) { sets.push("rules = ?"); args.push(patch.rules); }
+      if (patch.businessHoursEnabled !== undefined) { sets.push("business_hours_enabled = ?"); args.push(patch.businessHoursEnabled); }
+      if (patch.businessHoursStart !== undefined) { sets.push("business_hours_start = ?"); args.push(patch.businessHoursStart); }
+      if (patch.businessHoursEnd !== undefined) { sets.push("business_hours_end = ?"); args.push(patch.businessHoursEnd); }
+      if (patch.outOfHoursMessage !== undefined) { sets.push("out_of_hours_message = ?"); args.push(patch.outOfHoursMessage); }
+      if (patch.extraPrompt !== undefined) { sets.push("extra_prompt = ?"); args.push(patch.extraPrompt); }
+      if (patch.botObjective !== undefined) { sets.push("bot_objective = ?"); args.push(patch.botObjective); }
+      if (patch.transferQrImage !== undefined) { sets.push("transfer_qr_image = ?"); args.push(patch.transferQrImage); }
+
+      args.push(1);
+      await client.execute({
+        sql: `UPDATE org_settings SET ${sets.join(", ")} WHERE id = ?`,
+        args,
+      });
+    } catch (err) {
+      console.error("[store] updateOrgSettings error:", err);
     }
   }
   return updated;

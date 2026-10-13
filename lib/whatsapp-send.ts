@@ -1,4 +1,4 @@
-import { isEvolutionConfigured, sendEvolutionText, sendEvolutionButtons } from "@/lib/evolution";
+import { isEvolutionConfigured, sendEvolutionText, sendEvolutionButtons, sendEvolutionMedia } from "@/lib/evolution";
 import { isTwilioSendConfigured, sendWhatsAppMessage } from "@/lib/twilio";
 
 export type OutboundWhatsAppResult =
@@ -15,6 +15,19 @@ export function getWhatsAppChannel(): WhatsAppChannel {
 
 export function isOutboundWhatsAppConfigured(): boolean {
   return getWhatsAppChannel() !== "none";
+}
+
+export async function sendOutboundWhatsAppMedia(
+  to: string,
+  mediaUrlOrBase64: string,
+  caption?: string
+): Promise<OutboundWhatsAppResult> {
+  if (isEvolutionConfigured()) {
+    const res = await sendEvolutionMedia(to, mediaUrlOrBase64, caption);
+    if (res.ok) return { ok: true, id: res.id, channel: "evolution" };
+    return { ok: false, error: res.error, channel: "evolution" };
+  }
+  return { ok: false, error: "Canal no configurado para media", channel: "none" };
 }
 
 export async function sendOutboundWhatsApp(
@@ -63,4 +76,3 @@ export async function sendOutboundWhatsApp(
     channel: "none",
   };
 }
-

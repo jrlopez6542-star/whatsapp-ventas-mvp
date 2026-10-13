@@ -138,6 +138,25 @@ export async function ensureTursoReady(): Promise<void> {
       } catch {}
     }
 
+    const alterOrgSettings = [
+      "business_name TEXT",
+      "tone TEXT",
+      "welcome_message TEXT",
+      "rules TEXT",
+      "business_hours_enabled TEXT",
+      "business_hours_start TEXT",
+      "business_hours_end TEXT",
+      "out_of_hours_message TEXT",
+      "extra_prompt TEXT",
+      "bot_objective TEXT",
+      "transfer_qr_image TEXT",
+    ];
+    for (const col of alterOrgSettings) {
+      try {
+        await client.execute(`ALTER TABLE org_settings ADD COLUMN ${col};`);
+      } catch {}
+    }
+
     // Data repair for legacy databases (fix 0/epoch-1969 dates and null phone columns)
     try {
       const nowMs = Date.now();

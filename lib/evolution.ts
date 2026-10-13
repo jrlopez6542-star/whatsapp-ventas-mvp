@@ -649,3 +649,56 @@ export async function sendEvolutionButtons(
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
+/**
+ * POST /message/sendMedia/{instance}
+ * Sends image, document or media (supports base64 or URL).
+ */
+export async function sendEvolutionMedia(
+  toPhone: string,
+  mediaUrlOrBase64: string,
+  caption?: string
+): Promise<SendEvolutionResult> {
+  const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "");
+  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const instance = process.env.EVOLUTION_INSTANCE?.trim();
+
+  if (!base || !apiKey || !instance) {
+    return {
+      ok: false,
+      error: "Faltan EVOLUTION_API_URL, EVOLUTION_API_KEY o EVOLUTION_INSTANCE",
+    };
+  }
+
+  const resolved = resolveEvolutionSendNumber(toPhone);
+  if (resolved.kind === "invalid" || !resolved.number) {
+    return { ok: false, error: "Número inválido para Evolution" };
+  }
+
+  const url = `${base}/message/sendMedia/${encodeURIComponent(instance)}`;
+
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "apikey": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        number: resolved.number,
+        mediatype: "image",
+        media: mediaUrlOrBase64,
+        caption: caption || "",
+      }),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => "");
+      return { ok: false, error: `Evolution media error (${res.status}): ${errText}` };
+    }
+
+    const data = await res.json().catch(() => ({}));
+    return { ok: true, id: data?.key?.id || "media" };
+  } catch (err: any) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
