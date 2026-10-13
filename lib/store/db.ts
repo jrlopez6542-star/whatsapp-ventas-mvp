@@ -160,6 +160,8 @@ export async function ensureTursoReady(): Promise<void> {
       "delivery_fee INTEGER DEFAULT 0",
       "free_delivery_threshold INTEGER DEFAULT 0",
       "estimated_delivery_time TEXT",
+      "bot_enabled TEXT DEFAULT 'true'",
+      "upsell_drinks_enabled TEXT DEFAULT 'true'",
     ];
     for (const col of alterOrgSettings) {
       try {

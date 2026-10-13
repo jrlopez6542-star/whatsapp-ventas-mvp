@@ -6,7 +6,8 @@ import Link from "next/link";
 import { DashboardView } from "./DashboardView";
 import { SettingsView } from "./SettingsView";
 import { OrdersView } from "./OrdersView";
-import { BotFlowsView } from "./BotFlowsView";
+import { CatalogView } from "./CatalogView";
+import { HoursView } from "./HoursView";
 import {
   formatMessageTime,
   formatConversationListTime,
@@ -140,6 +141,37 @@ export default function PanelDashboard() {
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [showMobileDetails, setShowMobileDetails] = useState(false);
   const [health, setHealth] = useState<any>(null);
+
+  // Master switch for the bot
+  const [botEnabled, setBotEnabled] = useState(true);
+  const [togglingBot, setTogglingBot] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/panel/settings")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.ok && d.settings) {
+          setBotEnabled(d.settings.botEnabled !== "false");
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleToggleBotMaster = async (active: boolean) => {
+    setTogglingBot(true);
+    setBotEnabled(active);
+    try {
+      await fetch("/api/panel/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ botEnabled: active ? "true" : "false" }),
+      });
+    } catch {
+      alert("Error al cambiar el estado general del bot.");
+    } finally {
+      setTogglingBot(false);
+    }
+  };
 
   // WhatsApp Web QR state
   const [qrStatus, setQrStatus] = useState<QrStatus | null>(null);
@@ -555,6 +587,31 @@ export default function PanelDashboard() {
               </div>
             </div>
 
+            {/* BOT MASTER SWITCH */}
+            <div className="mx-2 mb-2 p-2.5 bg-[#162128] border border-[#2a3942] rounded-lg flex items-center justify-between shadow-sm">
+              <div className="flex items-center gap-2">
+                <i className={`ph-fill ph-robot text-lg ${botEnabled ? 'text-emerald-400' : 'text-red-400'}`}></i>
+                <div>
+                  <div className="text-[11px] font-bold text-white uppercase leading-tight">
+                    {botEnabled ? "Bot Activo" : "Bot Pausado"}
+                  </div>
+                  <div className="text-[10px] text-slate-400 leading-tight">
+                    {botEnabled ? "Auto-respuesta ON" : "Modo Manual (OFF)"}
+                  </div>
+                </div>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  className="sr-only peer"
+                  checked={botEnabled}
+                  disabled={togglingBot}
+                  onChange={(e) => handleToggleBotMaster(e.target.checked)}
+                />
+                <div className="w-8 h-4 bg-[#202c33] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500"></div>
+              </label>
+            </div>
+
             <nav className="px-2 mt-2 space-y-1 text-[13px] font-medium text-slate-400">
               <button onClick={() => { setTab("real_orders" as any); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='real_orders' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <i className="ph ph-receipt text-lg"></i> Pedidos
@@ -569,11 +626,11 @@ export default function PanelDashboard() {
                 <span className="bg-[#007aff] text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{conversations.length}</span>
               </button>
               <button onClick={() => { setTab("catalog"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='catalog' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
-                <i className="ph ph-robot text-lg"></i> Bots (Flujos)
+                <i className="ph ph-coffee text-lg text-amber-400"></i> Menú y Bebidas
               </button>
-              
-              
-              
+              <button onClick={() => { setTab("hours"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='hours' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
+                <i className="ph ph-clock text-lg text-indigo-400"></i> Horarios
+              </button>
               <button onClick={() => { setTab("settings"); setShowMobileSidebar(false); }} className={`w-full flex items-center gap-3 px-3 py-2 rounded-md transition ${tab==='settings' ? 'bg-[#202c33] text-white' : 'hover:bg-[#202c33] hover:text-white'}`}>
                 <i className="ph ph-gear text-lg"></i> Configuración
               </button>
@@ -877,9 +934,9 @@ export default function PanelDashboard() {
           <main className="flex-1 overflow-y-auto bg-[#0b141a]">
             {tab === "orders" && <DashboardView conversations={conversations} orders={orders} />}
             {tab === "real_orders" && <OrdersView orders={orders} onOrdersChange={loadOrders} />}
-            {tab === "catalog" && <BotFlowsView />}
+            {tab === "catalog" && <CatalogView />}
+            {tab === "hours" && <HoursView />}
             {tab === "settings" && <SettingsView />}
-            {tab === "hours" && <div className="text-white p-4">Horarios - En desarrollo</div>}
             {tab === ("qr" as any) && <div className="text-white p-4">QR / Vincular - En desarrollo</div>}
           </main>
         )}

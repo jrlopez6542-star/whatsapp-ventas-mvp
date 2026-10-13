@@ -71,6 +71,8 @@ export interface OrgSettings {
   deliveryFee?: string;
   freeDeliveryThreshold?: string;
   estimatedDeliveryTime?: string;
+  botEnabled?: string;
+  upsellDrinksEnabled?: string;
 }
 
 const DEFAULT_SETTINGS: OrgSettings = {
@@ -90,6 +92,8 @@ const DEFAULT_SETTINGS: OrgSettings = {
   deliveryFee: "4000",
   freeDeliveryThreshold: "40000",
   estimatedDeliveryTime: "30 a 45 minutos",
+  botEnabled: "true",
+  upsellDrinksEnabled: "true",
 };
 
 const SEED_PRODUCTS: Product[] = [
@@ -129,6 +133,13 @@ const SEED_PRODUCTS: Product[] = [
     description: "Café campesino recién colado, aromático y calientito.",
   },
   {
+    sku: "BEB_CHOC",
+    name: "Chocolate Caliente Tradicional",
+    price: 4000,
+    active: true,
+    description: "Chocolate caliente espumoso tradicional, perfecto para acompañar buñuelos.",
+  },
+  {
     sku: "BEB_GAS",
     name: "Gaseosa 400ml",
     price: 4500,
@@ -140,7 +151,14 @@ const SEED_PRODUCTS: Product[] = [
     name: "Jugo Natural de Mora",
     price: 6000,
     active: true,
-    description: "Jugo natural refrescante en agua o en leche.",
+    description: "Jugo natural refrescante de fruta en agua o en leche.",
+  },
+  {
+    sku: "BEB_AGUA",
+    name: "Agua Mineral 500ml",
+    price: 3000,
+    active: true,
+    description: "Agua fresca pura sin gas o con gas.",
   },
 ];
 
@@ -512,20 +530,18 @@ export async function getProducts(activeOnly = true): Promise<Product[]> {
   try {
     await ensureTursoReady();
     const client = getTursoClient();
+    // Ensure all seed products (including new drinks) are present
+    for (const p of SEED_PRODUCTS) {
+      await client.execute({
+        sql: "INSERT OR IGNORE INTO products (sku, name, price, active, description) VALUES (?, ?, ?, ?, ?)",
+        args: [p.sku, p.name, p.price, p.active ? 1 : 0, p.description || ""],
+      }).catch(() => {});
+    }
+
     const sql = activeOnly
       ? "SELECT sku, name, price, active, description FROM products WHERE active = 1"
       : "SELECT sku, name, price, active, description FROM products";
     const res = await client.execute(sql);
-    if (!res.rows.length) {
-      // Seed initial products if DB empty
-      for (const p of SEED_PRODUCTS) {
-        await client.execute({
-          sql: "INSERT OR IGNORE INTO products (sku, name, price, active, description) VALUES (?, ?, ?, ?, ?)",
-          args: [p.sku, p.name, p.price, p.active ? 1 : 0, p.description || ""],
-        });
-      }
-      return SEED_PRODUCTS;
-    }
     return res.rows.map((r: any) => ({
       sku: String(r.sku),
       name: String(r.name),
@@ -747,6 +763,8 @@ export async function getOrgSettings(): Promise<OrgSettings> {
       deliveryFee: r.delivery_fee != null ? String(r.delivery_fee) : DEFAULT_SETTINGS.deliveryFee,
       freeDeliveryThreshold: r.free_delivery_threshold != null ? String(r.free_delivery_threshold) : DEFAULT_SETTINGS.freeDeliveryThreshold,
       estimatedDeliveryTime: r.estimated_delivery_time != null ? String(r.estimated_delivery_time) : DEFAULT_SETTINGS.estimatedDeliveryTime,
+      botEnabled: r.bot_enabled != null ? String(r.bot_enabled) : DEFAULT_SETTINGS.botEnabled,
+      upsellDrinksEnabled: r.upsell_drinks_enabled != null ? String(r.upsell_drinks_enabled) : DEFAULT_SETTINGS.upsellDrinksEnabled,
     };
     return settings;
   } catch (err) {
@@ -792,6 +810,8 @@ export async function updateOrgSettings(patch: Partial<OrgSettings>): Promise<Or
       if (patch.deliveryFee !== undefined) { sets.push("delivery_fee = ?"); args.push(patch.deliveryFee); }
       if (patch.freeDeliveryThreshold !== undefined) { sets.push("free_delivery_threshold = ?"); args.push(patch.freeDeliveryThreshold); }
       if (patch.estimatedDeliveryTime !== undefined) { sets.push("estimated_delivery_time = ?"); args.push(patch.estimatedDeliveryTime); }
+      if (patch.botEnabled !== undefined) { sets.push("bot_enabled = ?"); args.push(patch.botEnabled); }
+      if (patch.upsellDrinksEnabled !== undefined) { sets.push("upsell_drinks_enabled = ?"); args.push(patch.upsellDrinksEnabled); }
 
       args.push(1);
       await client.execute({

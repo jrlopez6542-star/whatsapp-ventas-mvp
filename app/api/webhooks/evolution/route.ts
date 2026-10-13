@@ -19,6 +19,7 @@ import {
   setConversationCustomerName,
   getOrders,
   updateOrderStatus,
+  getOrgSettings,
 } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -130,6 +131,12 @@ export async function POST(request: NextRequest) {
       ? (text ? `[Foto adjunta: ${text}]` : "📷 [Comprobante o Imagen adjunta]")
       : text;
     await appendMessage(fromKey, "user", userMessageContent);
+
+    const orgSettings = await getOrgSettings().catch(() => null);
+    if (orgSettings?.botEnabled === "false") {
+      console.log("[evolution] bot is disabled via master switch — skipping auto-reply", { from: fromKey });
+      return jsonOk({ mode: "bot_disabled" });
+    }
 
     if (conv.status === "human") {
       console.log("[evolution] human mode — skip AI", { from: fromKey });

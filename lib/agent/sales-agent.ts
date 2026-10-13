@@ -126,9 +126,13 @@ function extractProductsFromText(
         matched = true;
       } else if (prod.sku === "BEB_CAFE" && (lower.includes("café") || lower.includes("cafe") || lower.includes("tinto"))) {
         matched = true;
+      } else if (prod.sku === "BEB_CHOC" && (lower.includes("chocolate") || lower.includes("chocolatito"))) {
+        matched = true;
       } else if (prod.sku === "BEB_GAS" && (lower.includes("gaseosa") || lower.includes("coca cola") || lower.includes("coca-cola") || lower.includes("colombiana") || lower.includes("manzana"))) {
         matched = true;
       } else if (prod.sku === "BEB_JUGO" && (lower.includes("jugo") || lower.includes("jugo natural") || lower.includes("jugo de mora"))) {
+        matched = true;
+      } else if (prod.sku === "BEB_AGUA" && (lower.includes("agua") || lower.includes("botella de agua"))) {
         matched = true;
       }
     }
@@ -472,6 +476,8 @@ export async function handleSalesMessage(
   const freeThreshold = parseInt(settings.freeDeliveryThreshold || "40000", 10) || 40000;
   const etaTime = settings.estimatedDeliveryTime || "30 a 45 minutos";
 
+  const upsellDrinks = settings.upsellDrinksEnabled !== "false";
+
   const systemPrompt = `Eres el asistente virtual y vendedor estrella por WhatsApp de "${settings.name}".
 
   🎭 PERSONALIDAD Y TONO:
@@ -492,10 +498,19 @@ export async function handleSalesMessage(
   2. ELECCIÓN Y SALSAS: 
      - Si el cliente elige una caja "Tradicional", es sin salsa, pasa al paso 3.
      - Si el cliente elige una caja "Surtida", TIENES QUE PREGUNTARLE QUÉ SALSAS QUIERE (Mora, Arequipe, Bocadillo, Suero Costeño). Puedes mezclarlas como prefiera.
-  3. VENTA CRUZADA (Upselling de Bebidas):
+  ${upsellDrinks ? `3. VENTA CRUZADA Y CATÁLOGO DE BEBIDAS:
      - Justo después de que el cliente elija su caja (y salsas si aplica), antes de pedir la dirección, pregúntale amigablemente si desea agregar bebidas para acompañar:
-       «¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤 Tenemos café campesino recién colado ($3.500), gaseosa bien helada ($4.500) o jugo natural de mora ($6.000).»
-     - Si el cliente acepta, agrégala al pedido; si dice que no, avanza inmediatamente al paso 4 sin insistir.
+       «¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤 Tenemos café campesino recién colado ($3.500), chocolate caliente tradicional ($4.000), gaseosa bien helada ($4.500), jugo natural de mora ($6.000) o agua ($3.000).»
+     - Si el cliente pregunta en cualquier momento por bebidas (ej: "¿qué bebidas tienen?", "¿tienen algo de tomar?", "muéstrame las bebidas"), preséntale con entusiasmo el catálogo completo:
+       ☕ *Bebidas Calientes:*
+       • Café Campesino recién colado ($3.500)
+       • Chocolate Caliente Tradicional ($4.000)
+       🥤 *Bebidas Frías:*
+       • Gaseosa 400ml helada ($4.500) (Coca-Cola, Colombiana, Manzana)
+       • Jugo Natural de Mora ($6.000)
+       • Agua Mineral 500ml ($3.000)
+     - Si el cliente acepta alguna bebida, agrégala con su precio al pedido; si dice que no, avanza inmediatamente al paso 4 sin insistir.` : `3. BEBIDAS DESACTIVADAS (NO OFRECER BEBIDAS):
+     - El interruptor de venta de bebidas está APAGADO. NO ofrezcas, NO sugieras ni menciones bebidas activamente al cliente. Pasa DIRECTAMENTE al paso 4 (Recolección de datos de entrega).`}
   4. RECOLECCIÓN DE DATOS DE ENTREGA:
      - Pide: 📍 Dirección exacta de entrega (con barrio) y 🏢 Indicaciones especiales de entrega (ej: torre, apto, dejar en portería o si el timbre no funciona).
   5. MEDIO DE PAGO Y COSTO DE DOMICILIO:
