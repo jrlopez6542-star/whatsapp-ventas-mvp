@@ -295,7 +295,12 @@ export default function PanelDashboard() {
     try {
       const res = await fetch(`/api/panel/conversations?_t=${Date.now()}`, { cache: "no-store" });
       const data = await res.json();
-      if (data.ok) setConversations(data.conversations || []);
+      if (data.ok && Array.isArray(data.conversations)) {
+        setConversations((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(data.conversations)) return prev;
+          return data.conversations;
+        });
+      }
     } catch {}
   };
 
@@ -303,7 +308,12 @@ export default function PanelDashboard() {
     try {
       const res = await fetch(`/api/panel/orders?_t=${Date.now()}`, { cache: "no-store" });
       const data = await res.json();
-      if (data.ok) setOrders(data.orders || []);
+      if (data.ok && Array.isArray(data.orders)) {
+        setOrders((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(data.orders)) return prev;
+          return data.orders;
+        });
+      }
     } catch {}
   };
 
@@ -448,7 +458,6 @@ export default function PanelDashboard() {
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [refreshInterval, setRefreshInterval] = useState(5); // en segundos
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date>(new Date());
 
   // Cargar preferencias guardadas en localStorage
   useEffect(() => {
@@ -468,7 +477,12 @@ export default function PanelDashboard() {
     try {
       const res = await fetch(`/api/panel/conversations/${encodeURIComponent(convId)}/messages?_t=${Date.now()}`, { cache: "no-store" });
       const data = await res.json();
-      if (data.ok) setMessages(data.messages || []);
+      if (data.ok && Array.isArray(data.messages)) {
+        setMessages((prev) => {
+          if (JSON.stringify(prev) === JSON.stringify(data.messages)) return prev;
+          return data.messages;
+        });
+      }
     } catch {}
   }, []);
 
@@ -484,7 +498,6 @@ export default function PanelDashboard() {
         tasks.push(loadMessagesForConv(selectedConvId));
       }
       await Promise.allSettled(tasks);
-      setLastRefreshedAt(new Date());
     } finally {
       if (!silent) {
         setTimeout(() => setIsRefreshing(false), 400);
@@ -501,7 +514,22 @@ export default function PanelDashboard() {
     loadMessagesForConv(selectedConvId);
   }, [selectedConvId, loadMessagesForConv]);
 
-  // Intervalo de auto-refresco periódico
+  // Sincronizar cambios guardados desde la pestaña de Configuración
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === "crm_auto_refresh" && e.newValue !== null) {
+        setAutoRefreshEnabled(e.newValue === "true");
+      }
+      if (e.key === "crm_refresh_interval" && e.newValue !== null) {
+        const val = parseInt(e.newValue, 10);
+        if (!isNaN(val) && val >= 2) setRefreshInterval(val);
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  // Intervalo de auto-refresco periódico silencioso en segundo plano
   useEffect(() => {
     if (!autoRefreshEnabled) return;
     const intervalMs = Math.max(2, refreshInterval) * 1000;
@@ -511,18 +539,15 @@ export default function PanelDashboard() {
     return () => clearInterval(timer);
   }, [autoRefreshEnabled, refreshInterval, refreshAll]);
 
-  // Refrescar inmediatamente al regresar a la pestaña del navegador (focus / visibilidad)
+  // Refrescar silenciosamente al regresar a la pestaña del navegador
   useEffect(() => {
-    const handleFocus = () => {
-      refreshAll(false);
-    };
-    window.addEventListener("focus", handleFocus);
     const handleVis = () => {
-      if (document.visibilityState === "visible") handleFocus();
+      if (document.visibilityState === "visible") {
+        refreshAll(true);
+      }
     };
     document.addEventListener("visibilitychange", handleVis);
     return () => {
-      window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVis);
     };
   }, [refreshAll]);
@@ -744,73 +769,6 @@ export default function PanelDashboard() {
                 />
                 <div className="w-8 h-4 bg-[#202c33] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500"></div>
               </label>
-            </div>
-
-            {/* WIDGET AUTO-REFRESCO AUTOMÁTICO */}
-            <div className="mx-2 mb-2 p-2.5 bg-[#162128] border border-[#2a3942] rounded-lg shadow-sm">
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="relative flex h-2 w-2">
-                    {autoRefreshEnabled && (
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    )}
-                    <span className={`relative inline-flex rounded-full h-2 w-2 ${autoRefreshEnabled ? 'bg-emerald-500' : 'bg-slate-500'}`}></span>
-                  </span>
-                  <span className="text-[11px] font-bold text-white uppercase tracking-wider">
-                    Auto-Refresco
-                  </span>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer shrink-0" title={autoRefreshEnabled ? "Pausar refresco automático" : "Activar refresco automático"}>
-                  <input
-                    type="checkbox"
-                    className="sr-only peer"
-                    checked={autoRefreshEnabled}
-                    onChange={(e) => {
-                      const val = e.target.checked;
-                      setAutoRefreshEnabled(val);
-                      if (typeof window !== "undefined") localStorage.setItem("crm_auto_refresh", String(val));
-                    }}
-                  />
-                  <div className="w-7 h-3.5 bg-[#202c33] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[1px] after:left-[1px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-2.5 after:w-2.5 after:transition-all peer-checked:bg-[#007aff]"></div>
-                </label>
-              </div>
-
-              {/* Selector de intervalo y botón de refresco */}
-              <div className="flex items-center gap-1.5">
-                <select
-                  value={refreshInterval}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setRefreshInterval(val);
-                    if (typeof window !== "undefined") localStorage.setItem("crm_refresh_interval", String(val));
-                  }}
-                  className="flex-1 bg-[#121b22] text-slate-300 text-[10px] font-medium px-1.5 py-1 rounded border border-[#2a3942] focus:outline-none focus:border-[#007aff] cursor-pointer"
-                  title="Frecuencia de actualización automática"
-                >
-                  <option value={3}>Cada 3 seg</option>
-                  <option value={5}>Cada 5 seg</option>
-                  <option value={10}>Cada 10 seg</option>
-                  <option value={30}>Cada 30 seg</option>
-                </select>
-
-                <button
-                  onClick={() => refreshAll(false)}
-                  disabled={isRefreshing}
-                  className="bg-[#202c33] hover:bg-[#2a3942] text-slate-200 hover:text-white px-2 py-1 rounded border border-[#2a3942] transition flex items-center gap-1 text-[10px] font-medium shrink-0 shadow-sm"
-                  title="Refrescar todos los datos ahora"
-                >
-                  <i className={`ph-bold ph-arrows-clockwise text-xs ${isRefreshing ? 'animate-spin text-[#007aff]' : ''}`}></i>
-                  <span>{isRefreshing ? 'Sincro...' : 'Refrescar'}</span>
-                </button>
-              </div>
-
-              {/* Timestamp última sincronización */}
-              <div className="mt-1.5 pt-1 border-t border-[#1f2c34] flex items-center justify-between text-[9px] text-slate-400">
-                <span>Última sincronización:</span>
-                <span className="font-mono text-emerald-400 font-medium">
-                  {lastRefreshedAt.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                </span>
-              </div>
             </div>
 
             <nav className="px-2 mt-2 space-y-1 text-[13px] font-medium text-slate-400">

@@ -18,6 +18,43 @@ export function SettingsView() {
   const [success, setSuccess] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Auto-refresh config state
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [refreshSecs, setRefreshSecs] = useState(5);
+  const [savedRefreshMsg, setSavedRefreshMsg] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const savedAuto = localStorage.getItem("crm_auto_refresh");
+      if (savedAuto !== null) setAutoRefresh(savedAuto === "true");
+      const savedInt = localStorage.getItem("crm_refresh_interval");
+      if (savedInt !== null) {
+        const val = parseInt(savedInt, 10);
+        if (!isNaN(val) && val >= 2) setRefreshSecs(val);
+      }
+    }
+  }, []);
+
+  const handleToggleAutoRefresh = (enabled: boolean) => {
+    setAutoRefresh(enabled);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("crm_auto_refresh", String(enabled));
+      window.dispatchEvent(new StorageEvent("storage", { key: "crm_auto_refresh", newValue: String(enabled) }));
+    }
+    setSavedRefreshMsg(true);
+    setTimeout(() => setSavedRefreshMsg(false), 2500);
+  };
+
+  const handleChangeInterval = (secs: number) => {
+    setRefreshSecs(secs);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("crm_refresh_interval", String(secs));
+      window.dispatchEvent(new StorageEvent("storage", { key: "crm_refresh_interval", newValue: String(secs) }));
+    }
+    setSavedRefreshMsg(true);
+    setTimeout(() => setSavedRefreshMsg(false), 2500);
+  };
+
   useEffect(() => {
     fetch("/api/panel/settings")
       .then(r => r.json())
@@ -320,6 +357,69 @@ export function SettingsView() {
               </button>
             </div>
           </form>
+        </div>
+      </div>
+
+      {/* SECCIÓN ACTUALIZACIÓN EN VIVO Y AUTO-REFRESCO */}
+      <div className="bg-[#121b22] border border-[#1f2c34] rounded-xl overflow-hidden max-w-2xl mt-8">
+        <div className="p-6">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-lg font-bold text-white flex items-center gap-2">
+              <i className="ph-fill ph-arrows-clockwise text-[#007aff]"></i> Actualización en Vivo y Auto-Refresco
+            </h2>
+            <span className={`text-xs px-2.5 py-1 rounded-full font-medium flex items-center gap-1.5 ${autoRefresh ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-500/10 text-slate-400 border border-slate-500/20'}`}>
+              <span className={`w-2 h-2 rounded-full ${autoRefresh ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`}></span>
+              {autoRefresh ? 'Activo en segundo plano' : 'Pausado'}
+            </span>
+          </div>
+
+          <p className="text-sm text-slate-400 mb-5 leading-relaxed">
+            Sincroniza automáticamente los chats, mensajes y pedidos sin recargar la página, sin interrumpir tu escritura y sin perder el chat que tienes abierto.
+          </p>
+
+          {savedRefreshMsg && (
+            <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs px-3 py-2 rounded-lg mb-4 flex items-center gap-2">
+              <i className="ph-fill ph-check-circle"></i> Preferencia de auto-refresco actualizada al instante.
+            </div>
+          )}
+
+          <div className="space-y-4 bg-[#0b141a] p-4 rounded-lg border border-[#2a3942]/60">
+            {/* INTERRUPTOR PRINCIPAL */}
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-sm font-semibold text-white block">Auto-Refresco Periódico</span>
+                <span className="text-xs text-slate-400">Actualizar chats y pedidos de manera transparente</span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  className="sr-only peer"
+                  checked={autoRefresh}
+                  onChange={(e) => handleToggleAutoRefresh(e.target.checked)}
+                />
+                <div className="w-11 h-6 bg-[#202c33] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#007aff]"></div>
+              </label>
+            </div>
+
+            {/* FRECUENCIA */}
+            <div className="pt-4 border-t border-[#1f2c34] flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <span className="text-sm font-semibold text-white block">Frecuencia de Sincronización</span>
+                <span className="text-xs text-slate-400">Intervalo entre consultas silenciosas al servidor</span>
+              </div>
+              <select
+                value={refreshSecs}
+                disabled={!autoRefresh}
+                onChange={(e) => handleChangeInterval(Number(e.target.value))}
+                className="bg-[#121b22] text-white text-xs font-semibold px-3 py-2 rounded-lg border border-[#2a3942] focus:border-[#007aff] outline-none cursor-pointer disabled:opacity-40"
+              >
+                <option value={3}>Cada 3 segundos (Ultra rápido)</option>
+                <option value={5}>Cada 5 segundos (Recomendado)</option>
+                <option value={10}>Cada 10 segundos</option>
+                <option value={30}>Cada 30 segundos</option>
+              </select>
+            </div>
+          </div>
         </div>
       </div>
 
