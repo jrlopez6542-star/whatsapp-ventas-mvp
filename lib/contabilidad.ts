@@ -8,6 +8,7 @@ export interface ContabilidadInvoiceResult {
   invoiceNumber?: string;
   invoiceId?: string;
   invoiceUrl?: string;
+  invoicePdfUrl?: string;
   total?: number;
   customerName?: string;
   error?: string;
@@ -74,6 +75,7 @@ export async function createInvoiceInContabilidad(
       invoiceNumber: data.invoiceNumber,
       invoiceId: data.invoiceId,
       invoiceUrl: data.invoiceUrl,
+      invoicePdfUrl: data.invoicePdfUrl,
       total: data.total,
       customerName: data.customerName,
       error: data.error,

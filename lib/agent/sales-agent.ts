@@ -18,6 +18,9 @@ export interface SalesMessageResult {
   mode: "ai" | "keyword" | "human_escalated" | "order_created";
   mediaUrl?: string;
   mediaCaption?: string;
+  invoiceUrl?: string;
+  invoicePdfUrl?: string;
+  invoiceNumber?: string;
 }
 
 function formatCop(amount: number): string {
@@ -28,36 +31,107 @@ function formatCop(amount: number): string {
   }).format(amount);
 }
 
-// Extrae direcciones colombianas típicas sin saltar líneas ni capturar medios de pago
+// Limpia y valida candidatos a dirección excluyendo palabras genéricas o de medios de pago
+function cleanAddressCandidate(cand: string): string | null {
+  if (!cand) return null;
+  const clean = cand.trim().replace(/^[:,\s.-]+|[:,\s.-]+$/g, "");
+  const lower = clean.toLowerCase();
+  if (
+    lower.includes("indicada en chat") ||
+    lower.includes("no especificada") ||
+    lower.includes("por confirmar") ||
+    lower.includes("ingresada")
+  ) {
+    return null;
+  }
+  if (
+    lower === "nequi" ||
+    lower === "bre-b" ||
+    lower === "breb" ||
+    lower === "efectivo" ||
+    lower === "transferencia" ||
+    lower === "daviplata" ||
+    lower === "bancolombia"
+  ) {
+    return null;
+  }
+  return clean.length >= 4 ? clean : null;
+}
+
+// Extrae direcciones colombianas con soporte integral urbano, rural y conjuntos residenciales
 function extractAddress(text: string): string | null {
   if (!text) return null;
   const lines = text.split(/[\r\n]+/);
+
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    // 1. Etiqueta directa en la línea: "Dirección: Cra 3a 7 26"
+    // 1. Etiqueta directa en la línea: "Dirección: Cra 3a 7 26", "Enviar a: Calle 140...", "Vivo en: ..."
     const labeledMatch = trimmed.match(
-      /^(?:📍\s*)?(?:direcci[oó]n|enviar a|para la|despachar a)[:\s]+([^,\n]+)/i
+      /^(?:📍\s*)?(?:direcci[oó]n|enviar a|para la|para|despachar a|entrega en|lugar de entrega|destino|vivo en|estoy en|queda en|es en|mi direcci[oó]n es)[:\s]+([^,\n]+(?:,[^,\n]+)*)/i
     );
     if (labeledMatch && labeledMatch[1]) {
-      const val = labeledMatch[1].trim();
-      if (val.length >= 4 && !val.toLowerCase().includes("indicada en chat")) return val;
+      const cand = cleanAddressCandidate(labeledMatch[1]);
+      if (cand) return cand;
     }
 
-    // 2. Nomenclatura urbana colombiana en la línea
-    // Ej: Cra 3a 7 26 / Calle 45 # 12-30 / Carrera 80 No 25 10 / Av 19 # 100-20
-    const streetMatch = trimmed.match(
-      /(?:calle|cll|cra|carrera|diagonal|diag|transversal|trans|av|avenida)\s+\d+[a-zA-Z]?\s*(?:#|no|nro|número|\s)?\s*\d+[a-zA-Z]?\s*[-–\s]\s*\d+(?:\s*(?:apto|int|torre|casa|barrio|piso)\s*[^.,\n]*)?/i
-    );
-    if (streetMatch) return streetMatch[0].trim();
+    // 2. Nomenclatura urbana colombiana completa
+    // Cubre: Calle, Cll, Cl, Carrera, Cra, Cr, Kra, Kr, K, Diagonal, Diag, Dg, Transversal, Trans, Tv, Avenida, Av, Ave, Autopista, Circular, Circunvalar
+    const streetRegex =
+      /\b(?:calle|cll|cl|c\/|carrera|cra|cr|kra|kr|k|diagonal|diag|dg|transversal|trans|tv|avenida|av|ave|autopista|auto|circular|circ|circunvalar)\.?\s+\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*(?:#|no\.?|nro\.?|num\.?|número|°|con|\s)\s*\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*[-–—\s]\s*\d+[a-zA-Z]?(?:\s+(?:sur|norte|este|oeste))?(?:\s*(?:apto|apartamento|int|interior|torre|bloque|casa|mz|manzana|lote|lt|barrio|piso|oficina|of)\b[^.,\n]*)?/i;
+
+    const streetMatch = trimmed.match(streetRegex);
+    if (streetMatch) {
+      const cand = cleanAddressCandidate(streetMatch[0]);
+      if (cand) return cand;
+    }
+
+    // 3. Intersecciones colombianas (ej: "Calle 53 con 13", "Cra 7 con Calle 45")
+    const intersectionRegex =
+      /\b(?:calle|cll|cl|carrera|cra|cr|kra|kr|diagonal|diag|dg|transversal|trans|tv|avenida|av)\s+\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s+con\s+(?:calle|cll|cl|carrera|cra|cr|kra|kr|\d+)\s*\d*[a-zA-Z]?(?:\s*(?:barrio|esquina|apto|torre|casa)\b[^.,\n]*)?/i;
+    const interMatch = trimmed.match(intersectionRegex);
+    if (interMatch) {
+      const cand = cleanAddressCandidate(interMatch[0]);
+      if (cand) return cand;
+    }
+
+    // 4. Conjuntos residenciales, edificios y urbanizaciones (ej: "Conjunto Los Rosales Torre 2 Apto 301")
+    const complexRegex =
+      /\b(?:conjunto(?:\s+residencial)?|edificio|urbanizaci[oó]n|urb\.?|condominio|reserva|altos de|portal de(?:l)?)\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+(?:\s+(?:torre|bloque|casa|apto|apartamento|piso|interior|int|barrio)\b[^.,\n]*)+/i;
+    const complexMatch = trimmed.match(complexRegex);
+    if (complexMatch) {
+      const cand = cleanAddressCandidate(complexMatch[0]);
+      if (cand) return cand;
+    }
+
+    // 5. Manzanas y Lotes (ej: "Manzana B Casa 14", "Mz 5 Lote 12 Barrio La Granja")
+    const mzRegex =
+      /\b(?:manzana|mz\.?)\s+[a-zA-Z0-9]+(?:\s+(?:casa|lote|lt\.?)\s+[a-zA-Z0-9]+)(?:\s+barrio\s+[^.,\n]+)?/i;
+    const mzMatch = trimmed.match(mzRegex);
+    if (mzMatch) {
+      const cand = cleanAddressCandidate(mzMatch[0]);
+      if (cand) return cand;
+    }
+
+    // 6. Zonas rurales o suburbanas (ej: "Km 5 Vía Suba Cota", "Vereda El Rosal Finca Los Pinos")
+    const ruralRegex =
+      /\b(?:km|kil[oó]metro)\s*\d+[^.,\n]+|\bvereda\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+(?:\s+finca\s+[^.,\n]+)?/i;
+    const ruralMatch = trimmed.match(ruralRegex);
+    if (ruralMatch) {
+      const cand = cleanAddressCandidate(ruralMatch[0]);
+      if (cand) return cand;
+    }
   }
 
-  // 3. Búsqueda en texto completo si viene en un solo bloque
-  const fallbackMatch = text.match(
-    /(?:calle|cll|cra|carrera|diagonal|diag|transversal|trans|av|avenida)\s+\d+[a-zA-Z]?\s*(?:#|no|nro|número|\s)?\s*\d+[a-zA-Z]?\s*[-–\s]\s*\d+(?:\s*(?:apto|int|torre|casa|barrio|piso)\s*[^.,\n]*)?/i
-  );
-  if (fallbackMatch) return fallbackMatch[0].trim();
+  // 7. Búsqueda en bloque de texto completo si no coincidió por líneas
+  const streetRegexAll =
+    /\b(?:calle|cll|cl|c\/|carrera|cra|cr|kra|kr|k|diagonal|diag|dg|transversal|trans|tv|avenida|av|ave|autopista|auto|circular|circ|circunvalar)\.?\s+\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*(?:#|no\.?|nro\.?|num\.?|número|°|con|\s)\s*\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*[-–—\s]\s*\d+[a-zA-Z]?(?:\s+(?:sur|norte|este|oeste))?(?:\s*(?:apto|apartamento|int|interior|torre|bloque|casa|mz|manzana|lote|lt|barrio|piso|oficina|of)\b[^.,\n]*)?/i;
+  const fallback = text.match(streetRegexAll);
+  if (fallback) {
+    const cand = cleanAddressCandidate(fallback[0]);
+    if (cand) return cand;
+  }
 
   return null;
 }
@@ -338,17 +412,34 @@ async function tryExtractAndRegisterOrder(
   // 1. Extraer dirección de entrega: primero de la confirmación estructurada del asistente
   let address: string | null = null;
   const assistantAddrMatch = assistantReply.match(
-    /(?:📍\s*)?\*?Direcci[oó]n(?: de entrega)?:\*?\s*([^\n\r*]+)/i
+    /(?:📍\s*)?\*?(?:Direcci[oó]n|Lugar de entrega|Enviar a|Despachar a|Entrega en|Destino)(?: de entrega| de env[ií]o| del pedido)?:\*?\s*([^\n\r*]+)/i
   );
   if (assistantAddrMatch && assistantAddrMatch[1]) {
-    const cand = assistantAddrMatch[1].replace(/^[\[\(]|[\]\)]$/g, "").trim();
-    if (cand.length >= 4 && !cand.toLowerCase().includes("indicada en chat") && !cand.toLowerCase().includes("ingresada")) {
+    const raw = assistantAddrMatch[1].replace(/^[\[\(]|[\]\)]$/g, "").trim();
+    const cand = cleanAddressCandidate(raw);
+    if (cand && cand.length >= 4) {
       address = cand;
     }
   }
   // Si no está en el asistente, extraer del mensaje del usuario
   if (!address) {
     address = extractAddress(userText);
+  }
+  // Si aún no se detecta, buscar en el historial de mensajes de la conversación (fallback multi-turno)
+  if (!address) {
+    try {
+      const history = await getMessages(conversationKey);
+      const userMsgs = history.filter((m) => m.role === "user").reverse();
+      for (const m of userMsgs) {
+        const found = extractAddress(m.content);
+        if (found) {
+          address = found;
+          break;
+        }
+      }
+    } catch {
+      // fallback
+    }
   }
   if (!address) {
     address = "Dirección indicada en chat";
@@ -493,11 +584,13 @@ async function tryExtractAndRegisterOrder(
         order.id,
         invRes.invoiceNumber,
         invRes.invoiceId,
-        invRes.invoiceUrl
+        invRes.invoiceUrl,
+        invRes.invoicePdfUrl
       );
       order.invoiceNumber = invRes.invoiceNumber;
       order.invoiceId = invRes.invoiceId;
       order.invoiceUrl = invRes.invoiceUrl;
+      order.invoicePdfUrl = invRes.invoicePdfUrl;
     }
   } catch (invErr) {
     console.error("[sales-agent] Error generando factura automática:", invErr);
@@ -734,7 +827,7 @@ export async function handleSalesMessage(
   📦 *Subtotal productos:* [Subtotal exacto en COP]
   🛵 *Costo de domicilio:* [${formatCop(deliveryFee)} o ¡GRATIS!]
   💰 *Total a pagar:* [Total exacto con domicilio en COP]
-  📍 *Dirección de entrega:* [Dirección ingresada]
+  📍 *Dirección de entrega:* [Escribe aquí la dirección exacta que indicó el cliente, nunca pongas "indicada en chat"]
   🏢 *Notas de entrega:* [Indicaciones de torre/apto/portería o "Ninguna"]
   💳 *Medio de pago:* [Medio ingresado, y si es efectivo con cuánto paga y cambio]
   👤 *Cliente:* [Nombre del cliente o "Cliente"]
@@ -823,7 +916,8 @@ export async function handleSalesMessage(
           );
 
           if (maybeOrder?.invoiceNumber) {
-            reply = `${reply}\n\n🧾 *Factura Oficial Registrada:* #${maybeOrder.invoiceNumber}`;
+            const publicUrl = maybeOrder.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${maybeOrder.invoiceId || ""}`;
+            reply = `${reply}\n\n🧾 *Factura Oficial Registrada:* #${maybeOrder.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
           }
 
           await appendMessage(conversationKey, "assistant", reply);
@@ -836,6 +930,9 @@ export async function handleSalesMessage(
             reply,
             mode: maybeOrder ? "order_created" : "ai",
             mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
+            invoiceUrl: maybeOrder?.invoiceUrl,
+            invoicePdfUrl: maybeOrder?.invoicePdfUrl,
+            invoiceNumber: maybeOrder?.invoiceNumber,
           };
         } catch (mErr: any) {
           lastError = mErr;
@@ -874,7 +971,8 @@ export async function handleSalesMessage(
       );
 
       if (maybeOrder?.invoiceNumber) {
-        reply = `${reply}\n\n🧾 *Factura Oficial Registrada:* #${maybeOrder.invoiceNumber}`;
+        const publicUrl = maybeOrder.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${maybeOrder.invoiceId || ""}`;
+        reply = `${reply}\n\n🧾 *Factura Oficial Registrada:* #${maybeOrder.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
       }
 
       await appendMessage(conversationKey, "assistant", reply);
@@ -887,6 +985,9 @@ export async function handleSalesMessage(
         reply,
         mode: maybeOrder ? "order_created" : "ai",
         mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
+        invoiceUrl: maybeOrder?.invoiceUrl,
+        invoicePdfUrl: maybeOrder?.invoicePdfUrl,
+        invoiceNumber: maybeOrder?.invoiceNumber,
       };
     } catch (openaiErr: any) {
       console.warn("[sales-agent] OpenAI falló (cuota o error de red); usando fallback inteligente de BUÑUELANDIA", openaiErr?.message || openaiErr);
@@ -896,6 +997,9 @@ export async function handleSalesMessage(
   // 4. Fallback Inteligente y Contextual de BUÑUELANDIA (mantiene memoria y estado sin IA)
   let reply = "";
   let mode: SalesMessageResult["mode"] = "keyword";
+  let createdInvoiceNumber: string | undefined = undefined;
+  let createdInvoiceUrl: string | undefined = undefined;
+  let createdInvoicePdfUrl: string | undefined = undefined;
 
   // IMPORTANTE: Extraer productos e intenciones ÚNICAMENTE de los mensajes del usuario
   const userChatText = [...previous.filter((m) => m.role === "user").map((m) => m.content), text].join("\n");
@@ -985,10 +1089,18 @@ export async function handleSalesMessage(
           order.id,
           invRes.invoiceNumber,
           invRes.invoiceId,
-          invRes.invoiceUrl
+          invRes.invoiceUrl,
+          invRes.invoicePdfUrl
         );
         order.invoiceNumber = invRes.invoiceNumber;
-        invoiceNotice = `\n🧾 *Factura Oficial Registrada:* #${invRes.invoiceNumber}`;
+        order.invoiceId = invRes.invoiceId;
+        order.invoiceUrl = invRes.invoiceUrl;
+        order.invoicePdfUrl = invRes.invoicePdfUrl;
+        createdInvoiceNumber = invRes.invoiceNumber;
+        createdInvoiceUrl = invRes.invoiceUrl;
+        createdInvoicePdfUrl = invRes.invoicePdfUrl;
+        const publicUrl = invRes.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${invRes.invoiceId || ""}`;
+        invoiceNotice = `\n🧾 *Factura Oficial Registrada:* #${invRes.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
       }
     } catch (invErr) {
       console.warn("[sales-agent] Error generando factura en fallback:", invErr);
@@ -1039,5 +1151,8 @@ export async function handleSalesMessage(
     reply,
     mode,
     mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
+    invoiceUrl: createdInvoiceUrl,
+    invoicePdfUrl: createdInvoicePdfUrl,
+    invoiceNumber: createdInvoiceNumber,
   };
 }

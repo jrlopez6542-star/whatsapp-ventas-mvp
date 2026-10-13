@@ -710,7 +710,12 @@ export async function sendEvolutionMedia(
   const url = `${base}/message/sendMedia/${encodeURIComponent(instance)}`;
 
   try {
-    let mimetype = "image/jpeg";
+    const isPdf =
+      mediaUrlOrBase64.toLowerCase().includes(".pdf") ||
+      mediaUrlOrBase64.includes("application/pdf") ||
+      mediaUrlOrBase64.toLowerCase().includes("/pdf");
+    const mediatype = isPdf ? "document" : "image";
+    let mimetype = isPdf ? "application/pdf" : "image/jpeg";
     let mediaPayload = mediaUrlOrBase64;
 
     if (mediaUrlOrBase64.startsWith("data:")) {
@@ -718,6 +723,12 @@ export async function sendEvolutionMedia(
       if (mimeMatch) mimetype = mimeMatch[1];
       mediaPayload = mediaUrlOrBase64.replace(/^data:[^;]+;base64,/, "");
     }
+
+    const fileName = isPdf
+      ? "Factura_Oficial_Bunuelandia.pdf"
+      : mimetype.includes("png")
+      ? "qr_pago.png"
+      : "qr_pago.jpg";
 
     let res = await fetch(url, {
       method: "POST",
@@ -727,9 +738,9 @@ export async function sendEvolutionMedia(
       },
       body: JSON.stringify({
         number: resolved.number,
-        mediatype: "image",
+        mediatype,
         mimetype,
-        fileName: mimetype.includes("png") ? "qr_pago.png" : "qr_pago.jpg",
+        fileName,
         media: mediaPayload,
         caption: caption || "",
       }),

@@ -54,6 +54,7 @@ export interface Order {
   invoiceNumber?: string;
   invoiceId?: string;
   invoiceUrl?: string;
+  invoicePdfUrl?: string;
   createdAt: number;
 }
 
@@ -728,7 +729,8 @@ export async function updateOrderInvoice(
   id: string,
   invoiceNumber: string,
   invoiceId?: string,
-  invoiceUrl?: string
+  invoiceUrl?: string,
+  invoicePdfUrl?: string
 ): Promise<void> {
   const mem = getMemoryStore();
   const memOrder = mem.orders.get(id);
@@ -736,6 +738,7 @@ export async function updateOrderInvoice(
     memOrder.invoiceNumber = invoiceNumber;
     memOrder.invoiceId = invoiceId;
     memOrder.invoiceUrl = invoiceUrl;
+    memOrder.invoicePdfUrl = invoicePdfUrl;
   }
 
   if (isTursoConfigured()) {

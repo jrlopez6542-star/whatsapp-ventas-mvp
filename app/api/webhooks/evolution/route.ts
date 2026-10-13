@@ -245,12 +245,13 @@ export async function POST(request: NextRequest) {
     }
 
     const effectiveName = parsed.pushName || conv.customerName;
-    const { reply, mode, mediaUrl } = await handleSalesMessage(fromKey, text, effectiveName);
+    const { reply, mode, mediaUrl, invoicePdfUrl, invoiceNumber } = await handleSalesMessage(fromKey, text, effectiveName);
     console.log("[evolution reply]", {
       from: fromKey,
       replyTo,
       mode,
       replyLen: reply.length,
+      invoicePdfUrl: !!invoicePdfUrl,
       deferred: true,
     });
 
@@ -274,6 +275,17 @@ export async function POST(request: NextRequest) {
             );
           } catch (mErr) {
             console.error("[evolution] media outbound error", mErr);
+          }
+        }
+        if (invoicePdfUrl) {
+          try {
+            await sendOutboundWhatsAppMedia(
+              replyTo,
+              invoicePdfUrl,
+              `🧾 Factura Oficial #${invoiceNumber || ""} - ¡Gracias por tu compra en Buñuelandia! 🥟`
+            );
+          } catch (pdfErr) {
+            console.error("[evolution] invoice pdf outbound error", pdfErr);
           }
         }
         if (!send.ok) {
