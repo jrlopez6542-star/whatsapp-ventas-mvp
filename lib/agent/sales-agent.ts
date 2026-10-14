@@ -999,8 +999,14 @@ export async function handleSalesMessage(
 
      - Si el cliente responde "2" o dice que quiere modificar algún dato, pregúntale amablemente qué desea cambiar (productos, dirección o medio de pago) y NO registres el pedido.
 
+  🔄 CLIENTES RECURRENTES Y NUEVOS PEDIDOS:
+  - Si el cliente ya completó un pedido anterior y vuelve a escribir para pedir buñuelos (o dice "hola", "otro pedido", "quiero pedir"), trátalo como un NUEVO pedido independiente.
+  - El carrito nuevo arranca desde CERO: NUNCA mezcles ni vuelvas a cobrar productos del pedido anterior.
+  - Si ya conoces su nombre y su dirección de entrega de pedidos pasados, salúdalo amigablemente por su nombre y pregúntale si enviamos el nuevo pedido a la misma dirección para ahorrarle tiempo.
+
   ⛔ RESTRICCIONES IMPORTANTES:
   - YA NO SE VENDE POR UNIDAD. SOLO SE VENDEN CAJAS DE 4 O DE 8. Si alguien pide unidades sueltas, explícale amablemente que solo manejamos cajas de 4 o de 8.
+  - NUNCA mezcles productos de pedidos pasados con un pedido nuevo.
   - NUNCA inventes precios ni sumes mal.
   - NO confirmes ni registres el pedido hasta que el cliente responda "1" confirmando el resumen previo.
   - 🚨 ¡PROHIBICIÓN ESTRICTA!: NUNCA escribas frases como "*(Imagina aquí el Código QR...)*", ni inventes cuentas bancarias. El sistema de WhatsApp enviará automáticamente la imagen real del código QR oficial de BUÑUELANDIA.
