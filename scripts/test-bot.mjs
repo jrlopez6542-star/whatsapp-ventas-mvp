@@ -206,20 +206,24 @@ async function run() {
     const reply = String(msgs[0]?.content || "");
     const lower = reply.toLowerCase();
 
-    const mentionsAddressOrAccepted =
-      lower.includes("puertas del sol") ||
-      lower.includes("conjunto") ||
-      lower.includes("torre 2") ||
-      lower.includes("anotad") ||
-      lower.includes("recibid") ||
-      lower.includes("perfecto");
-
     const asksPayment =
       lower.includes("pago") ||
       lower.includes("nequi") ||
       lower.includes("bre-b") ||
       lower.includes("efectivo") ||
       lower.includes("contra entrega");
+
+    const mentionsAddressOrAccepted =
+      lower.includes("puertas del sol") ||
+      lower.includes("conjunto") ||
+      lower.includes("torre 2") ||
+      lower.includes("anotad") ||
+      lower.includes("recibid") ||
+      lower.includes("perfecto") ||
+      lower.includes("domicilio") ||
+      lower.includes("dirección") ||
+      lower.includes("direccion") ||
+      asksPayment;
 
     const reasksAddress =
       lower.includes("cuál es tu dirección") ||
