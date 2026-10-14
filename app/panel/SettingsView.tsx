@@ -15,6 +15,7 @@ export function SettingsView() {
     estimatedDeliveryTime: "",
     deliveryDriverPhone: "",
     deliveryDriverNotifyEnabled: "true",
+    autoPauseOnMobileReply: "true",
   });
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -110,6 +111,7 @@ export function SettingsView() {
             estimatedDeliveryTime: d.settings.estimatedDeliveryTime || "",
             deliveryDriverPhone: d.settings.deliveryDriverPhone || "",
             deliveryDriverNotifyEnabled: d.settings.deliveryDriverNotifyEnabled !== "false" ? "true" : "false",
+            autoPauseOnMobileReply: d.settings.autoPauseOnMobileReply !== "false" ? "true" : "false",
           });
         }
       })
@@ -370,6 +372,37 @@ export function SettingsView() {
                     </span>
                   </label>
                 </div>
+              </div>
+            </div>
+
+            {/* SECCIÓN INTERVENCIÓN MANUAL DESDE WHATSAPP MÓVIL */}
+            <div className="pt-4 border-t border-[#1f2c34]">
+              <label className="block text-sm font-medium text-slate-300 mb-1 flex items-center gap-2">
+                <i className="ph-fill ph-device-mobile text-amber-400 text-lg"></i> Intervención Manual desde WhatsApp Móvil
+              </label>
+              <p className="text-xs text-slate-400 mb-3">
+                Si tú o tu equipo responden a un cliente directamente desde la app de WhatsApp en el celular, el bot se pausará automáticamente en ese chat para no interferir con la atención humana.
+              </p>
+              <div className="p-4 bg-[#162128] border border-[#2a3942] rounded-xl flex items-center justify-between gap-4">
+                <div>
+                  <span className="text-sm font-medium text-white block">Pausar bot al responder desde el celular</span>
+                  <span className="text-xs text-slate-400 block mt-0.5">
+                    Puedes reactivar el bot en cualquier momento escribiendo <code className="text-emerald-400 bg-[#0b141a] px-1 py-0.5 rounded font-mono">#bot</code> en el chat de WhatsApp o reactivándolo desde el panel.
+                  </span>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer select-none shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={settings.autoPauseOnMobileReply !== "false"}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        autoPauseOnMobileReply: e.target.checked ? "true" : "false",
+                      })
+                    }
+                    className="w-5 h-5 rounded text-emerald-600 focus:ring-emerald-500 bg-[#0b141a] border-[#2a3942]"
+                  />
+                </label>
               </div>
             </div>
 

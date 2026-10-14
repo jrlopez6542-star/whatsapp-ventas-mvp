@@ -18,6 +18,7 @@ import { verifyReceiptWithGemini } from "@/lib/agent/receipt-verifier";
 import { logSystemEvent } from "@/lib/logger";
 import {
   appendMessage,
+  updateMessageContent,
   getConversation,
   getOrCreateConversation,
   setConversationStatus,
@@ -164,14 +165,60 @@ export async function POST(request: NextRequest) {
       const cmd = (parsed.text || "").trim().toLowerCase();
       if (cmd === "#pausar" || cmd === "#humano") {
         await setConversationStatus(parsed.from, "human").catch(() => {});
-        await appendMessage(parsed.from, "system", "⏸️ Bot pausado manualmente desde el dispositivo móvil").catch(() => {});
+        await appendMessage(parsed.from, "system", "⏸️ Bot pausado manualmente desde WhatsApp móvil").catch(() => {});
+        logSystemEvent("info", "agent", "Bot pausado manualmente desde WhatsApp móvil con comando #pausar", { from: parsed.from });
         return jsonOk({ manualCommand: "paused" });
       }
       if (cmd === "#bot" || cmd === "#activar") {
         await setConversationStatus(parsed.from, "bot").catch(() => {});
-        await appendMessage(parsed.from, "system", "🤖 Bot reactivado desde el dispositivo móvil").catch(() => {});
+        await appendMessage(parsed.from, "system", "🤖 Bot reactivado desde WhatsApp móvil. Listo para responder.").catch(() => {});
+        logSystemEvent("info", "agent", "Bot reactivado manualmente desde WhatsApp móvil con comando #bot", { from: parsed.from });
         return jsonOk({ manualCommand: "resumed" });
       }
+
+      // Detectar si el mensaje es un eco de una respuesta enviada por el bot o el panel
+      const text = (parsed.text || "").trim();
+      const recentMsgs = await getMessages(parsed.from).catch(() => []);
+      const now = Date.now();
+
+      // Si en los últimos 90s el asistente envió un mensaje con el mismo texto, es un eco del bot/panel
+      const isBotEcho = recentMsgs.slice(-5).some((m) => {
+        if (m.role !== "assistant") return false;
+        if (now - m.createdAt > 90_000) return false;
+        if (text && m.content.trim() === text) return true;
+        if (text && text.length > 10 && (m.content.includes(text) || text.includes(m.content.trim()))) return true;
+        return false;
+      });
+
+      if (isBotEcho) {
+        return jsonOk({ skipped: "fromMe_bot_echo" });
+      }
+
+      // Si no es un eco del bot, significa que un operador humano respondió manualmente desde WhatsApp en el celular
+      const orgSettings = await getOrgSettings().catch(() => null);
+      const autoPause = orgSettings?.autoPauseOnMobileReply !== "false";
+
+      if (autoPause) {
+        const conv = await getConversation(parsed.from).catch(() => null);
+        const humanText = text || (parsed.isMedia ? (parsed.mediaType === "audio" ? "🎤 [Nota de voz enviada desde el móvil]" : "📸 [Archivo multimedia enviado desde el móvil]") : "[Mensaje enviado desde el móvil]");
+
+        // Registrar el mensaje del operador en el chat del panel
+        await appendMessage(parsed.from, "assistant", humanText).catch(() => {});
+
+        if (conv?.status !== "human") {
+          await setConversationStatus(parsed.from, "human").catch(() => {});
+          await appendMessage(parsed.from, "system", "⏸️ Operador respondió desde el celular. Bot pausado automáticamente. Escribe #bot para reactivar.").catch(() => {});
+          logSystemEvent(
+            "info",
+            "agent",
+            "Bot pausado automáticamente por respuesta manual desde el móvil",
+            { from: parsed.from, text: humanText.slice(0, 100) }
+          );
+        }
+
+        return jsonOk({ manualTakeover: "auto_paused", from: parsed.from });
+      }
+
       return jsonOk({ skipped: "fromMe" });
     }
 
@@ -304,6 +351,7 @@ export async function POST(request: NextRequest) {
             if (transcribed && transcribed.trim()) {
               currentText = transcribed.trim();
               console.log("[evolution] Transcripción exitosa:", currentText);
+              await updateMessageContent(savedMsg.id, `🎤 [Nota de voz]: "${currentText}"`).catch(() => {});
               await appendMessage(fromKey, "system", `🎤 [Nota de voz transcrita]: "${currentText}"`).catch(() => {});
             } else {
               console.warn("[evolution] Audio inaudible o no se pudo transcribir");

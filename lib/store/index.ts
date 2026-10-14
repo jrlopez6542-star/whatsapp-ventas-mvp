@@ -79,6 +79,7 @@ export interface OrgSettings {
   upsellDrinksEnabled?: string;
   deliveryDriverPhone?: string;
   deliveryDriverNotifyEnabled?: string;
+  autoPauseOnMobileReply?: string;
 }
 
 const DEFAULT_SETTINGS: OrgSettings = {
@@ -102,6 +103,7 @@ const DEFAULT_SETTINGS: OrgSettings = {
   upsellDrinksEnabled: "true",
   deliveryDriverPhone: "",
   deliveryDriverNotifyEnabled: "true",
+  autoPauseOnMobileReply: "true",
 };
 
 const SEED_PRODUCTS: Product[] = [
@@ -222,6 +224,15 @@ class MemoryStore {
     };
     this.messages.push(msg);
     return msg;
+  }
+
+  updateMessageContent(id: string, content: string): boolean {
+    const msg = this.messages.find((m) => m.id === id);
+    if (msg) {
+      msg.content = content;
+      return true;
+    }
+    return false;
   }
 
   getMessages(conversationId: string): Message[] {
@@ -494,8 +505,8 @@ export async function appendMessage(
       await ensureTursoReady();
       const client = getTursoClient();
       await client.execute({
-        sql: `INSERT INTO messages (conversation_id, role, content, at, created_at) VALUES (?, ?, ?, '', ?)`,
-        args: [conversationId, role, content, memoryMsg.createdAt],
+        sql: `INSERT INTO messages (id, conversation_id, role, content, at, created_at) VALUES (?, ?, ?, ?, '', ?)`,
+        args: [memoryMsg.id, conversationId, role, content, memoryMsg.createdAt],
       });
       await client.execute({
         sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
@@ -506,6 +517,22 @@ export async function appendMessage(
     }
   }
   return memoryMsg;
+}
+
+export async function updateMessageContent(id: string, content: string): Promise<void> {
+  getMemoryStore().updateMessageContent(id, content);
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: "UPDATE messages SET content = ? WHERE id = ?",
+        args: [content, id],
+      });
+    } catch (err) {
+      console.warn("[store] updateMessageContent Turso error:", err);
+    }
+  }
 }
 
 export async function getMessages(conversationId: string): Promise<Message[]> {
@@ -823,6 +850,7 @@ export async function getOrgSettings(): Promise<OrgSettings> {
       upsellDrinksEnabled: r.upsell_drinks_enabled != null ? String(r.upsell_drinks_enabled) : DEFAULT_SETTINGS.upsellDrinksEnabled,
       deliveryDriverPhone: r.delivery_driver_phone != null ? String(r.delivery_driver_phone) : (DEFAULT_SETTINGS.deliveryDriverPhone || ""),
       deliveryDriverNotifyEnabled: r.delivery_driver_notify_enabled != null ? String(r.delivery_driver_notify_enabled) : (DEFAULT_SETTINGS.deliveryDriverNotifyEnabled || "true"),
+      autoPauseOnMobileReply: r.auto_pause_on_mobile_reply != null ? String(r.auto_pause_on_mobile_reply) : (DEFAULT_SETTINGS.autoPauseOnMobileReply || "true"),
     };
     return settings;
   } catch (err) {
@@ -872,6 +900,7 @@ export async function updateOrgSettings(patch: Partial<OrgSettings>): Promise<Or
       if (patch.upsellDrinksEnabled !== undefined) { sets.push("upsell_drinks_enabled = ?"); args.push(patch.upsellDrinksEnabled); }
       if (patch.deliveryDriverPhone !== undefined) { sets.push("delivery_driver_phone = ?"); args.push(patch.deliveryDriverPhone); }
       if (patch.deliveryDriverNotifyEnabled !== undefined) { sets.push("delivery_driver_notify_enabled = ?"); args.push(patch.deliveryDriverNotifyEnabled); }
+      if (patch.autoPauseOnMobileReply !== undefined) { sets.push("auto_pause_on_mobile_reply = ?"); args.push(patch.autoPauseOnMobileReply); }
 
       args.push(1);
       await client.execute({

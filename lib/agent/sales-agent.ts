@@ -338,11 +338,33 @@ function buildGeminiContents(
   }
 
   const turns: Array<{ role: "user" | "model"; parts: [{ text: string }] }> = [];
-  // Tomamos los últimos 8 mensajes
-  for (const m of msgs.slice(-8)) {
-    const role: "user" | "model" = m.role === "assistant" ? "model" : "user";
-    const text = (m.content || "").trim();
+  // Mantener suficiente memoria de contexto (35 mensajes) para no perder productos pedidos en turnos previos
+  for (const m of msgs.slice(-35)) {
+    let text = (m.content || "").trim();
     if (!text) continue;
+
+    let role: "user" | "model";
+    if (m.role === "assistant") {
+      role = "model";
+    } else if (m.role === "system") {
+      // Si es una nota de voz transcrita, convertirla en turno del cliente
+      if (text.startsWith("🎤 [Nota de voz transcrita]:")) {
+        role = "user";
+        text = text.replace(/^🎤\s*\[Nota de voz transcrita\]:\s*"?/i, "").replace(/"?\s*$/i, "").trim();
+        if (!text) continue;
+      } else {
+        // Ignorar logs internos del sistema (pausas, llamadas rechazadas, alertas)
+        continue;
+      }
+    } else {
+      role = "user";
+      // Si es el placeholder antiguo de audio, no aporta nada salvo que tenga transcripción
+      if (text === "🎤 [Nota de voz / Audio]") continue;
+      if (text.startsWith("🎤 [Nota de voz]:")) {
+        text = text.replace(/^🎤\s*\[Nota de voz\]:\s*"?/i, "").replace(/"?\s*$/i, "").trim();
+        if (!text) continue;
+      }
+    }
 
     if (turns.length === 0) {
       // El primer mensaje en Gemini DEBE ser 'user'
@@ -391,10 +413,29 @@ function buildOpenAIMessages(
     { role: "system", content: systemPrompt },
   ];
 
-  for (const m of msgs.slice(-8)) {
-    const role = m.role === "assistant" ? "assistant" : "user";
-    const content = (m.content || "").trim();
+  for (const m of msgs.slice(-35)) {
+    let content = (m.content || "").trim();
     if (!content) continue;
+
+    let role: "user" | "assistant";
+    if (m.role === "assistant") {
+      role = "assistant";
+    } else if (m.role === "system") {
+      if (content.startsWith("🎤 [Nota de voz transcrita]:")) {
+        role = "user";
+        content = content.replace(/^🎤\s*\[Nota de voz transcrita\]:\s*"?/i, "").replace(/"?\s*$/i, "").trim();
+        if (!content) continue;
+      } else {
+        continue;
+      }
+    } else {
+      role = "user";
+      if (content === "🎤 [Nota de voz / Audio]") continue;
+      if (content.startsWith("🎤 [Nota de voz]:")) {
+        content = content.replace(/^🎤\s*\[Nota de voz\]:\s*"?/i, "").replace(/"?\s*$/i, "").trim();
+        if (!content) continue;
+      }
+    }
     out.push({ role, content });
   }
 
@@ -876,6 +917,8 @@ export async function handleSalesMessage(
   📌 FLUJO DE VENTA PASO A PASO (Sigue este orden estrictamente):
   1. SALUDO Y MENÚ: Inicia SIEMPRE con mucho entusiasmo (ej. "¡Hola, hola! 🥳 ¡Bienvenido a *BUÑUELANDIA*! 🥟🔥"). Antoja al cliente y muéstrale nuestras Cajas Tradicionales y Surtidas.
   2. ELECCIÓN Y SALSAS (OBLIGATORIO): 
+     - Si el cliente menciona que quiere buñuelos o una caja pero no especificó cuál:
+       Pregúntale de inmediato: «¡Con gusto! 🤤 ¿Qué caja te gustaría: Tradicional o Surtida, de 4 o de 8 buñuelos?» antes de pasar a la dirección.
      - Si el cliente elige una caja "Tradicional", es sin salsa, pasa al paso 3.
      - Si el cliente elige una caja "Surtida" (C4S o C8S), ES OBLIGATORIO PREGUNTARLE LAS SALSAS antes de pedir la dirección:
        «¿Qué salsas prefieres para tu caja surtida? Tenemos Mora, Arequipe, Bocadillo y Suero Costeño 🤤 (puedes combinarlas como prefieras).»
@@ -918,7 +961,9 @@ export async function handleSalesMessage(
      - SI ELIGE EFECTIVO:
        Pregúntale: «¿Con qué billete vas a pagar? (ej: billete de $50.000 o monto exacto) para que el domiciliario te lleve el cambio listo 💵»
   6. RESUMEN PREVIO (PRE-CONFIRMACIÓN):
-     SÓLO cuando tengas los productos (con salsas si aplica), el nombre del cliente, la dirección Y el medio de pago, enviarás un resumen compacto con opciones en texto plano:
+     🚨 REGLA ESTRICTA DE CONTINUIDAD (¡CERO AMNESIA DE PRODUCTOS!):
+     - Revisa SIEMPRE todo el historial de la conversación. Si el cliente ya eligió sus productos o caja de buñuelos en cualquier mensaje previo (texto o nota de voz), JAMÁS vuelvas a preguntarle qué caja desea ni digas "parece que aún no elegiste tus buñuelos".
+     - Una vez tengas los productos (con salsas si aplica), el nombre del cliente, la dirección Y el medio de pago (y si es efectivo, la denominación del billete/cambio), envía DIRECTAMENTE el resumen compacto con opciones en texto plano:
 
      📋 *Resumen de tu Pedido:*
      • [Productos x cantidad y salsas/bebidas]
@@ -1126,8 +1171,13 @@ export async function handleSalesMessage(
   let createdInvoiceUrl: string | undefined = undefined;
   let createdInvoicePdfUrl: string | undefined = undefined;
 
-  // IMPORTANTE: Extraer productos e intenciones ÚNICAMENTE de los mensajes del usuario
-  const userChatText = [...previous.filter((m) => m.role === "user").map((m) => m.content), text].join("\n");
+  // IMPORTANTE: Extraer productos e intenciones de los mensajes del usuario (incluyendo notas de voz transcritas)
+  const userChatText = [
+    ...previous
+      .filter((m) => m.role === "user" || (m.role === "system" && m.content.startsWith("🎤 [Nota de voz transcrita]:")))
+      .map((m) => m.content.replace(/^🎤\s*\[Nota de voz(?: transcrita)?\]:\s*"?/i, "").replace(/"?\s*$/i, "")),
+    text,
+  ].join("\n");
 
   const isGreeting =
     lower === "hola" ||
