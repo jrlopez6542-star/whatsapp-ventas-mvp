@@ -5,7 +5,9 @@ import {
   getMessages,
   appendMessage,
   setConversationStatus,
+  setConversationCustomerName,
   getConversation,
+  getOrCreateConversation,
   getOrgSettings,
 } from "@/lib/store";
 
@@ -76,6 +78,11 @@ export async function GET() {
   // 4. MULTI-TURN SALES CONVERSATION TEST
   try {
     const conversationTurns: any[] = [];
+
+    // Inicializar conversación en BD
+    await getOrCreateConversation(testPhone);
+    await setConversationCustomerName(testPhone, "Felipe Test");
+    await setConversationStatus(testPhone, "bot");
 
     // Turn 1: Pedir Caja x8 Surtida
     await appendMessage(testPhone, "user", "Buenas tardes, quiero pedir una caja x8 surtida");

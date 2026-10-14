@@ -1,6 +1,7 @@
 import {
   appendMessage,
   createOrder,
+  getConversation,
   getMessages,
   getOrders,
   getOrgSettings,
@@ -886,13 +887,106 @@ export async function handleSalesMessage(
   const nequiNumber = settings.nequiNumber || "3228964947";
   const brebKey = settings.brebKey || "3228964947";
   const hasPushName = pushName && !pushName.toLowerCase().startsWith("cliente whatsapp");
-  const nameContext = hasPushName
-    ? `👤 DATOS DEL CLIENTE: El cliente figura como "${pushName}" en WhatsApp. Confirma amablemente si el pedido queda registrado a nombre de ${pushName} o a nombre de quién más.`
-    : `👤 DATOS DEL CLIENTE: Aún no tenemos el nombre de la persona. Es OBLIGATORIO pedir su nombre en el Paso 4.`;
+
+  // Buscar si ya tenemos un nombre confirmado del cliente
+  const conv = await getConversation(conversationKey).catch(() => null);
+  let knownCustomerName: string | null = null;
+  if (conv?.customerName && !conv.customerName.toLowerCase().startsWith("cliente whatsapp")) {
+    knownCustomerName = conv.customerName.trim();
+  } else if (latestOrder?.customerName && !latestOrder.customerName.toLowerCase().startsWith("cliente whatsapp")) {
+    knownCustomerName = latestOrder.customerName.trim();
+  }
+
+  // Si no está en BD, buscar en los mensajes del usuario de esta sesión (incluyendo el actual `text`)
+  if (!knownCustomerName) {
+    const allUserTexts = [...previous.filter((m) => m.role === "user").map((m) => m.content), text];
+    for (const uText of allUserTexts) {
+      const lines = uText.split(/[\r\n]+/);
+      for (const l of lines) {
+        const nm = l.match(/(?:mi nombre es|nombre(?:\s+completo)?:\s*|a nombre de\s+|soy\s+|me llamo\s+)([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{3,35})/i);
+        if (nm && nm[1]) {
+          const cand = nm[1].trim();
+          if (!cand.toLowerCase().includes("nequi") && !cand.toLowerCase().includes("breb") && !cand.toLowerCase().includes("efectivo") && !cand.toLowerCase().includes("caja")) {
+            knownCustomerName = cand;
+            break;
+          }
+        }
+      }
+      if (knownCustomerName) break;
+    }
+  }
+
+  // Si en mensajes previos del asistente ya figura "Cliente: <nombre>", extraerlo
+  if (!knownCustomerName) {
+    for (const m of previous.filter((m) => m.role === "assistant").reverse()) {
+      const mMatch = m.content.match(/(?:👤\s*)?\*?(?:Cliente|Nombre):\*?\s*([^\n\r*]+)/i);
+      if (mMatch && mMatch[1]) {
+        const cand = mMatch[1].replace(/^[\[\(]|[\]\)]$/g, "").trim();
+        if (cand.length >= 2 && !cand.toLowerCase().includes("cliente whatsapp") && !cand.toLowerCase().includes("nombre del cliente")) {
+          knownCustomerName = cand;
+          break;
+        }
+      }
+    }
+  }
+
+  // Si aún no pero pushName existe y ya fue usado en la conversación:
+  if (!knownCustomerName && hasPushName) {
+    const assistantUsedName = previous.some((m) => m.role === "assistant" && m.content.toLowerCase().includes(pushName.toLowerCase()));
+    if (assistantUsedName) {
+      knownCustomerName = pushName.trim();
+    }
+  }
+
+  let nameContext = "";
+  if (knownCustomerName) {
+    nameContext = `👤 DATOS DEL CLIENTE: El nombre de la persona es "${knownCustomerName}". ¡YA ESTÁ REGISTRADO Y CONFIRMADO! NUNCA vuelvas a preguntarle su nombre ni pidas confirmarlo de nuevo. Úsalo directamente en el resumen y la confirmación final.`;
+  } else if (hasPushName) {
+    nameContext = `👤 DATOS DEL CLIENTE: El cliente figura como "${pushName}" en WhatsApp. Si el cliente aún no te ha dicho su nombre en el chat, pregúntale amablemente si el pedido queda a nombre de ${pushName} o de alguien más.`;
+  } else {
+    nameContext = `👤 DATOS DEL CLIENTE: Aún no tenemos el nombre de la persona. Es OBLIGATORIO pedir su nombre en el Paso 4.`;
+  }
+
+  // Detectar si el mensaje anterior del bot fue el resumen de pre-confirmación y el usuario confirma
+  const lastAssistantMsgObj = [...previous].reverse().find((m) => m.role === "assistant");
+  const lastAssistantText = (lastAssistantMsgObj?.content || "").toLowerCase();
+  const isPreConfirmation =
+    lastAssistantText.includes("resumen de tu pedido") ||
+    lastAssistantText.includes("1️⃣ ✅ confirmar") ||
+    (lastAssistantText.includes("1️⃣") && (lastAssistantText.includes("confirmar") || lastAssistantText.includes("modificar")));
+
+  const isUserConfirmingSummary =
+    isPreConfirmation &&
+    (
+      text === "1" ||
+      text === "1️⃣" ||
+      lower === "1" ||
+      lower === "1." ||
+      lower === "si" ||
+      lower === "sí" ||
+      lower === "confirmar" ||
+      lower === "confirmo" ||
+      lower === "confirmado" ||
+      lower === "dale" ||
+      lower === "de una" ||
+      lower === "correcto" ||
+      lower.startsWith("1 ") ||
+      lower.includes("confirmar pedido")
+    );
+
+  const confirmationDirective = isUserConfirmingSummary
+    ? `\n\n🚨🚨 ACCIÓN URGENTE Y OBLIGATORIA EN ESTE TURNO:
+El cliente acaba de responder "${text}" para confirmar el pedido (Opción 1 del resumen previo).
+Debes responder INMEDIATAMENTE con el formato exacto del Paso 7 (CONFIRMACIÓN FINAL Y FACTURACIÓN):
+"✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🛵🥟"
+Desglosa el carrito completo, subtotal, domicilio GRATIS, total exacto, dirección, notas, medio de pago, cliente y tiempo estimado.
+¡BAJO NINGUNA CIRCUNSTANCIA vuelvas a pedir su nombre, ni dirección, ni caja, ni confirmación adicional!`
+    : "";
 
   const systemPrompt = `Eres el asistente virtual y vendedor estrella por WhatsApp de "${settings.name}".
 
   ${nameContext}
+  ${confirmationDirective}
 
   ⚡ REGLA DE BREVEDAD ESTRICTA (¡OBLIGATORIA!):
   - Envía SIEMPRE respuestas cortas, directas y fáciles de leer en dispositivos móviles (máximo de 3 a 4 líneas por mensaje).
