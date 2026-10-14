@@ -491,13 +491,13 @@ async function tryExtractAndRegisterOrder(
   // 2. Extraer nombre del cliente
   let customerName = clientName;
   const assistantNameMatch = assistantReply.match(
-    /(?:👤\s*)?\*?Cliente:\*?\s*([^\n\r*]+)/i
+    /(?:👤\s*)?\*?(?:Cliente|Nombre):\*?\s*([^\n\r*]+)/i
   );
   if (assistantNameMatch && assistantNameMatch[1]) {
     const cand = assistantNameMatch[1].replace(/^[\[\(]|[\]\)]$/g, "").trim();
     if (
       cand.length >= 2 &&
-      !cand.toLowerCase().includes("cliente") &&
+      !cand.toLowerCase().includes("cliente whatsapp") &&
       !cand.toLowerCase().includes("nombre del cliente")
     ) {
       customerName = cand;
@@ -506,14 +506,37 @@ async function tryExtractAndRegisterOrder(
   if (!customerName || customerName.toLowerCase().startsWith("cliente whatsapp")) {
     const lines = userText.split(/[\r\n]+/);
     for (const l of lines) {
-      const nm = l.match(/(?:mi nombre es|nombre(?:\s+completo)?:\s*|soy\s+)([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{3,35})/i);
+      const nm = l.match(/(?:mi nombre es|nombre(?:\s+completo)?:\s*|a nombre de\s+|soy\s+|me llamo\s+)([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{3,35})/i);
       if (nm && nm[1]) {
         const cand = nm[1].trim();
-        if (!cand.toLowerCase().includes("nequi") && !cand.toLowerCase().includes("breb") && !cand.toLowerCase().includes("efectivo")) {
+        if (!cand.toLowerCase().includes("nequi") && !cand.toLowerCase().includes("breb") && !cand.toLowerCase().includes("efectivo") && !cand.toLowerCase().includes("caja")) {
           customerName = cand;
           break;
         }
       }
+    }
+  }
+  // Si aún no se detecta, buscar en el historial de mensajes de la conversación
+  if (!customerName || customerName.toLowerCase().startsWith("cliente whatsapp")) {
+    try {
+      const history = await getMessages(conversationKey);
+      const userMsgs = history.filter((m) => m.role === "user").reverse();
+      for (const m of userMsgs) {
+        const lines = m.content.split(/[\r\n]+/);
+        for (const l of lines) {
+          const nm = l.match(/(?:mi nombre es|nombre(?:\s+completo)?:\s*|a nombre de\s+|soy\s+|me llamo\s+)([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]{3,35})/i);
+          if (nm && nm[1]) {
+            const cand = nm[1].trim();
+            if (!cand.toLowerCase().includes("nequi") && !cand.toLowerCase().includes("breb") && !cand.toLowerCase().includes("efectivo") && !cand.toLowerCase().includes("caja")) {
+              customerName = cand;
+              break;
+            }
+          }
+        }
+        if (customerName && !customerName.toLowerCase().startsWith("cliente whatsapp")) break;
+      }
+    } catch {
+      // fallback
     }
   }
   if (!customerName) {
@@ -821,9 +844,14 @@ export async function handleSalesMessage(
 
   const nequiNumber = settings.nequiNumber || "3228964947";
   const brebKey = settings.brebKey || "3228964947";
-  const deliveryFee = 0; // Domicilio 100% GRATIS permanente
+  const hasPushName = pushName && !pushName.toLowerCase().startsWith("cliente whatsapp");
+  const nameContext = hasPushName
+    ? `👤 DATOS DEL CLIENTE: El cliente figura como "${pushName}" en WhatsApp. Confirma amablemente si el pedido queda registrado a nombre de ${pushName} o a nombre de quién más.`
+    : `👤 DATOS DEL CLIENTE: Aún no tenemos el nombre de la persona. Es OBLIGATORIO pedir su nombre en el Paso 4.`;
 
   const systemPrompt = `Eres el asistente virtual y vendedor estrella por WhatsApp de "${settings.name}".
+
+  ${nameContext}
 
   ⚡ REGLA DE BREVEDAD ESTRICTA (¡OBLIGATORIA!):
   - Envía SIEMPRE respuestas cortas, directas y fáciles de leer en dispositivos móviles (máximo de 3 a 4 líneas por mensaje).
@@ -857,7 +885,14 @@ export async function handleSalesMessage(
      - Si el cliente pregunta en cualquier momento por bebidas, preséntale amigablemente las opciones.
      - Si el cliente acepta alguna bebida, agrégala al pedido; si dice que no, avanza inmediatamente al paso 4 sin insistir.` : `3. BEBIDAS DESACTIVADAS (NO OFRECER BEBIDAS):
      - El interruptor de venta de bebidas está APAGADO. NO ofrezcas bebidas activamente. Pasa DIRECTAMENTE al paso 4 (Recolección de datos de entrega).`}
-  4. RECOLECCIÓN DE DATOS DE ENTREGA:
+  4. RECOLECCIÓN DE DATOS DE ENTREGA Y NOMBRE DEL CLIENTE:
+     - ✍️ PEDIR NOMBRE Y DIRECCIÓN:
+       Pide SIEMPRE el nombre de la persona que recibe y la dirección de entrega para registrar su pedido:
+       «¿A nombre de quién dejamos registrado el pedido y cuál es tu dirección de entrega? ✍️📍»
+     - Si el cliente ya dio su dirección pero aún no ha dicho su nombre:
+       Pregúntale amablemente: «¡Listo! ¿A nombre de quién registramos el pedido? 👤»
+     - Si el cliente ya dijo su nombre pero falta la dirección:
+       Pregúntale: «¡Perfecto! ¿Cuál es tu dirección de entrega en Neiva? 📍»
      - RECONOCIMIENTO AMPLIO DE DIRECCIONES COLOMBIANAS:
        Acepta y reconoce de inmediato CUALQUIER variedad de dirección:
        * Conjuntos residenciales, edificios, condominios, urbanizaciones, ciudadelas (ej: "Conjunto Puertas del Sol Casa 4", "Condominio Campestre El Peñón", "Edificio Mirador Apto 502", "Urbanización Los Sauces", "Reserva de la Sierra").
@@ -867,7 +902,7 @@ export async function handleSalesMessage(
        * Indicaciones o referencias libres (ej: "frente a la escuela", "casa verde de rejas negras", "sobre la vía principal").
      - 🚨 REGLA ESTRICTA (CERO BUCLES DE DIRECCIÓN):
        Si tú (el bot) ya pediste la dirección en el mensaje anterior y el cliente responde indicando su ubicación (incluso si no tiene nomenclatura tradicional, o dice un conjunto, vereda o referencia):
-       ¡ACÉPTALO DE INMEDIATO como dirección de entrega! NUNCA vuelvas a enviar el mensaje pidiendo la dirección nuevamente. Agradece la indicación y avanza DIRECTAMENTE al paso 5 (medio de pago).
+       ¡ACÉPTALO DE INMEDIATO como dirección de entrega! NUNCA vuelvas a enviar el mensaje pidiendo la dirección nuevamente. Agradece la indicación y si ya tienes su nombre avanza DIRECTAMENTE al paso 5 (medio de pago).
   5. MEDIO DE PAGO:
      - Informa que el domicilio es ¡100% GRATIS!
      - Opciones de pago:
@@ -883,13 +918,14 @@ export async function handleSalesMessage(
      - SI ELIGE EFECTIVO:
        Pregúntale: «¿Con qué billete vas a pagar? (ej: billete de $50.000 o monto exacto) para que el domiciliario te lleve el cambio listo 💵»
   6. RESUMEN PREVIO (PRE-CONFIRMACIÓN):
-     SÓLO cuando tengas los productos (con salsas si aplica), la dirección Y el medio de pago, enviarás un resumen compacto con opciones en texto plano:
+     SÓLO cuando tengas los productos (con salsas si aplica), el nombre del cliente, la dirección Y el medio de pago, enviarás un resumen compacto con opciones en texto plano:
 
      📋 *Resumen de tu Pedido:*
      • [Productos x cantidad y salsas/bebidas]
      📦 *Subtotal productos:* [Subtotal en COP]
      🛵 *Domicilio:* ¡GRATIS!
      💰 *Total a pagar:* [Total en COP]
+     👤 *Cliente:* [Nombre del cliente]
      📍 *Dirección de entrega:* [Dirección exacta del cliente]
      💳 *Medio de pago:* [Medio de pago]
 
