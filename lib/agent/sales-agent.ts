@@ -188,8 +188,10 @@ function shouldSendTransferQr(userText: string, assistantReply: string): boolean
   const u = (userText || "").toLowerCase().trim();
   const a = (assistantReply || "").toLowerCase();
 
-  // Si el usuario eligió efectivo, JAMÁS enviar QR
+  // Si el usuario eligió efectivo o la confirmación indica efectivo, JAMÁS enviar QR
   if (
+    a.includes("efectivo contra entrega") ||
+    a.includes("medio de pago: efectivo") ||
     u.includes("efectivo") ||
     u.includes("contra entrega") ||
     u.includes("contraentrega") ||
@@ -406,24 +408,22 @@ async function tryExtractAndRegisterOrder(
   products: Product[],
   clientName?: string
 ) {
-  const replyLower = assistantReply.toLowerCase();
-
-  // Si la respuesta es el Paso 6 (Resumen Previo con opciones 1 o 2), NO crear orden prematuramente
-  const isPreConfirmationStep =
-    (replyLower.includes("1️⃣") && (replyLower.includes("confirmar") || replyLower.includes("modificar"))) ||
-    replyLower.includes("¿deseas confirmar?") ||
-    replyLower.includes("¿todo está correcto?");
-
-  if (isPreConfirmationStep) return null;
+  const assistantLower = assistantReply.toLowerCase();
+  const isPreConfirmationSummary =
+    assistantLower.includes("resumen de tu pedido") ||
+    assistantLower.includes("1️⃣ ✅ confirmar pedido") ||
+    assistantLower.includes("responde con el número para continuar") ||
+    (assistantLower.includes("1️⃣") && (assistantLower.includes("confirmar") || assistantLower.includes("modificar")));
 
   const hasConfirmationKeyword =
-    replyLower.includes("pedido confirmado") ||
-    replyLower.includes("confirmado y registrado") ||
-    replyLower.includes("pedido registrado") ||
-    replyLower.includes("hemos registrado tu pedido") ||
-    replyLower.includes("pedido creado") ||
-    replyLower.includes("van en camino calienticos") ||
-    replyLower.includes("¡pedido confirmado");
+    !isPreConfirmationSummary &&
+    (assistantLower.includes("pedido confirmado y registrado") ||
+      assistantLower.includes("¡pedido confirmado en buñuelandia!") ||
+      assistantLower.includes("¡pedido confirmado") ||
+      assistantLower.includes("pedido registrado") ||
+      assistantLower.includes("hemos registrado tu pedido") ||
+      assistantLower.includes("pedido creado") ||
+      assistantLower.includes("van en camino calienticos"));
 
   if (!hasConfirmationKeyword) return null;
 
@@ -776,7 +776,21 @@ export async function handleSalesMessage(
     lower.includes("café") ||
     lower.includes("cafe");
 
-  if (hasActiveOrder && !isOrderingNewItems) {
+  const isModifyingOrPayingActiveOrder =
+    lower.includes("modificar") ||
+    lower.includes("cambiar") ||
+    lower.includes("corregir") ||
+    lower.includes("torre") ||
+    lower.includes("apto") ||
+    lower.includes("apartamento") ||
+    lower.includes("portería") ||
+    lower.includes("porteria") ||
+    lower.includes("nequi") ||
+    lower.includes("bre-b") ||
+    lower.includes("breb") ||
+    lower.includes("qr");
+
+  if (hasActiveOrder && !isOrderingNewItems && !isModifyingOrPayingActiveOrder) {
     const statusText =
       latestOrder.status === "delivering"
         ? "en camino con el domiciliario 🛵"

@@ -266,8 +266,18 @@ export default function PanelDashboard() {
   const [selectedSidebarOrderId, setSelectedSidebarOrderId] = useState<string>("");
 
   useEffect(() => {
-    setSelectedSidebarOrderId("");
-  }, [selectedConvId]);
+    if (!selectedConvId) {
+      setSelectedSidebarOrderId("");
+      return;
+    }
+    const digits = selectedConvId.replace(/\D/g, "").slice(-10);
+    const matching = orders.filter(
+      (o) =>
+        o.conversationId === selectedConvId ||
+        (digits && o.conversationId.replace(/\D/g, "").includes(digits))
+    );
+    setSelectedSidebarOrderId(matching.length > 0 ? matching[0].id : "");
+  }, [selectedConvId, orders]);
 
   // Catalog
   const [products, setProducts] = useState<Product[]>([]);
@@ -882,7 +892,7 @@ export default function PanelDashboard() {
                   const isActive = selectedConvId === conv.id;
                   const isHuman = conv.status === "human";
                   const isClosed = conv.status === "closed";
-                  const formatPhoneLocal = (p: string) => p ? p.replace(/[^0-9]/g, '').slice(-10) : '';
+                  const formattedPhone = formatPhoneDisplay(conv.phone || conv.id);
                   
                   return (
                     <div key={conv.id} onClick={() => setSelectedConvId(conv.id)} className={`px-4 py-3 cursor-pointer transition border-b border-[#1f2c34] ${isActive ? 'bg-[#202c33]' : 'hover:bg-[#202c33]/50'}`}>
@@ -894,12 +904,12 @@ export default function PanelDashboard() {
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex justify-between items-baseline mb-1">
-                            <h3 className="text-[15px] font-semibold text-white truncate">{conv.customerName || formatPhoneLocal(conv.phone) || formatPhoneLocal(conv.id)}</h3>
+                            <h3 className="text-[15px] font-semibold text-white truncate">{conv.customerName || formattedPhone}</h3>
                             <span className="text-xs text-slate-400">{formatConversationListTime(conv.updatedAt)}</span>
                           </div>
                           
                           <div className="flex items-center gap-1.5 mb-1.5">
-                            <span className="text-xs text-slate-400 font-mono">{formatPhoneLocal(conv.phone) || formatPhoneLocal(conv.id)}</span>
+                            <span className="text-xs text-slate-400 font-mono">{formattedPhone}</span>
                             {conv.customerName && (
                               <span className="text-[10px] bg-[#2a3942] text-slate-300 px-1.5 py-0.2 rounded font-sans">
                                 Cliente
@@ -968,6 +978,7 @@ export default function PanelDashboard() {
                   <div className="flex-1 overflow-y-auto p-6 space-y-3">
                     {messages.map((m, idx) => {
                       const isBot = m.role === "assistant";
+                      const isSystem = m.role === "system";
                       const prevMsg = idx > 0 ? messages[idx - 1] : null;
                       const isNewDay = !prevMsg || getChatDateKey(m.createdAt) !== getChatDateKey(prevMsg.createdAt);
                       
@@ -989,11 +1000,11 @@ export default function PanelDashboard() {
                               </span>
                             </div>
                           )}
-                          {m.role === "system" ? (
-                            <div className="flex justify-center my-2 w-full">
-                              <div className="bg-[#f59e0b]/10 border border-[#f59e0b]/30 text-[#f59e0b] text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-2 max-w-md shadow-sm text-center">
-                                <i className="ph-fill ph-warning shrink-0 text-sm"></i>
-                                <span className="leading-snug font-medium">{text}</span>
+                          {isSystem ? (
+                            <div className="flex justify-center my-2">
+                              <div className="bg-[#202c33]/90 border border-[#f59e0b]/30 text-slate-200 text-xs px-4 py-2 rounded-lg shadow-sm flex items-center gap-2 max-w-md">
+                                <i className="ph-fill ph-warning text-[#f59e0b] text-sm shrink-0"></i>
+                                <span>{text}</span>
                               </div>
                             </div>
                           ) : isBot ? (

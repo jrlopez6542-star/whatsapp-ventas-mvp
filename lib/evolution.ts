@@ -26,6 +26,7 @@ export type ParsedEvolutionInbound = {
   isMedia?: boolean;
   mediaType?: "image" | "video" | "audio" | "document" | "unknown";
   mediaBase64?: string;
+  mimeType?: string;
   rawMsg?: Record<string, unknown>;
 };
 
@@ -359,10 +360,15 @@ export function parseEvolutionUpsert(
 
   const messageObj = asRecord(msg.message) || msg;
   const imageMsg = asRecord(messageObj.imageMessage);
+  const audioMsg = asRecord(messageObj.audioMessage);
   const msgType = String(msg.messageType || "").toLowerCase();
   const isImage = Boolean(imageMsg || msgType.includes("image"));
   const isVideo = Boolean(messageObj.videoMessage || msgType.includes("video"));
-  const isAudio = Boolean(messageObj.audioMessage || msgType.includes("audio"));
+  const isAudio = Boolean(
+    audioMsg ||
+    msgType.includes("audio") ||
+    msgType.includes("ptt")
+  );
   const isDoc = Boolean(messageObj.documentMessage || msgType.includes("document"));
   const isMedia = isImage || isVideo || isAudio || isDoc;
   const mediaType: "image" | "video" | "audio" | "document" | "unknown" = isImage
@@ -380,7 +386,15 @@ export function parseEvolutionUpsert(
     mediaBase64 = msg.base64;
   } else if (imageMsg && typeof imageMsg.base64 === "string" && imageMsg.base64) {
     mediaBase64 = imageMsg.base64;
+  } else if (audioMsg && typeof audioMsg.base64 === "string" && audioMsg.base64) {
+    mediaBase64 = audioMsg.base64;
   }
+
+  const mimeType =
+    (typeof audioMsg?.mimetype === "string" && audioMsg.mimetype) ||
+    (typeof imageMsg?.mimetype === "string" && imageMsg.mimetype) ||
+    (typeof msg.mimetype === "string" && msg.mimetype) ||
+    (isAudio ? "audio/ogg; codecs=opus" : undefined);
 
   const text = extractTextFromMessage(messageObj).trim();
   const pushName =
@@ -408,6 +422,7 @@ export function parseEvolutionUpsert(
     isMedia,
     mediaType,
     mediaBase64,
+    mimeType,
     rawMsg: msg,
   };
 }
@@ -426,6 +441,84 @@ export function isMessagesUpsertEvent(body: unknown): boolean {
     eventRaw === "messages_upsert" ||
     eventRaw === "message.upsert"
   );
+}
+
+export interface EvolutionCallData {
+  id: string;
+  from: string;
+  replyJid: string;
+  status: string;
+  isVideo: boolean;
+  date?: number;
+}
+
+export function parseEvolutionCall(body: unknown): EvolutionCallData | null {
+  const root = asRecord(body);
+  if (!root) return null;
+  const eventRaw = String(root.event || root.type || "").toLowerCase();
+  if (eventRaw !== "call" && eventRaw !== "calls" && eventRaw !== "call.offer") {
+    return null;
+  }
+
+  const rawData = asRecord(root.data) || (Array.isArray(root.data) && asRecord(root.data[0])) || root;
+  if (!rawData) return null;
+
+  const id = String(rawData.id || rawData.callId || root.id || "");
+  const status = String(rawData.status || root.status || "offer").toLowerCase();
+
+  // Solo procesar llamadas entrantes iniciales
+  if (status !== "offer" && status !== "ringing" && status !== "active") {
+    return null;
+  }
+
+  const fromJid = strField(rawData.from || rawData.remoteJid || rawData.chatId || root.from);
+  if (!fromJid) return null;
+
+  const isVideo = Boolean(rawData.isVideo || rawData.video);
+  const digits = normalizeEvolutionNumber(fromJid);
+  const from = isLidJid(fromJid)
+    ? evolutionFromToConversationKey(fromJid)
+    : digits
+    ? `whatsapp:+${digits}`
+    : evolutionFromToConversationKey(fromJid);
+
+  return {
+    id: id || `call_${Date.now()}`,
+    from,
+    replyJid: fromJid,
+    status,
+    isVideo,
+    date: Date.now(),
+  };
+}
+
+export async function rejectEvolutionCall(callId: string, fromJid: string): Promise<boolean> {
+  const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "");
+  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const instance = process.env.EVOLUTION_INSTANCE?.trim();
+  if (!base || !apiKey || !instance) return false;
+
+  const endpoints = [
+    `${base}/call/reject/${encodeURIComponent(instance)}`,
+    `${base}/call/offer/${encodeURIComponent(instance)}`,
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          apikey: apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ id: callId, from: fromJid, status: "reject" }),
+      });
+      if (res.ok) return true;
+    } catch {
+      // ignore
+    }
+  }
+  return false;
 }
 
 async function postSendText(

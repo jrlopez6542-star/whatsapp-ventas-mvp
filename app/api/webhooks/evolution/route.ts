@@ -1,11 +1,15 @@
 import { after, NextRequest, NextResponse } from "next/server";
-import { markEvolutionMessageAsRead, getEvolutionMediaBase64 } from "@/lib/evolution";
 import {
   isLidJid,
   isMessagesUpsertEvent,
   parseEvolutionUpsert,
   verifyEvolutionWebhookSecret,
+  markEvolutionMessageAsRead,
+  getEvolutionMediaBase64,
+  parseEvolutionCall,
+  rejectEvolutionCall,
 } from "@/lib/evolution";
+import { transcribeWhatsAppAudio } from "@/lib/agent/audio-transcriber";
 import { sendDelayedOutboundWhatsApp } from "@/lib/outbound-queue";
 import { sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
 import { claimWebhookEvent } from "@/lib/webhook-dedupe";
@@ -20,6 +24,7 @@ import {
   getOrders,
   updateOrderStatus,
   getOrgSettings,
+  getMessages,
 } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -80,6 +85,65 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // 1. Manejo de llamadas entrantes de WhatsApp (voz o video)
+    const incomingCall = parseEvolutionCall(body);
+    if (incomingCall) {
+      const callClaimed = await claimWebhookEvent("call_" + incomingCall.id);
+      if (!callClaimed) {
+        return jsonOk({ skipped: "duplicate_call", id: incomingCall.id });
+      }
+
+      console.log("[evolution call received]", incomingCall);
+      // Rechazar llamada en Evolution API de inmediato
+      await rejectEvolutionCall(incomingCall.id, incomingCall.replyJid).catch(() => {});
+
+      // Registrar aviso en el chat
+      await appendMessage(
+        incomingCall.from,
+        "system",
+        `📞 Llamada entrante de WhatsApp (${incomingCall.isVideo ? "videollamada" : "voz"}) rechazada automáticamente`
+      ).catch(() => {});
+
+      // Notificar al cliente asíncronamente con estado de pedido o mensaje de bienvenida
+      after(async () => {
+        try {
+          const orgSettings = await getOrgSettings().catch(() => null);
+          if (orgSettings?.botEnabled === "false") return;
+
+          const conv = await getConversation(incomingCall.from);
+          if (conv?.status === "human") return;
+
+          const allOrders = await getOrders().catch(() => []);
+          const activeOrder = allOrders.find(
+            (o) =>
+              (o.conversationId === incomingCall.from || (conv?.phone && o.conversationId.includes(conv.phone))) &&
+              (o.status === "pending" || o.status === "confirmed" || o.status === "preparing" || o.status === "delivering")
+          );
+
+          let replyMsg = "";
+          if (activeOrder) {
+            const statusMap: Record<string, string> = {
+              pending: "Pendiente por confirmar",
+              confirmed: "Confirmado",
+              preparing: "En preparación en cocina 👨‍🍳🔥",
+              delivering: "En camino con el domiciliario 🛵💨",
+            };
+            const estadoDesc = statusMap[activeOrder.status] || activeOrder.status;
+            replyMsg = `¡Hola! Recibimos tu llamada 📞 pero por este canal atendemos exclusivamente por chat de WhatsApp.\n\nTu pedido activo #${activeOrder.id.slice(0, 8)} se encuentra: *${estadoDesc}*.\nSi deseas consultar o modificar algún detalle, escríbenos por aquí con toda confianza. 😊`;
+          } else {
+            replyMsg = `¡Hola! 🥟 En Buñuelandia atendemos exclusivamente por chat de WhatsApp para tomar tus pedidos y enviártelos calienticos a domicilio 🛵✨\n\n¿En qué podemos ayudarte hoy? Cuéntanos qué se te antoja. 🤤`;
+          }
+
+          await appendMessage(incomingCall.from, "assistant", replyMsg);
+          await sendDelayedOutboundWhatsApp(incomingCall.from, incomingCall.replyJid, replyMsg);
+        } catch (err) {
+          console.error("[evolution] error handling rejected call auto-reply:", err);
+        }
+      });
+
+      return jsonOk({ call: "rejected_and_notified", id: incomingCall.id });
+    }
+
     if (!isMessagesUpsertEvent(body)) {
       return jsonOk({ skipped: "not_upsert" });
     }
@@ -89,20 +153,17 @@ export async function POST(request: NextRequest) {
       return jsonOk({ skipped: "unparseable" });
     }
 
-    // ATAJOS DE CONTROL POR COMANDOS MÓVILES (fromMe: true)
     if (parsed.fromMe) {
-      const cleanCmd = (parsed.text || "").trim().toLowerCase();
-      if (cleanCmd === "#pausar" || cleanCmd === "#humano") {
-        console.log("[evolution fromMe command] Pausar bot por admin:", parsed.from);
-        await setConversationStatus(parsed.from, "human");
-        await appendMessage(parsed.from, "system", "⚠️ Regla activada: Escalado a agente humano por comando móvil (#pausar)");
-        return jsonOk({ action: "paused_by_admin" });
+      const cmd = (parsed.text || "").trim().toLowerCase();
+      if (cmd === "#pausar" || cmd === "#humano") {
+        await setConversationStatus(parsed.from, "human").catch(() => {});
+        await appendMessage(parsed.from, "system", "⏸️ Bot pausado manualmente desde el dispositivo móvil").catch(() => {});
+        return jsonOk({ manualCommand: "paused" });
       }
-      if (cleanCmd === "#bot" || cleanCmd === "#activar") {
-        console.log("[evolution fromMe command] Reactivar bot por admin:", parsed.from);
-        await setConversationStatus(parsed.from, "bot");
-        await appendMessage(parsed.from, "system", "🤖 Regla activada: Bot reactivado por comando móvil (#bot)");
-        return jsonOk({ action: "activated_by_admin" });
+      if (cmd === "#bot" || cmd === "#activar") {
+        await setConversationStatus(parsed.from, "bot").catch(() => {});
+        await appendMessage(parsed.from, "system", "🤖 Bot reactivado desde el dispositivo móvil").catch(() => {});
+        return jsonOk({ manualCommand: "resumed" });
       }
       return jsonOk({ skipped: "fromMe" });
     }
@@ -112,8 +173,9 @@ export async function POST(request: NextRequest) {
     }
 
     const isImage = Boolean(parsed.isMedia && parsed.mediaType === "image");
+    const isAudio = Boolean(parsed.isMedia && parsed.mediaType === "audio");
     const text = (parsed.text || "").trim();
-    if (!text && !isImage) {
+    if (!text && !isImage && !isAudio) {
       return jsonOk({ skipped: "empty_body" });
     }
 
@@ -132,6 +194,7 @@ export async function POST(request: NextRequest) {
       textLen: text.length,
       pushName: parsed.pushName,
       isImage,
+      isAudio,
     });
 
     const fromKey = parsed.from;
@@ -147,27 +210,39 @@ export async function POST(request: NextRequest) {
     // Guardar el mensaje del usuario de inmediato en el historial de chat del panel
     const userMessageContent = isImage
       ? (text ? `[Foto adjunta: ${text}]` : "📷 [Comprobante o Imagen adjunta]")
+      : isAudio
+      ? (text ? `🎤 [Nota de voz]: "${text}"` : "🎤 [Nota de voz / Audio]")
       : text;
-    await appendMessage(fromKey, "user", userMessageContent);
+    const savedMsg = await appendMessage(fromKey, "user", userMessageContent);
 
-    const arrivalTime = Date.now();
-    lastIncomingTimestamp.set(fromKey, arrivalTime);
+    const orgSettings = await getOrgSettings().catch(() => null);
+    if (orgSettings?.botEnabled === "false") {
+      console.log("[evolution] bot is disabled via master switch — skipping auto-reply", { from: fromKey });
+      return jsonOk({ mode: "bot_disabled" });
+    }
+
+    if (conv.status === "human") {
+      console.log("[evolution] human mode — skip AI", { from: fromKey });
+      return jsonOk({ mode: "human" });
+    }
+
+    if (conv.status === "closed") {
+      await setConversationStatus(fromKey, "bot").catch(() => {});
+    }
 
     // FAST ACK: Responder 200 OK inmediatamente (<80ms) delegando todo el procesamiento a after()
     after(async () => {
       try {
-        // SISTEMA DE DEBOUNCING: Esperar 3.2s para agrupar ráfagas de mensajes del cliente
-        await new Promise((resolve) => setTimeout(resolve, DEBOUNCE_WINDOW_MS));
+        let currentText = text;
 
-        // Si el cliente envió un mensaje más reciente durante la ventana, descartar esta ejecución
-        const latestTime = lastIncomingTimestamp.get(fromKey);
-        if (latestTime && latestTime > arrivalTime) {
-          console.log("[evolution debounce] Mensaje posterior detectado, descartando ejecución anterior para agrupar ráfaga:", {
-            from: fromKey,
-            arrivalTime,
-            latestTime,
-          });
-          return;
+        // SISTEMA DE DEBOUNCING: Esperar 3.2s para agrupar ráfagas de mensajes de texto del cliente
+        if (!isImage && !isAudio && DEBOUNCE_WINDOW_MS > 0 && savedMsg?.id) {
+          await new Promise((r) => setTimeout(r, DEBOUNCE_WINDOW_MS));
+          const recentMessages = await getMessages(fromKey).catch(() => []);
+          const lastUserMsg = [...recentMessages].reverse().find((m) => m.role === "user");
+          if (lastUserMsg && lastUserMsg.id !== savedMsg.id) {
+            return; // Entró un mensaje más nuevo en la ráfaga; se procesa en la última ejecución
+          }
         }
 
         const currentConv = await getConversation(fromKey);
@@ -176,14 +251,49 @@ export async function POST(request: NextRequest) {
           return;
         }
 
-        const orgSettings = await getOrgSettings().catch(() => null);
-        if (orgSettings?.botEnabled === "false") {
-          console.log("[evolution] bot is disabled via master switch — skipping auto-reply", { from: fromKey });
-          return;
-        }
+        // SI ES NOTA DE VOZ / AUDIO: Transcribir con Gemini Multimodal / Whisper
+        if (isAudio) {
+          console.log("[evolution] Procesando nota de voz entrante...", { from: fromKey });
+          let audioBase64 = parsed.mediaBase64;
+          let audioMime = parsed.mimeType || "audio/ogg";
+          if (!audioBase64 && parsed.messageId) {
+            const fetched = await getEvolutionMediaBase64(parsed.messageId, parsed.rawMsg);
+            if (fetched) {
+              audioBase64 = fetched.base64;
+              audioMime = fetched.mimeType || audioMime;
+            }
+          }
 
-        if (currentConv?.status === "closed") {
-          await setConversationStatus(fromKey, "bot");
+          if (audioBase64) {
+            const transcribed = await transcribeWhatsAppAudio(audioBase64, audioMime);
+            if (transcribed && transcribed.trim()) {
+              currentText = transcribed.trim();
+              console.log("[evolution] Transcripción exitosa:", currentText);
+              await appendMessage(fromKey, "system", `🎤 [Nota de voz transcrita]: "${currentText}"`).catch(() => {});
+            } else {
+              console.warn("[evolution] Audio inaudible o no se pudo transcribir");
+              const inaudibleReply =
+                "¡Hola! Recibimos tu nota de voz 🎤 pero no logramos escucharla con claridad. ¿Podrías enviárnosla de nuevo o escribirnos tu pedido por aquí? ¡Con gusto te atendemos!";
+              await appendMessage(fromKey, "assistant", inaudibleReply);
+              try {
+                await sendDelayedOutboundWhatsApp(fromKey, replyTo, inaudibleReply, parsed.messageId);
+              } catch (err) {
+                console.error("[evolution] error sending inaudible reply:", err);
+              }
+              return;
+            }
+          } else {
+            console.warn("[evolution] No se pudo obtener el audio en base64");
+            const noAudioReply =
+              "¡Hola! Recibimos tu nota de voz 🎤 pero ocurrió un inconveniente al procesarla. Por favor escríbenos tu pedido por aquí para poder ayudarte de inmediato.";
+            await appendMessage(fromKey, "assistant", noAudioReply);
+            try {
+              await sendDelayedOutboundWhatsApp(fromKey, replyTo, noAudioReply, parsed.messageId);
+            } catch (err) {
+              console.error("[evolution] error sending noAudio reply:", err);
+            }
+            return;
+          }
         }
 
         // SI ES UNA IMAGEN: Intentar verificar como comprobante de pago con Gemini Visión
@@ -278,7 +388,7 @@ export async function POST(request: NextRequest) {
         }
 
         const effectiveName = parsed.pushName || conv.customerName;
-        const { reply, mode, mediaUrl, invoicePdfUrl, invoiceNumber } = await handleSalesMessage(fromKey, text, effectiveName);
+        const { reply, mode, mediaUrl, invoicePdfUrl, invoiceNumber } = await handleSalesMessage(fromKey, currentText, effectiveName);
         console.log("[evolution reply processed in after]", {
           from: fromKey,
           replyTo,
@@ -286,6 +396,10 @@ export async function POST(request: NextRequest) {
           replyLen: reply.length,
           invoicePdfUrl: !!invoicePdfUrl,
         });
+
+        if (mode === "human_escalated") {
+          await appendMessage(fromKey, "system", "⚠️ Regla activada: Escalado a agente humano").catch(() => {});
+        }
 
         const latestAfterSales = await getConversation(fromKey);
         if (latestAfterSales?.status === "human") {
