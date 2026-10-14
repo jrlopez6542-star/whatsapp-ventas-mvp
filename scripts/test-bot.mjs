@@ -139,19 +139,21 @@ async function run() {
   console.log(`${c.bright}PASO 2: Test Ráfaga (Debounce)${c.reset}`);
   console.log(`Disparando 3 peticiones POST /api/webhooks/evolution separadas por 500ms...`);
   try {
-    const r1 = await sendWebhookMessage("Hola");
-    console.log(`  [t=0ms]   Enviado: "Hola" -> HTTP ${r1.status}`);
+    const p1 = sendWebhookMessage("Hola");
+    console.log(`  [t=0ms]   Disparado: "Hola"`);
     await sleep(500);
 
-    const r2 = await sendWebhookMessage("Quiero una caja x8 surtida");
-    console.log(`  [t=500ms] Enviado: "Quiero una caja x8 surtida" -> HTTP ${r2.status}`);
+    const p2 = sendWebhookMessage("Quiero una caja x8 surtida");
+    console.log(`  [t=500ms] Disparado: "Quiero una caja x8 surtida"`);
     await sleep(500);
 
-    const r3 = await sendWebhookMessage("y un jugo de mora");
-    console.log(`  [t=1000ms] Enviado: "y un jugo de mora" -> HTTP ${r3.status}`);
+    const p3 = sendWebhookMessage("y un jugo de mora");
+    console.log(`  [t=1000ms] Disparado: "y un jugo de mora"`);
 
-    console.log(`⏳ Esperando 6 segundos a que se procese el debounce y la IA responda...`);
-    await sleep(6000);
+    await Promise.all([p1, p2, p3]);
+
+    console.log(`⏳ Esperando 7 segundos a que se procese el debounce (2000ms) y la IA responda...`);
+    await sleep(7000);
 
     // Consultar mensajes en Turso
     const msgs = await querySql(

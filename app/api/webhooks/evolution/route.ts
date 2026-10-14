@@ -60,7 +60,7 @@ export async function GET() {
   });
 }
 
-const DEBOUNCE_WINDOW_MS = 1200;
+const DEBOUNCE_WINDOW_MS = 2000;
 const lastIncomingTimestamp = new Map<string, number>();
 
 /**
