@@ -34,13 +34,20 @@ function formatCop(amount: number): string {
 // Limpia y valida candidatos a dirección excluyendo palabras genéricas o de medios de pago
 function cleanAddressCandidate(cand: string): string | null {
   if (!cand) return null;
-  const clean = cand.trim().replace(/^[:,\s.-]+|[:,\s.-]+$/g, "");
+  let clean = cand.trim().replace(/^[:,\s.-]+|[:,\s.-]+$/g, "");
+  // Eliminar prefijos verbales y conectores comunes: "en el", "para la", "vivo en", "entregar en", etc.
+  clean = clean.replace(/^(?:(?:vivo|estoy|queda|es)\s+en\s+|(?:entregar|despachar|enviar|llevar)\s+(?:en|a)?\s*|(?:en|para|a|al|por)\s+(?:el\s+|la\s+|los\s+|las\s+)?|(?:el|la|los|las)\s+)/i, "").trim();
+
   const lower = clean.toLowerCase();
   if (
     lower.includes("indicada en chat") ||
     lower.includes("no especificada") ||
     lower.includes("por confirmar") ||
-    lower.includes("ingresada")
+    lower.includes("ingresada") ||
+    lower.includes("ninguna") ||
+    lower.includes("gracias") ||
+    lower.includes("buñuelo") ||
+    lower.includes("caja")
   ) {
     return null;
   }
@@ -58,78 +65,106 @@ function cleanAddressCandidate(cand: string): string | null {
   return clean.length >= 4 ? clean : null;
 }
 
-// Extrae direcciones colombianas con soporte integral urbano, rural y conjuntos residenciales
+// Extrae direcciones colombianas con soporte integral urbano, rural, veredas y conjuntos residenciales
 function extractAddress(text: string): string | null {
   if (!text) return null;
-  const lines = text.split(/[\r\n]+/);
+
+  // Normalizar saltos de línea y limpiar caracteres de formato WhatsApp (*, _, ~, `)
+  const cleanText = text.replace(/[*_~`]/g, " ").trim();
+  const lines = cleanText.split(/[\r\n]+/);
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    // 1. Etiqueta directa en la línea: "Dirección: Cra 3a 7 26", "Enviar a: Calle 140...", "Vivo en: ..."
+    // 1. Etiqueta directa en la línea: "Dirección: Cra 3a 7 26", "Enviar a: Vereda La Balsa", "Vivo en: Conjunto Puertas del Sol", etc.
     const labeledMatch = trimmed.match(
-      /^(?:📍\s*)?(?:direcci[oó]n|enviar a|para la|para|despachar a|entrega en|lugar de entrega|destino|vivo en|estoy en|queda en|es en|mi direcci[oó]n es)[:\s]+([^,\n]+(?:,[^,\n]+)*)/i
+      /(?:📍\s*)?(?:(?:mi\s+)?direcci[oó]n(?:\s+es)?|enviar\s+a|despachar\s+(?:a|en)|entregar?\s+(?:a|en|para)|lugar\s+de\s+entrega|destino|vivo\s+en|estoy\s+en|queda\s+en|es\s+en|es\s+para(?:\s+la|\s+el)?|para\s+la|para\s+el|para)[:\s]+([^,;\n]+(?:[,;][^,;\n]+)*)/i
     );
     if (labeledMatch && labeledMatch[1]) {
       const cand = cleanAddressCandidate(labeledMatch[1]);
       if (cand) return cand;
     }
 
-    // 2. Nomenclatura urbana colombiana completa
-    // Cubre: Calle, Cll, Cl, Carrera, Cra, Cr, Kra, Kr, K, Diagonal, Diag, Dg, Transversal, Trans, Tv, Avenida, Av, Ave, Autopista, Circular, Circunvalar
-    const streetRegex =
-      /\b(?:calle|cll|cl|c\/|carrera|cra|cr|kra|kr|k|diagonal|diag|dg|transversal|trans|tv|avenida|av|ave|autopista|auto|circular|circ|circunvalar)\.?\s+\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*(?:#|no\.?|nro\.?|num\.?|número|°|con|\s)\s*\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*[-–—\s]\s*\d+[a-zA-Z]?(?:\s+(?:sur|norte|este|oeste))?(?:\s*(?:apto|apartamento|int|interior|torre|bloque|casa|mz|manzana|lote|lt|barrio|piso|oficina|of)\b[^.,\n]*)?/i;
-
-    const streetMatch = trimmed.match(streetRegex);
-    if (streetMatch) {
-      const cand = cleanAddressCandidate(streetMatch[0]);
+    // 2. Veredas, fincas, haciendas, corregimientos y zonas rurales
+    // Cubre: "vereda la balsa", "vereda tal", "vereda el rosal finca la florida", "finca el recreo vereda chimbi", "vda centro", "km 5 vía...", etc.
+    const ruralRegex =
+      /\b(?:vereda|vda\.?|corregimiento|correg\.?|inspecci[oó]n)\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s]+(?:\s+(?:sector|finca|lote|predio|parcela|casa|km|kil[oó]metro|entrada|escuela|colegio|frente\s+a|diagonal\s+a)\b[^.,;\n]*)?|\b(?:finca|granja|hacienda)\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s]+(?:\s+(?:vereda|vda\.?|sector|km|kil[oó]metro)\b[^.,;\n]*)?|\b(?:km\.?|kil[oó]metro)\s*\d+[^.,;\n]+|\b(?:v[ií]a|carretera|autopista)\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+(?:\s+(?:km\.?|kil[oó]metro)\s*\d+[^.,;\n]*)?/i;
+    const ruralMatch = trimmed.match(ruralRegex);
+    if (ruralMatch) {
+      const cand = cleanAddressCandidate(ruralMatch[0]);
       if (cand) return cand;
     }
 
-    // 3. Intersecciones colombianas (ej: "Calle 53 con 13", "Cra 7 con Calle 45")
-    const intersectionRegex =
-      /\b(?:calle|cll|cl|carrera|cra|cr|kra|kr|diagonal|diag|dg|transversal|trans|tv|avenida|av)\s+\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s+con\s+(?:calle|cll|cl|carrera|cra|cr|kra|kr|\d+)\s*\d*[a-zA-Z]?(?:\s*(?:barrio|esquina|apto|torre|casa)\b[^.,\n]*)?/i;
-    const interMatch = trimmed.match(intersectionRegex);
-    if (interMatch) {
-      const cand = cleanAddressCandidate(interMatch[0]);
-      if (cand) return cand;
-    }
-
-    // 4. Conjuntos residenciales, edificios y urbanizaciones (ej: "Conjunto Los Rosales Torre 2 Apto 301")
+    // 3. Conjuntos residenciales, condominios, urbanizaciones, edificios, reservas, ciudadelas, portales, etc.
+    // Cubre: "conjunto puertas del sol", "conjunto residencial las palmas torre 3 apto 201", "condominio campestre el peñon", "urbanizacion los sauces", etc.
     const complexRegex =
-      /\b(?:conjunto(?:\s+residencial)?|edificio|urbanizaci[oó]n|urb\.?|condominio|reserva|altos de|portal de(?:l)?)\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+(?:\s+(?:torre|bloque|casa|apto|apartamento|piso|interior|int|barrio)\b[^.,\n]*)+/i;
+      /\b(?:conjunto(?:\s+residencial)?|condominio(?:\s+campestre)?|urbanizaci[oó]n|urb\.?|edificio|edif\.?|edf\.?|ciudadela|reserva(?:\s+campestre)?|altos\s+de(?:l)?|portales?\s+de(?:l)?|bosques?\s+de(?:l)?|parques?\s+de(?:l)?|villas?\s+de(?:l)?|terrazas?\s+de(?:l)?|balcones?\s+de(?:l)?|colinas?\s+de(?:l)?|prados?\s+de(?:l)?|jardines?\s+de(?:l)?|miradores?\s+de(?:l)?|rinc[oó]n\s+de(?:l)?|parcelaci[oó]n)\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s]+(?:\s+(?:torre|bloque|etapa|agrupaci[oó]n|interior|int\.?|apto|apartamento|casa|mz|manzana|lote|piso|oficina|of\.?|porter[ií]a|barrio|sector)\b[^.,;\n]*)?/i;
     const complexMatch = trimmed.match(complexRegex);
     if (complexMatch) {
       const cand = cleanAddressCandidate(complexMatch[0]);
       if (cand) return cand;
     }
 
-    // 5. Manzanas y Lotes (ej: "Manzana B Casa 14", "Mz 5 Lote 12 Barrio La Granja")
+    // 4. Nomenclatura urbana colombiana completa
+    // Cubre: Calle, Cll, Cl, Carrera, Cra, Cr, Kra, Kr, K, Diagonal, Diag, Dg, Transversal, Trans, Tv, Avenida, Av, Ave, Autopista, Circular, Circunvalar
+    const streetRegex =
+      /\b(?:calle|cll|cl|c\/|carrera|cra|cr|kra|kr|k|diagonal|diag|dg|transversal|trans|tv|avenida|av|ave|autopista|auto|circular|circ|circunvalar)\.?\s+\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*(?:#|no\.?|nro\.?|num\.?|número|°|con|\s)\s*\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*[-–—\s]\s*\d+[a-zA-Z]?(?:\s+(?:sur|norte|este|oeste))?(?:\s*(?:apto|apartamento|int|interior|torre|bloque|casa|mz|manzana|lote|lt|barrio|piso|oficina|of|conjunto|edificio)\b[^.,;\n]*)?/i;
+    const streetMatch = trimmed.match(streetRegex);
+    if (streetMatch) {
+      const cand = cleanAddressCandidate(streetMatch[0]);
+      if (cand) return cand;
+    }
+
+    // 5. Intersecciones colombianas (ej: "Calle 53 con 13", "Cra 7 con Calle 45")
+    const intersectionRegex =
+      /\b(?:calle|cll|cl|carrera|cra|cr|kra|kr|diagonal|diag|dg|transversal|trans|tv|avenida|av)\s+\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s+con\s+(?:calle|cll|cl|carrera|cra|cr|kra|kr|\d+)\s*\d*[a-zA-Z]?(?:\s*(?:barrio|esquina|apto|torre|casa)\b[^.,;\n]*)?/i;
+    const interMatch = trimmed.match(intersectionRegex);
+    if (interMatch) {
+      const cand = cleanAddressCandidate(interMatch[0]);
+      if (cand) return cand;
+    }
+
+    // 6. Manzanas y Lotes (ej: "Manzana B Casa 14", "Mz 5 Lote 12 Barrio La Granja")
     const mzRegex =
-      /\b(?:manzana|mz\.?)\s+[a-zA-Z0-9]+(?:\s+(?:casa|lote|lt\.?)\s+[a-zA-Z0-9]+)(?:\s+barrio\s+[^.,\n]+)?/i;
+      /\b(?:manzana|mz\.?|mza\.?)\s*[a-zA-Z0-9]+(?:\s+(?:casa|cs\.?|lote|lt\.?)\s*[a-zA-Z0-9]+)(?:\s+(?:barrio|etapa|sector)\b[^.,;\n]*)?/i;
     const mzMatch = trimmed.match(mzRegex);
     if (mzMatch) {
       const cand = cleanAddressCandidate(mzMatch[0]);
       if (cand) return cand;
     }
-
-    // 6. Zonas rurales o suburbanas (ej: "Km 5 Vía Suba Cota", "Vereda El Rosal Finca Los Pinos")
-    const ruralRegex =
-      /\b(?:km|kil[oó]metro)\s*\d+[^.,\n]+|\bvereda\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+(?:\s+finca\s+[^.,\n]+)?/i;
-    const ruralMatch = trimmed.match(ruralRegex);
-    if (ruralMatch) {
-      const cand = cleanAddressCandidate(ruralMatch[0]);
-      if (cand) return cand;
-    }
   }
 
-  // 7. Búsqueda en bloque de texto completo si no coincidió por líneas
-  const streetRegexAll =
-    /\b(?:calle|cll|cl|c\/|carrera|cra|cr|kra|kr|k|diagonal|diag|dg|transversal|trans|tv|avenida|av|ave|autopista|auto|circular|circ|circunvalar)\.?\s+\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*(?:#|no\.?|nro\.?|num\.?|número|°|con|\s)\s*\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*[-–—\s]\s*\d+[a-zA-Z]?(?:\s+(?:sur|norte|este|oeste))?(?:\s*(?:apto|apartamento|int|interior|torre|bloque|casa|mz|manzana|lote|lt|barrio|piso|oficina|of)\b[^.,\n]*)?/i;
-  const fallback = text.match(streetRegexAll);
-  if (fallback) {
-    const cand = cleanAddressCandidate(fallback[0]);
+  // 7. Búsqueda en texto continuo si no coincidió por líneas separadas
+  const labeledAll = cleanText.match(
+    /(?:(?:mi\s+)?direcci[oó]n(?:\s+es)?|enviar\s+a|despachar\s+(?:a|en)|entregar?\s+(?:a|en|para)|lugar\s+de\s+entrega|destino|vivo\s+en|estoy\s+en|queda\s+en|es\s+en|es\s+para(?:\s+la|\s+el)?|para\s+la|para\s+el|para)[:\s]+([^,;\n]+(?:[,;][^,;\n]+)*)/i
+  );
+  if (labeledAll && labeledAll[1]) {
+    const cand = cleanAddressCandidate(labeledAll[1]);
+    if (cand) return cand;
+  }
+
+  const ruralAll = cleanText.match(
+    /\b(?:vereda|vda\.?)\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s]+(?:\s+(?:sector|finca|lote|predio|parcela|casa|km|kil[oó]metro|entrada|escuela|colegio|frente\s+a|diagonal\s+a)\b[^.,;\n]*)?/i
+  );
+  if (ruralAll) {
+    const cand = cleanAddressCandidate(ruralAll[0]);
+    if (cand) return cand;
+  }
+
+  const complexAll = cleanText.match(
+    /\b(?:conjunto(?:\s+residencial)?|condominio(?:\s+campestre)?|urbanizaci[oó]n|urb\.?|edificio|edif\.?|edf\.?|ciudadela|reserva(?:\s+campestre)?|altos\s+de(?:l)?|portales?\s+de(?:l)?|bosques?\s+de(?:l)?|parques?\s+de(?:l)?|villas?\s+de(?:l)?|terrazas?\s+de(?:l)?|balcones?\s+de(?:l)?|colinas?\s+de(?:l)?|prados?\s+de(?:l)?|jardines?\s+de(?:l)?|miradores?\s+de(?:l)?|rinc[oó]n\s+de(?:l)?|parcelaci[oó]n)\s+[a-zA-ZáéíóúÁÉÍÓÚñÑ0-9\s]+(?:\s+(?:torre|bloque|etapa|agrupaci[oó]n|interior|int\.?|apto|apartamento|casa|mz|manzana|lote|piso|oficina|of\.?|porter[ií]a|barrio|sector)\b[^.,;\n]*)?/i
+  );
+  if (complexAll) {
+    const cand = cleanAddressCandidate(complexAll[0]);
+    if (cand) return cand;
+  }
+
+  const streetAll = cleanText.match(
+    /\b(?:calle|cll|cl|c\/|carrera|cra|cr|kra|kr|k|diagonal|diag|dg|transversal|trans|tv|avenida|av|ave|autopista|auto|circular|circ|circunvalar)\.?\s+\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*(?:#|no\.?|nro\.?|num\.?|número|°|con|\s)\s*\d+[a-zA-Z]?(?:\s+(?:bis|este|sur|norte|oeste))?\s*[-–—\s]\s*\d+[a-zA-Z]?(?:\s+(?:sur|norte|este|oeste))?(?:\s*(?:apto|apartamento|int|interior|torre|bloque|casa|mz|manzana|lote|lt|barrio|piso|oficina|of|conjunto|edificio)\b[^.,;\n]*)?/i
+  );
+  if (streetAll) {
+    const cand = cleanAddressCandidate(streetAll[0]);
     if (cand) return cand;
   }
 
@@ -802,7 +837,13 @@ export async function handleSalesMessage(
      - Si el cliente acepta alguna bebida, agrégala con su precio al pedido; si dice que no, avanza inmediatamente al paso 4 sin insistir.` : `3. BEBIDAS DESACTIVADAS (NO OFRECER BEBIDAS):
      - El interruptor de venta de bebidas está APAGADO. NO ofrezcas, NO sugieras ni menciones bebidas activamente al cliente. Pasa DIRECTAMENTE al paso 4 (Recolección de datos de entrega).`}
   4. RECOLECCIÓN DE DATOS DE ENTREGA:
-     - Pide: 📍 Dirección exacta de entrega (con barrio) y 🏢 Indicaciones especiales de entrega (ej: torre, apto, dejar en portería o si el timbre no funciona).
+     - RECONOCIMIENTO AMPLIO DE DIRECCIONES COLOMBIANAS:
+       Acepta y reconoce de inmediato CUALQUIER variedad de dirección:
+       * Conjuntos residenciales, edificios, condominios, urbanizaciones, ciudadelas (ej: "Conjunto Puertas del Sol", "Conjunto Puertas del Sol Casa 4", "Condominio Campestre El Peñón", "Edificio Mirador Apto 502", "Urbanización Los Sauces", "Reserva de la Sierra").
+       * Veredas, fincas, haciendas, corregimientos, sectores rurales o vías (ej: "Vereda La Balsa sector Los Molinos", "Vereda El Rosal finca La Florida", "Vereda tal", "Finca El Recreo vereda Chimbi", "Vda Centro", "Km 5 Vía Suba").
+       * Nomenclatura urbana estándar (Calle, Carrera, Diagonal, Transversal, Avenida, etc.).
+       * Manzanas y lotes (ej: "Mz 4 Casa 12 Barrio El Progreso").
+     - ⚠️ REGLA DE ORO DE DIRECCIÓN: Si el cliente YA dio su conjunto, vereda, finca o dirección en cualquier mensaje previo o actual (ej: "conjunto puertas del sol", "vereda la balsa"), ¡NO VUELVAS A PREGUNTAR LA DIRECCIÓN! Tómala como válida de inmediato y continúa con el paso 5 (medio de pago).
   5. MEDIO DE PAGO Y COSTO DE DOMICILIO:
      - Informa sobre el domicilio: Tarifa fija de ${formatCop(deliveryFee)} (o ¡GRATIS si el pedido supera ${formatCop(freeThreshold)}!).
      - Opciones de pago:
@@ -827,7 +868,7 @@ export async function handleSalesMessage(
   📦 *Subtotal productos:* [Subtotal exacto en COP]
   🛵 *Costo de domicilio:* [${formatCop(deliveryFee)} o ¡GRATIS!]
   💰 *Total a pagar:* [Total exacto con domicilio en COP]
-  📍 *Dirección de entrega:* [Escribe aquí la dirección exacta que indicó el cliente, nunca pongas "indicada en chat"]
+  📍 *Dirección de entrega:* [Escribe la dirección exacta dada por el cliente: conjunto con casa/apto/torre, vereda/finca o calle/carrera. NUNCA pongas "indicada en chat" ni "por confirmar"]
   🏢 *Notas de entrega:* [Indicaciones de torre/apto/portería o "Ninguna"]
   💳 *Medio de pago:* [Medio ingresado, y si es efectivo con cuánto paga y cambio]
   👤 *Cliente:* [Nombre del cliente o "Cliente"]
@@ -1130,7 +1171,7 @@ export async function handleSalesMessage(
     if (upsellDrinks && !hasDrinkInCart && !alreadyAskedDrinks && !hasDeclinedDrinks) {
       reply = `¡Excelente elección! 🤤 Tomamos nota de tu pedido:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\n¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤\n• *Café Campesino recién colado:* $3.500\n• *Chocolate Caliente Tradicional:* $4.000\n• *Gaseosa helada (Coca-Cola, Colombiana, Manzana):* $4.500\n• *Jugo Natural de Mora:* $6.000\n• *Agua Mineral:* $3.000\n\n_(Indícanos qué bebida deseas agregar, o compártenos tu dirección de entrega si solo deseas los buñuelos)_ 🥟`;
     } else if (!foundAddress) {
-      reply = `¡Perfecto! 🤤 Tenemos anotado:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviártelo calientito a tu casa, por favor compártenos:\n📍 *Dirección exacta de Entrega y Barrio*\n🏢 *Indicaciones de entrega (torre/apto/portería)*`;
+      reply = `¡Perfecto! 🤤 Tenemos anotado:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviártelo calientito a tu casa, por favor compártenos:\n📍 *Dirección exacta de Entrega, Conjunto o Vereda*\n🏢 *Indicaciones de entrega (torre/apto/casa/portería)*`;
     } else {
       reply = `¡Excelente! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
     }
