@@ -327,8 +327,13 @@ function buildGeminiContents(
   const msgs = [...previousMessages];
   const lastMsg = msgs[msgs.length - 1];
 
+  const cleanLastContent = (lastMsg?.content || "")
+    .replace(/^🎤\s*\[Nota de voz(?: transcrita)?\]:\s*"?/i, "")
+    .replace(/"?\s*$/i, "")
+    .trim();
+
   // Si el mensaje actual no fue agregado al historial todavía, lo agregamos
-  if (!lastMsg || lastMsg.role !== "user" || lastMsg.content.trim() !== currentText.trim()) {
+  if (!lastMsg || lastMsg.role !== "user" || cleanLastContent !== currentText.trim()) {
     msgs.push({
       id: "current",
       conversationId: "",
@@ -375,7 +380,10 @@ function buildGeminiContents(
     } else {
       const prevTurn = turns[turns.length - 1];
       if (prevTurn.role === role) {
-        // Si hay 2 turnos consecutivos del mismo rol, los fusionamos
+        // Si el contenido es idéntico (duplicado por sincronización de audio/webhook), no duplicarlo
+        if (prevTurn.parts[0].text.trim() === text.trim()) {
+          continue;
+        }
         prevTurn.parts[0].text += `\n${text}`;
       } else {
         turns.push({ role, parts: [{ text }] });
@@ -400,7 +408,12 @@ function buildOpenAIMessages(
   const msgs = [...previousMessages];
   const lastMsg = msgs[msgs.length - 1];
 
-  if (!lastMsg || lastMsg.role !== "user" || lastMsg.content.trim() !== currentText.trim()) {
+  const cleanLastContent = (lastMsg?.content || "")
+    .replace(/^🎤\s*\[Nota de voz(?: transcrita)?\]:\s*"?/i, "")
+    .replace(/"?\s*$/i, "")
+    .trim();
+
+  if (!lastMsg || lastMsg.role !== "user" || cleanLastContent !== currentText.trim()) {
     msgs.push({
       id: "current",
       conversationId: "",
@@ -437,6 +450,14 @@ function buildOpenAIMessages(
         if (!content) continue;
       }
     }
+
+    if (out.length > 0) {
+      const prev = out[out.length - 1];
+      if (prev.role === role && prev.content.trim() === content.trim()) {
+        continue;
+      }
+    }
+
     out.push({ role, content });
   }
 
@@ -878,7 +899,16 @@ export async function handleSalesMessage(
   if (latestOrder) {
     const orderTime = latestOrder.createdAt || 0;
     const sinceOrder = rawPrevious.filter((m) => m.createdAt > orderTime);
-    previous = sinceOrder;
+    // Solo aislar mensajes si hay mensajes nuevos posteriores Y el pedido anterior
+    // ya fue completado/entregado/cancelado o tiene más de 45 minutos de antigüedad
+    if (
+      sinceOrder.length > 0 &&
+      (Date.now() - orderTime > 45 * 60 * 1000 ||
+        latestOrder.status === "delivered" ||
+        latestOrder.status === "cancelled")
+    ) {
+      previous = sinceOrder;
+    }
   }
   const catalogText = products
     .map((p) => `- ${p.name}: ${formatCop(p.price)} (${p.description || "Deliciosos y frescos"})`)
@@ -947,6 +977,98 @@ export async function handleSalesMessage(
     nameContext = `👤 DATOS DEL CLIENTE: Aún no tenemos el nombre de la persona. Es OBLIGATORIO pedir su nombre en el Paso 4.`;
   }
 
+  // Extraer TODO el contexto acumulado de la conversación del cliente (Memoria Activa)
+  const allUserChatText = [
+    ...previous.filter((m) => m.role === "user").map((m) => m.content),
+    text,
+  ].join("\n");
+
+  const { items: sessionItems } = extractProductsFromText(allUserChatText, products);
+
+  // Extraer salsas mencionadas si eligió caja surtida
+  const lowerUserChat = allUserChatText.toLowerCase();
+  const sessionSalsas: string[] = [];
+  if (lowerUserChat.includes("mora")) sessionSalsas.push("Mora");
+  if (lowerUserChat.includes("arequipe")) sessionSalsas.push("Arequipe");
+  if (lowerUserChat.includes("bocadillo")) sessionSalsas.push("Bocadillo");
+  if (
+    lowerUserChat.includes("suero") ||
+    lowerUserChat.includes("queso") ||
+    lowerUserChat.includes("costeño") ||
+    lowerUserChat.includes("costeno")
+  ) {
+    sessionSalsas.push("Suero Costeño");
+  }
+
+  // Extraer dirección ya mencionada
+  let sessionAddress: string | null = null;
+  for (const m of [...previous].filter((m) => m.role === "user").reverse()) {
+    const addr = extractAddress(m.content);
+    if (addr) {
+      sessionAddress = addr;
+      break;
+    }
+  }
+  if (!sessionAddress) {
+    sessionAddress = extractAddress(text);
+  }
+
+  // Extraer medio de pago ya mencionado
+  let sessionPayment: string | null = null;
+  for (const m of [...previous].filter((m) => m.role === "user").reverse()) {
+    const pay = extractPaymentMethod(m.content);
+    if (pay) {
+      sessionPayment = pay;
+      break;
+    }
+  }
+  if (!sessionPayment) {
+    sessionPayment = extractPaymentMethod(text);
+  }
+
+  let activeMemoryDirective = "";
+  if (sessionItems.length > 0) {
+    const itemsFormatted = sessionItems
+      .map((it) => `• ${it.name} (x${it.quantity}) - ${formatCop(it.unitPrice * it.quantity)}`)
+      .join("\n");
+    const hasSurtida = sessionItems.some((it) => it.sku.includes("S"));
+    const salsasStatus = hasSurtida
+      ? sessionSalsas.length > 0
+        ? `Elegidas: ${sessionSalsas.join(", ")}`
+        : "Pendientes por elegir"
+      : "No aplica (caja tradicional sin salsas)";
+
+    const addressStatus = sessionAddress ? `Anotada: "${sessionAddress}"` : "Aún no suministrada";
+    const nameStatus = knownCustomerName ? `Registrado: "${knownCustomerName}"` : "Aún no suministrado";
+    const paymentStatus = sessionPayment ? `Seleccionado: "${sessionPayment}"` : "Aún no seleccionado";
+
+    let nextStepInstruction = "";
+    if (hasSurtida && sessionSalsas.length === 0) {
+      nextStepInstruction = "👉 El cliente ya eligió su caja surtida pero NO ha dicho las salsas. Pregúntale amablemente qué salsas desea (Mora, Arequipe, Bocadillo, Suero Costeño).";
+    } else if (!sessionAddress || !knownCustomerName) {
+      nextStepInstruction = `👉 Ya eligió productos (${sessionItems.map((i) => i.name).join(", ")}). Ahora pídele amablemente ${!sessionAddress ? "su dirección de entrega en Neiva" : ""} ${!knownCustomerName ? "y su nombre" : ""} para la entrega. ¡PROHIBIDO volver a preguntarle qué caja quiere!`;
+    } else if (!sessionPayment) {
+      nextStepInstruction = `👉 Ya tenemos productos (${sessionItems.map((i) => i.name).join(", ")}), salsas, dirección y nombre. AHORA PASA AL MEDIO DE PAGO: Ofrécele Nequi, Bre-B o Efectivo contra entrega (recordándole que el domicilio es ¡GRATIS!). ¡PROHIBIDO volver a preguntar por productos!`;
+    } else {
+      nextStepInstruction = `👉 ¡YA TENEMOS TODOS LOS DATOS COMPLETOS! Presenta DIRECTAMENTE el Resumen Previo (Paso 6) con las opciones: 1️⃣ Confirmar pedido y 2️⃣ Modificar algún dato.`;
+    }
+
+    activeMemoryDirective = `\n\n🛒 MEMORIA ACTIVA Y ESTADO ACTUAL DEL PEDIDO (¡DATOS YA CONFIRMADOS POR EL CLIENTE!):
+- PRODUCTOS EN EL CARRITO:
+${itemsFormatted}
+- SALSAS: ${salsasStatus}
+- CLIENTE: ${nameStatus}
+- DIRECCIÓN: ${addressStatus}
+- MEDIO DE PAGO: ${paymentStatus}
+
+🚨🚨 REGLA SUPREMA DE MEMORIA Y CONTINUIDAD (¡CERO AMNESIA!):
+- El cliente YA ELIGIÓ sus productos: ${sessionItems.map((i) => i.name).join(", ")}.
+- ❌ PROHIBIDO VOLVER A PREGUNTAR: "¿qué caja te gustaría pedir hoy?", "¿qué se te antoja?", o "parece que no has elegido buñuelos".
+- ❌ NO vuelvas al Paso 1 ni al Paso 2 del menú general.
+${nextStepInstruction}
+`;
+  }
+
   // Detectar si el mensaje anterior del bot fue el resumen de pre-confirmación y el usuario confirma
   const lastAssistantMsgObj = [...previous].reverse().find((m) => m.role === "assistant");
   const lastAssistantText = (lastAssistantMsgObj?.content || "").toLowerCase();
@@ -986,6 +1108,7 @@ Desglosa el carrito completo, subtotal, domicilio GRATIS, total exacto, direcci�
   const systemPrompt = `Eres el asistente virtual y vendedor estrella por WhatsApp de "${settings.name}".
 
   ${nameContext}
+  ${activeMemoryDirective}
   ${confirmationDirective}
 
   ⚡ REGLA DE BREVEDAD ESTRICTA (¡OBLIGATORIA!):

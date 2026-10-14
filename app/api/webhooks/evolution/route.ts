@@ -352,7 +352,6 @@ export async function POST(request: NextRequest) {
               currentText = transcribed.trim();
               console.log("[evolution] Transcripción exitosa:", currentText);
               await updateMessageContent(savedMsg.id, `🎤 [Nota de voz]: "${currentText}"`).catch(() => {});
-              await appendMessage(fromKey, "system", `🎤 [Nota de voz transcrita]: "${currentText}"`).catch(() => {});
             } else {
               console.warn("[evolution] Audio inaudible o no se pudo transcribir");
               const inaudibleReply =
