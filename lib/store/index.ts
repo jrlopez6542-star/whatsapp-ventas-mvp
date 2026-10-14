@@ -77,6 +77,8 @@ export interface OrgSettings {
   estimatedDeliveryTime?: string;
   botEnabled?: string;
   upsellDrinksEnabled?: string;
+  deliveryDriverPhone?: string;
+  deliveryDriverNotifyEnabled?: string;
 }
 
 const DEFAULT_SETTINGS: OrgSettings = {
@@ -98,6 +100,8 @@ const DEFAULT_SETTINGS: OrgSettings = {
   estimatedDeliveryTime: "30 a 45 minutos",
   botEnabled: "true",
   upsellDrinksEnabled: "true",
+  deliveryDriverPhone: "",
+  deliveryDriverNotifyEnabled: "true",
 };
 
 const SEED_PRODUCTS: Product[] = [
@@ -817,6 +821,8 @@ export async function getOrgSettings(): Promise<OrgSettings> {
       estimatedDeliveryTime: r.estimated_delivery_time != null ? String(r.estimated_delivery_time) : DEFAULT_SETTINGS.estimatedDeliveryTime,
       botEnabled: r.bot_enabled != null ? String(r.bot_enabled) : DEFAULT_SETTINGS.botEnabled,
       upsellDrinksEnabled: r.upsell_drinks_enabled != null ? String(r.upsell_drinks_enabled) : DEFAULT_SETTINGS.upsellDrinksEnabled,
+      deliveryDriverPhone: r.delivery_driver_phone != null ? String(r.delivery_driver_phone) : (DEFAULT_SETTINGS.deliveryDriverPhone || ""),
+      deliveryDriverNotifyEnabled: r.delivery_driver_notify_enabled != null ? String(r.delivery_driver_notify_enabled) : (DEFAULT_SETTINGS.deliveryDriverNotifyEnabled || "true"),
     };
     return settings;
   } catch (err) {
@@ -864,6 +870,8 @@ export async function updateOrgSettings(patch: Partial<OrgSettings>): Promise<Or
       if (patch.estimatedDeliveryTime !== undefined) { sets.push("estimated_delivery_time = ?"); args.push(patch.estimatedDeliveryTime); }
       if (patch.botEnabled !== undefined) { sets.push("bot_enabled = ?"); args.push(patch.botEnabled); }
       if (patch.upsellDrinksEnabled !== undefined) { sets.push("upsell_drinks_enabled = ?"); args.push(patch.upsellDrinksEnabled); }
+      if (patch.deliveryDriverPhone !== undefined) { sets.push("delivery_driver_phone = ?"); args.push(patch.deliveryDriverPhone); }
+      if (patch.deliveryDriverNotifyEnabled !== undefined) { sets.push("delivery_driver_notify_enabled = ?"); args.push(patch.deliveryDriverNotifyEnabled); }
 
       args.push(1);
       await client.execute({

@@ -82,6 +82,34 @@ export function OrdersView({
 }) {
   const [selectedOrder, setSelectedOrder] = useState<OrderItemView | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [notifyingDriverId, setNotifyingDriverId] = useState<string | null>(null);
+
+  const handleNotifyDriver = async (order: OrderItemView) => {
+    setNotifyingDriverId(order.id);
+    try {
+      const res = await fetch(`/api/panel/orders/${order.id}/notify-driver`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (data.ok) {
+        alert(`¡Ficha de entrega enviada con éxito al WhatsApp del domiciliario (${data.sentTo})! 🛵💨`);
+      } else if (data.noPhoneConfigured) {
+        if (
+          confirm(
+            "No has configurado el WhatsApp del domiciliario en Ajustes.\n\n¿Deseas abrir WhatsApp para enviárselo manualmente a cualquier contacto?"
+          )
+        ) {
+          window.open(data.waLink, "_blank");
+        }
+      } else {
+        alert("Error al enviar al domiciliario: " + (data.error || "Error desconocido"));
+      }
+    } catch {
+      alert("Error de conexión al notificar al domiciliario.");
+    } finally {
+      setNotifyingDriverId(null);
+    }
+  };
 
   const deleteOrder = async (id: string) => {
     if (!confirm("¿Estás seguro de que quieres eliminar este pedido? Esta acción no se puede deshacer."))
@@ -277,7 +305,18 @@ export function OrdersView({
                       <td className="p-4 text-slate-500 text-xs">
                         {formatOrderDateTime(o.createdAt)}
                       </td>
-                      <td className="p-4 text-right">
+                      <td className="p-4 text-right whitespace-nowrap">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleNotifyDriver(o);
+                          }}
+                          disabled={notifyingDriverId === o.id}
+                          className="text-emerald-400 hover:text-emerald-300 transition p-2 rounded-md hover:bg-emerald-500/10 mr-1 disabled:opacity-50"
+                          title="Enviar ficha de entrega al domiciliario por WhatsApp"
+                        >
+                          <i className="ph-fill ph-moped text-lg"></i>
+                        </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -343,8 +382,8 @@ export function OrdersView({
                 <div>
                   <div className="text-xs text-slate-500 mb-1">ID DEL PEDIDO</div>
                   <div className="font-mono text-[#007aff] font-bold">#{selectedOrder.id}</div>
-                  {selectedOrder.invoiceNumber && (
-                    <div className="mt-2">
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {selectedOrder.invoiceNumber && (
                       <a
                         href={
                           selectedOrder.invoiceUrl ||
@@ -352,14 +391,28 @@ export function OrdersView({
                         }
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition cursor-pointer"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25 transition cursor-pointer"
                       >
                         <i className="ph-fill ph-receipt text-sm"></i>
-                        <span>Factura Oficial #{selectedOrder.invoiceNumber}</span>
+                        <span>Factura #{selectedOrder.invoiceNumber}</span>
                         <i className="ph ph-arrow-square-out text-xs"></i>
                       </a>
-                    </div>
-                  )}
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleNotifyDriver(selectedOrder)}
+                      disabled={notifyingDriverId === selectedOrder.id}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-blue-500/15 text-blue-400 border border-blue-500/30 hover:bg-blue-500/25 transition cursor-pointer disabled:opacity-50"
+                      title="Enviar ficha de entrega con dirección y cobro al domiciliario por WhatsApp"
+                    >
+                      <i className="ph-fill ph-moped text-sm"></i>
+                      <span>
+                        {notifyingDriverId === selectedOrder.id
+                          ? "Enviando..."
+                          : "🛵 Enviar al Domiciliario"}
+                      </span>
+                    </button>
+                  </div>
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-slate-500 mb-1">FECHA Y HORA</div>

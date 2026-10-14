@@ -12,6 +12,7 @@ import {
   type Product,
 } from "@/lib/store";
 import { createInvoiceInContabilidad } from "@/lib/contabilidad";
+import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 
 export interface SalesMessageResult {
   reply: string;
@@ -631,6 +632,11 @@ async function tryExtractAndRegisterOrder(
     console.error("[sales-agent] Error generando factura automática:", invErr);
   }
 
+  // Notificar automáticamente al domiciliario asignado por WhatsApp
+  notifyDeliveryDriver(order).catch((dErr) => {
+    console.warn("[sales-agent] Error notificando al domiciliario:", dErr);
+  });
+
   return order;
 }
 
@@ -843,7 +849,10 @@ export async function handleSalesMessage(
        * Veredas, fincas, haciendas, corregimientos, sectores rurales o vías (ej: "Vereda La Balsa sector Los Molinos", "Vereda El Rosal finca La Florida", "Vereda tal", "Finca El Recreo vereda Chimbi", "Vda Centro", "Km 5 Vía Suba").
        * Nomenclatura urbana estándar (Calle, Carrera, Diagonal, Transversal, Avenida, etc.).
        * Manzanas y lotes (ej: "Mz 4 Casa 12 Barrio El Progreso").
-     - ⚠️ REGLA DE ORO DE DIRECCIÓN: Si el cliente YA dio su conjunto, vereda, finca o dirección en cualquier mensaje previo o actual (ej: "conjunto puertas del sol", "vereda la balsa"), ¡NO VUELVAS A PREGUNTAR LA DIRECCIÓN! Tómala como válida de inmediato y continúa con el paso 5 (medio de pago).
+       * Indicaciones o referencias libres (ej: "frente a la escuela", "casa verde de rejas negras", "al lado de la droguería", "sobre la vía principal").
+     - 🚨 REGLA ESTRICTA (CERO BUCLES DE DIRECCIÓN):
+       Si tú (el bot) ya pediste la dirección en el mensaje anterior y el cliente responde indicando su ubicación (incluso si no tiene nomenclatura tradicional, o dice un conjunto, vereda o referencia):
+       ¡ACÉPTALO DE INMEDIATO como dirección de entrega! NUNCA vuelvas a enviar el mensaje pidiendo la dirección nuevamente. Agradece la indicación y avanza DIRECTAMENTE al paso 5 (medio de pago).
   5. MEDIO DE PAGO Y COSTO DE DOMICILIO:
      - Informa sobre el domicilio: Tarifa fija de ${formatCop(deliveryFee)} (o ¡GRATIS si el pedido supera ${formatCop(freeThreshold)}!).
      - Opciones de pago:
@@ -1044,9 +1053,6 @@ export async function handleSalesMessage(
 
   // IMPORTANTE: Extraer productos e intenciones ÚNICAMENTE de los mensajes del usuario
   const userChatText = [...previous.filter((m) => m.role === "user").map((m) => m.content), text].join("\n");
-  const foundAddress = extractAddress(text) || (previous.length > 0 ? extractAddress(userChatText) : null);
-  const foundPayment = extractPaymentMethod(text) || (previous.length > 0 ? extractPaymentMethod(userChatText) : null);
-  const { items: extractedItems, total: extractedTotal } = extractProductsFromText(userChatText, products);
 
   const isGreeting =
     lower === "hola" ||
@@ -1070,6 +1076,42 @@ export async function handleSalesMessage(
     lower.includes("algo de tomar") ||
     lower.includes("qué tienen para tomar") ||
     lower.includes("que tienen para tomar");
+
+  let foundAddress = extractAddress(text) || (previous.length > 0 ? extractAddress(userChatText) : null);
+
+  // PREVENCIÓN DE BUCLES DE DIRECCIÓN:
+  // Si no coincidió con una regla regex estricta, verificar si el bot acababa de pedir la dirección en el mensaje anterior.
+  // En ese caso, si el usuario respondió con un texto de ubicación (no saludo, no cancelar, no pago directo), se toma como dirección.
+  if (!foundAddress) {
+    const lastAssistantMsg = previous.filter((m) => m.role === "assistant").pop()?.content || "";
+    const assistantJustAskedAddress =
+      lastAssistantMsg.toLowerCase().includes("dirección") ||
+      lastAssistantMsg.toLowerCase().includes("direccion") ||
+      lastAssistantMsg.toLowerCase().includes("conjunto o vereda") ||
+      lastAssistantMsg.toLowerCase().includes("donde te lo enviamos") ||
+      lastAssistantMsg.toLowerCase().includes("dónde te lo enviamos") ||
+      lastAssistantMsg.toLowerCase().includes("para enviártelo") ||
+      lastAssistantMsg.toLowerCase().includes("para enviartelo");
+
+    if (assistantJustAskedAddress) {
+      const cand = cleanAddressCandidate(text);
+      if (
+        cand &&
+        !isGreeting &&
+        !isAskingCatalog &&
+        !isAskingDrinks &&
+        !lower.includes("cancelar") &&
+        !lower.includes("asesor") &&
+        !lower.includes("humano") &&
+        !extractPaymentMethod(text)
+      ) {
+        foundAddress = cand;
+      }
+    }
+  }
+
+  const foundPayment = extractPaymentMethod(text) || (previous.length > 0 ? extractPaymentMethod(userChatText) : null);
+  const { items: extractedItems, total: extractedTotal } = extractProductsFromText(userChatText, products);
 
   if (isGreeting || isNewOrderIntent) {
     const items = products
@@ -1146,6 +1188,11 @@ export async function handleSalesMessage(
     } catch (invErr) {
       console.warn("[sales-agent] Error generando factura en fallback:", invErr);
     }
+
+    // Notificar automáticamente al domiciliario asignado por WhatsApp
+    notifyDeliveryDriver(order).catch((dErr) => {
+      console.warn("[sales-agent] Error notificando al domiciliario en fallback:", dErr);
+    });
 
     const itemsListText = finalItems.map((it) => `- ${it.name} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
 

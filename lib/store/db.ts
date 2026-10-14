@@ -165,6 +165,8 @@ export async function ensureTursoReady(): Promise<void> {
       "estimated_delivery_time TEXT",
       "bot_enabled TEXT DEFAULT 'true'",
       "upsell_drinks_enabled TEXT DEFAULT 'true'",
+      "delivery_driver_phone TEXT",
+      "delivery_driver_notify_enabled TEXT DEFAULT 'true'",
     ];
     for (const col of alterOrgSettings) {
       try {

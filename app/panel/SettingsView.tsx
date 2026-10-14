@@ -13,6 +13,8 @@ export function SettingsView() {
     deliveryFee: "",
     freeDeliveryThreshold: "",
     estimatedDeliveryTime: "",
+    deliveryDriverPhone: "",
+    deliveryDriverNotifyEnabled: "true",
   });
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -71,6 +73,8 @@ export function SettingsView() {
             deliveryFee: d.settings.deliveryFee || "",
             freeDeliveryThreshold: d.settings.freeDeliveryThreshold || "",
             estimatedDeliveryTime: d.settings.estimatedDeliveryTime || "",
+            deliveryDriverPhone: d.settings.deliveryDriverPhone || "",
+            deliveryDriverNotifyEnabled: d.settings.deliveryDriverNotifyEnabled !== "false" ? "true" : "false",
           });
         }
       })
@@ -283,6 +287,53 @@ export function SettingsView() {
                     className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-3 py-2 text-sm outline-none"
                     placeholder="Ej. 30 a 45 minutos"
                   />
+                </div>
+              </div>
+            </div>
+
+            {/* SECCIÓN DOMICILIARIO Y ENVÍOS */}
+            <div className="pt-4 border-t border-[#1f2c34]">
+              <h3 className="text-sm font-semibold text-slate-200 mb-1 flex items-center gap-2">
+                <i className="ph-fill ph-moped text-emerald-400 text-lg"></i> Notificaciones al Domiciliario por WhatsApp
+              </h3>
+              <p className="text-xs text-slate-400 mb-4">
+                El bot puede enviar automáticamente por WhatsApp los datos completos de cada nuevo pedido (dirección, cliente, teléfono, productos, total y cobro en efectivo con cambio) directamente al número del domiciliario.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 bg-[#162128] border border-[#2a3942] p-4 rounded-xl">
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1 flex items-center gap-1.5">
+                    <i className="ph-fill ph-whatsapp-logo text-emerald-400"></i> WhatsApp del Domiciliario
+                  </label>
+                  <input
+                    type="text"
+                    value={settings.deliveryDriverPhone}
+                    onChange={(e) => setSettings({ ...settings, deliveryDriverPhone: e.target.value })}
+                    className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 text-white rounded-lg px-3 py-2 text-sm outline-none"
+                    placeholder="Ej. 3201234567 o 573201234567"
+                  />
+                  <span className="text-[11px] text-slate-500 mt-1 block">
+                    Número de WhatsApp donde el repartidor recibirá la ficha de cada pedido.
+                  </span>
+                </div>
+                <div className="flex flex-col justify-center">
+                  <label className="block text-xs font-medium text-slate-300 mb-2">Envío Automático</label>
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={settings.deliveryDriverNotifyEnabled !== "false"}
+                      onChange={(e) =>
+                        setSettings({
+                          ...settings,
+                          deliveryDriverNotifyEnabled: e.target.checked ? "true" : "false",
+                        })
+                      }
+                      className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 bg-[#0b141a] border-[#2a3942]"
+                    />
+                    <span className="text-xs text-slate-300 font-medium">
+                      Notificar al domiciliario automáticamente apenas se confirme un nuevo pedido
+                    </span>
+                  </label>
                 </div>
               </div>
             </div>
