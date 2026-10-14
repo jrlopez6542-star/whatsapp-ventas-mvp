@@ -15,6 +15,7 @@ import { sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
 import { claimWebhookEvent } from "@/lib/webhook-dedupe";
 import { handleSalesMessage } from "@/lib/agent/sales-agent";
 import { verifyReceiptWithGemini } from "@/lib/agent/receipt-verifier";
+import { logSystemEvent } from "@/lib/logger";
 import {
   appendMessage,
   getConversation,
@@ -94,6 +95,12 @@ export async function POST(request: NextRequest) {
       }
 
       console.log("[evolution call received]", incomingCall);
+      logSystemEvent(
+        "warn",
+        "whatsapp",
+        `Llamada entrante (${incomingCall.isVideo ? "videollamada" : "voz"}) rechazada automáticamente`,
+        { from: incomingCall.from, replyJid: incomingCall.replyJid }
+      );
       // Rechazar llamada en Evolution API de inmediato
       await rejectEvolutionCall(incomingCall.id, incomingCall.replyJid).catch(() => {});
 
@@ -355,6 +362,13 @@ export async function POST(request: NextRequest) {
                 ? `\n🧾 *Aprobación / Comprobante:* #${verification.reference}`
                 : "";
 
+              logSystemEvent(
+                "success",
+                "payment",
+                `Comprobante verificado con éxito: ${bankName} ${amountFormatted}`,
+                { ref: verification.reference, from: fromKey }
+              );
+
               const receiptReply = `¡Comprobante de ${bankName} verificado con éxito${amountFormatted ? ` por ${amountFormatted}` : ""}! 🎉${refPart}\n\nTu pedido ya entró a preparación en cocina 👨‍🍳🔥 En unos momentos tus buñuelos estarán doraditos, crujientes y listos para salir a domicilio. ¡Muchas gracias!`;
 
               await appendMessage(fromKey, "assistant", receiptReply);
@@ -410,6 +424,12 @@ export async function POST(request: NextRequest) {
 
         if (mode === "human_escalated") {
           await appendMessage(fromKey, "system", "⚠️ Regla activada: Escalado a agente humano").catch(() => {});
+          logSystemEvent(
+            "warn",
+            "agent",
+            `Regla activada: Escalado a agente humano (${effectiveName || fromKey})`,
+            { from: fromKey, customerName: effectiveName }
+          );
         }
 
         const latestAfterSales = await getConversation(fromKey);

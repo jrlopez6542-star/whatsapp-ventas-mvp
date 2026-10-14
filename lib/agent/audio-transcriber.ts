@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { logSystemEvent } from "@/lib/logger";
 
 const WHISPER_PROMPT =
   "Buñuelandia: Buñuelos de queso tradicionales, buñuelos rellenos de arequipe, bocadillo, nutella, mora. " +
@@ -7,8 +8,8 @@ const WHISPER_PROMPT =
 
 /**
  * Transcribe un archivo o nota de voz de WhatsApp enviado en Base64.
- * 1. Opción Primaria: OpenAI Whisper-1 vía REST FormData (100% compatible con Vercel Serverless, ultra-rápido y máxima fidelidad).
- * 2. Opción Fallback: Google Gemini Multimodal (@google/genai).
+ * 1. Opción Primaria: Google Gemini Flash-Lite (@google/genai) activo y sin 503.
+ * 2. Opción Whisper-1: OpenAI Whisper-1 vía REST si hay cuota disponible.
  */
 export async function transcribeWhatsAppAudio(
   base64Audio: string,
@@ -44,73 +45,21 @@ export async function transcribeWhatsAppAudio(
     return null;
   }
 
-  console.log("[audio-transcriber] Audio listo para transcribir:", {
-    bytes: audioBuffer.length,
-    mimeType: cleanMime,
-  });
+  logSystemEvent("info", "voice", `Nota de voz recibida (${audioBuffer.length} bytes, ${cleanMime})`);
 
-  // 3. INTENTO PRIMARIO: OPENAI WHISPER-1 VÍA NATIVE REST FORMDATA
-  const openaiKey = process.env.OPENAI_API_KEY?.trim();
-  if (openaiKey) {
-    try {
-      const ext =
-        cleanMime.includes("mp4") || cleanMime.includes("m4a")
-          ? "m4a"
-          : cleanMime.includes("mp3")
-          ? "mp3"
-          : cleanMime.includes("wav")
-          ? "wav"
-          : "ogg";
-
-      const uint8 = new Uint8Array(audioBuffer);
-      const audioBlob = new Blob([uint8], { type: cleanMime });
-
-      const formData = new FormData();
-      formData.append("file", audioBlob, `audio.${ext}`);
-      formData.append("model", "whisper-1");
-      formData.append("language", "es");
-      formData.append("prompt", WHISPER_PROMPT);
-      formData.append("temperature", "0");
-
-      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${openaiKey}`,
-        },
-        body: formData,
-      });
-
-      if (res.ok) {
-        const data = (await res.json()) as { text?: string };
-        const text = data?.text?.trim();
-        if (text) {
-          const cleaned = text.replace(/^["'«“]+|["'»”]+$/g, "").trim();
-          console.log("[audio-transcriber] Whisper-1 transcribió con éxito:", cleaned);
-          return cleaned;
-        }
-      } else {
-        const errText = await res.text().catch(() => "");
-        console.warn(`[audio-transcriber] Whisper HTTP ${res.status}:`, errText);
-      }
-    } catch (whisperErr: any) {
-      console.warn("[audio-transcriber] Error en llamada REST a Whisper:", whisperErr?.message || whisperErr);
-    }
-  }
-
-  // 4. FALLBACK: GOOGLE GEMINI MULTIMODAL
+  // 3. INTENTO CON GEMINI FLASH-LITE (Modelos confirmados y activos sin 503)
   const geminiKey = process.env.GEMINI_API_KEY?.trim();
   if (geminiKey) {
     try {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
       const prompt =
         "Transcribe con total exactitud este audio de un cliente en Colombia haciendo un pedido en Buñuelandia. " +
-        "Devuelve ÚNICAMENTE las palabras dichas por el cliente, sin comillas, sin introducciones ni comentarios. " +
+        "Devuelve ÚNICAMENTE las palabras dichas por el cliente en español, sin comillas, sin introducciones ni comentarios. " +
         "Si el audio es completamente inaudible o silencio, responde exactamente: VACIO";
 
       const candidateModels = [
-        "gemini-2.5-flash",
-        "gemini-flash-latest",
-        "gemini-3.5-flash",
+        "gemini-flash-lite-latest",
+        "gemini-3.5-flash-lite",
       ];
 
       for (const model of candidateModels) {
@@ -147,9 +96,11 @@ export async function transcribeWhatsAppAudio(
           if (resultText && !lower.includes("vacio") && !lower.includes("vacío")) {
             const cleaned = resultText.replace(/^["'«“]+|["'»”]+$/g, "").trim();
             console.log(`[audio-transcriber] Gemini (${model}) transcribió con éxito:`, cleaned);
+            logSystemEvent("success", "voice", `Audio transcrito con éxito (${model}): "${cleaned}"`);
             return cleaned;
           }
           if (lower === "vacio" || lower === "vacío") {
+            logSystemEvent("warn", "voice", "Audio inaudible o en silencio");
             return null;
           }
         } catch (modelErr: any) {
@@ -161,5 +112,56 @@ export async function transcribeWhatsAppAudio(
     }
   }
 
+  // 4. FALLBACK CON OPENAI WHISPER-1 (Si tiene créditos disponibles)
+  const openaiKey = process.env.OPENAI_API_KEY?.trim();
+  if (openaiKey) {
+    try {
+      const ext =
+        cleanMime.includes("mp4") || cleanMime.includes("m4a")
+          ? "m4a"
+          : cleanMime.includes("mp3")
+          ? "mp3"
+          : cleanMime.includes("wav")
+          ? "wav"
+          : "ogg";
+
+      const uint8 = new Uint8Array(audioBuffer);
+      const audioBlob = new Blob([uint8], { type: cleanMime });
+
+      const formData = new FormData();
+      formData.append("file", audioBlob, `audio.${ext}`);
+      formData.append("model", "whisper-1");
+      formData.append("language", "es");
+      formData.append("prompt", WHISPER_PROMPT);
+      formData.append("temperature", "0");
+
+      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: formData,
+      });
+
+      if (res.ok) {
+        const data = (await res.json()) as { text?: string };
+        const text = data?.text?.trim();
+        if (text) {
+          const cleaned = text.replace(/^["'«“]+|["'»”]+$/g, "").trim();
+          console.log("[audio-transcriber] Whisper-1 transcribió con éxito:", cleaned);
+          logSystemEvent("success", "voice", `Audio transcrito con éxito (Whisper-1): "${cleaned}"`);
+          return cleaned;
+        }
+      } else {
+        const errText = await res.text().catch(() => "");
+        console.warn(`[audio-transcriber] Whisper HTTP ${res.status}:`, errText);
+        logSystemEvent("warn", "voice", `Whisper HTTP ${res.status}: ${errText.slice(0, 100)}`);
+      }
+    } catch (whisperErr: any) {
+      console.warn("[audio-transcriber] Error en llamada REST a Whisper:", whisperErr?.message || whisperErr);
+    }
+  }
+
+  logSystemEvent("warn", "voice", "No se pudo transcribir la nota de voz");
   return null;
 }

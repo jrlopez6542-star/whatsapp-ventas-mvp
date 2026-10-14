@@ -25,6 +25,41 @@ export function SettingsView() {
   const [refreshSecs, setRefreshSecs] = useState(5);
   const [savedRefreshMsg, setSavedRefreshMsg] = useState(false);
 
+  // System logs state (discreet accordion)
+  const [showLogs, setShowLogs] = useState(false);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
+  const [logFilter, setLogFilter] = useState<"all" | "voice" | "whatsapp" | "billing" | "error">("all");
+  const [logSearch, setLogSearch] = useState("");
+
+  const loadLogs = async () => {
+    setLoadingLogs(true);
+    try {
+      const res = await fetch("/api/panel/logs?limit=150");
+      const d = await res.json();
+      if (d.ok && Array.isArray(d.logs)) {
+        setLogs(d.logs);
+      }
+    } catch {}
+    finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  const handleClearLogs = async () => {
+    if (!confirm("¿Deseas limpiar todo el registro de logs del sistema?")) return;
+    try {
+      await fetch("/api/panel/logs", { method: "DELETE" });
+      setLogs([]);
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (showLogs) {
+      loadLogs();
+    }
+  }, [showLogs]);
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       const savedAuto = localStorage.getItem("crm_auto_refresh");
@@ -492,6 +527,158 @@ export function SettingsView() {
               <i className="ph-fill ph-package text-blue-400 text-lg"></i> Simular Pedido Terminado (Test AI)
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* SECCIÓN DISCRETA DE LOGS Y AUDITORÍA DEL SISTEMA */}
+      <div className="bg-[#121b22] border border-[#1f2c34] rounded-xl overflow-hidden max-w-2xl mt-8">
+        <div className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <i className="ph-fill ph-terminal-window text-slate-400"></i> Registro de Actividad y Logs
+              </h2>
+              <p className="text-xs text-slate-400 mt-1">
+                Auditoría en vivo de notas de voz, respuestas de IA, llamadas y comprobantes.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowLogs(!showLogs)}
+              className="text-xs bg-[#202c33] hover:bg-[#2a3942] text-slate-200 px-3.5 py-2 rounded-lg border border-[#2a3942] transition font-medium flex items-center gap-1.5 shrink-0"
+            >
+              <i className={`ph-bold ${showLogs ? 'ph-caret-up' : 'ph-caret-down'}`}></i>
+              {showLogs ? "Ocultar Logs" : "Ver Logs"}
+            </button>
+          </div>
+
+          {showLogs && (
+            <div className="mt-5 pt-5 border-t border-[#1f2c34] space-y-4">
+              {/* Barra de herramientas de logs */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {(["all", "voice", "whatsapp", "billing", "error"] as const).map((cat) => {
+                    const labels: Record<string, string> = {
+                      all: "Todos",
+                      voice: "Notas de Voz",
+                      whatsapp: "WhatsApp",
+                      billing: "Facturación",
+                      error: "Errores",
+                    };
+                    return (
+                      <button
+                        key={cat}
+                        onClick={() => setLogFilter(cat)}
+                        className={`text-[11px] px-2.5 py-1 rounded-md font-medium transition ${
+                          logFilter === cat
+                            ? "bg-[#007aff] text-white"
+                            : "bg-[#202c33] text-slate-400 hover:text-white"
+                        }`}
+                      >
+                        {labels[cat]}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={loadLogs}
+                    disabled={loadingLogs}
+                    className="text-xs bg-[#202c33] hover:bg-[#2a3942] text-slate-300 hover:text-white px-2.5 py-1.5 rounded-md border border-[#2a3942] transition flex items-center gap-1"
+                    title="Actualizar logs"
+                  >
+                    <i className={`ph-bold ph-arrows-clockwise ${loadingLogs ? 'animate-spin' : ''}`}></i>
+                    Refrescar
+                  </button>
+                  <button
+                    onClick={handleClearLogs}
+                    className="text-xs bg-red-500/10 hover:bg-red-500/20 text-red-400 px-2.5 py-1.5 rounded-md border border-red-500/20 transition flex items-center gap-1"
+                    title="Limpiar registro"
+                  >
+                    <i className="ph-bold ph-trash"></i>
+                    Limpiar
+                  </button>
+                </div>
+              </div>
+
+              {/* Buscador de logs */}
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Buscar en logs (ej: whisper, audio, error, número)..."
+                  value={logSearch}
+                  onChange={(e) => setLogSearch(e.target.value)}
+                  className="w-full bg-[#0b141a] text-white text-xs px-3 py-2 pl-8 rounded-lg border border-[#2a3942] focus:border-[#007aff] outline-none"
+                />
+                <i className="ph-bold ph-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+              </div>
+
+              {/* Visor de terminal de logs */}
+              <div className="bg-[#0b141a] border border-[#2a3942]/60 rounded-lg p-3 max-h-[380px] overflow-y-auto font-mono text-[11px] space-y-2">
+                {loadingLogs && logs.length === 0 ? (
+                  <div className="text-slate-500 text-center py-6">Cargando registros del sistema...</div>
+                ) : logs.length === 0 ? (
+                  <div className="text-slate-500 text-center py-6">No hay registros de eventos aún.</div>
+                ) : (
+                  (() => {
+                    const filtered = logs.filter((log) => {
+                      if (logFilter === "voice" && log.module !== "voice") return false;
+                      if (logFilter === "whatsapp" && log.module !== "whatsapp") return false;
+                      if (logFilter === "billing" && log.module !== "billing") return false;
+                      if (logFilter === "error" && log.level !== "error") return false;
+                      if (logSearch) {
+                        const q = logSearch.toLowerCase();
+                        return (
+                          log.message?.toLowerCase().includes(q) ||
+                          log.details?.toLowerCase().includes(q) ||
+                          log.module?.toLowerCase().includes(q)
+                        );
+                      }
+                      return true;
+                    });
+
+                    if (filtered.length === 0) {
+                      return <div className="text-slate-500 text-center py-4">No hay eventos que coincidan con el filtro.</div>;
+                    }
+
+                    return filtered.map((log) => {
+                      const timeStr = new Date(log.createdAt).toLocaleTimeString("es-CO", { hour12: false });
+                      const levelBg =
+                        log.level === "error"
+                          ? "text-red-400 bg-red-500/10 border-red-500/30"
+                          : log.level === "warn"
+                          ? "text-amber-400 bg-amber-500/10 border-amber-500/30"
+                          : log.level === "success"
+                          ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30"
+                          : "text-blue-400 bg-blue-500/10 border-blue-500/30";
+
+                      return (
+                        <div key={log.id} className="p-2 rounded bg-[#121b22] border border-[#1f2c34] hover:border-[#2a3942] transition">
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-slate-500 text-[10px]">{timeStr}</span>
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] uppercase font-bold border ${levelBg}`}>
+                                {log.level}
+                              </span>
+                              <span className="text-slate-400 text-[10px] bg-[#1a2730] px-1.5 py-0.5 rounded font-semibold">
+                                {log.module}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-slate-200 break-words leading-relaxed">{log.message}</div>
+                          {log.details && (
+                            <pre className="mt-1 p-1.5 bg-[#080d11] rounded text-[10px] text-slate-400 overflow-x-auto whitespace-pre-wrap">
+                              {log.details}
+                            </pre>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

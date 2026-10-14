@@ -91,6 +91,14 @@ export async function ensureTursoReady(): Promise<void> {
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS system_logs (
+          id TEXT PRIMARY KEY,
+          level TEXT NOT NULL,
+          module TEXT NOT NULL,
+          message TEXT NOT NULL,
+          details TEXT,
+          created_at INTEGER NOT NULL
+        )`,
       ],
       "write"
     );

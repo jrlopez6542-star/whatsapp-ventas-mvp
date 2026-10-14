@@ -43,7 +43,7 @@ Debes responder ÚNICAMENTE en formato JSON con la siguiente estructura:
   "summary": "Breve explicación en español de lo que se observó en la imagen"
 }`;
 
-    const candidateModels = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-2.5-flash"];
+    const candidateModels = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-flash-latest"];
 
     for (const model of candidateModels) {
       try {

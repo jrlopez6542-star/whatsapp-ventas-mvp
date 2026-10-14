@@ -1,5 +1,6 @@
 import { getOrgSettings, type Order } from "@/lib/store";
 import { sendOutboundWhatsApp } from "@/lib/whatsapp-send";
+import { logSystemEvent } from "@/lib/logger";
 
 function formatCop(amount: number): string {
   return new Intl.NumberFormat("es-CO", {
@@ -96,12 +97,19 @@ export async function notifyDeliveryDriver(
     const res = await sendOutboundWhatsApp(driverPhone, message);
     if (!res.ok) {
       console.warn("[delivery-driver] Error enviando WhatsApp al domiciliario:", res.error);
+      logSystemEvent("warn", "driver", `Error enviando WhatsApp al domiciliario (${driverPhone}): ${res.error}`);
       return { ok: false, error: res.error, sentTo: driverPhone, message };
     }
     console.log("[delivery-driver] Ficha enviada exitosamente al domiciliario:", driverPhone);
+    logSystemEvent("success", "driver", `Ficha de pedido #${order.id.slice(0, 8)} enviada al domiciliario (${driverPhone})`, {
+      orderId: order.id,
+      total: order.total,
+      address: order.deliveryAddress,
+    });
     return { ok: true, sentTo: driverPhone, message };
   } catch (err) {
     console.error("[delivery-driver] Excepción al notificar al domiciliario:", err);
+    logSystemEvent("error", "driver", `Excepción al notificar al domiciliario: ${String(err)}`);
     return { ok: false, error: String(err), sentTo: driverPhone, message };
   }
 }
