@@ -9,6 +9,7 @@ import {
   setConversationStatus,
   setConversationCustomerName,
   updateOrderInvoice,
+  updateOrderAddress,
   type Message,
   type Product,
 } from "@/lib/store";
@@ -890,6 +891,66 @@ export async function handleSalesMessage(
     lower.includes("conjunto") ||
     lower.includes("barrio");
 
+  // --- MANEJO DE CAMBIO DE DIRECCIÓN PARA PEDIDO ACTIVO ---
+  if (hasActiveOrder) {
+    const isAskingToChangeAddress =
+      (lower.includes("cambiar") && (lower.includes("direcc") || lower.includes("ubica") || lower.includes("lugar"))) ||
+      lower.includes("cambio de direcc") ||
+      lower.includes("cambiar la direcc") ||
+      lower.includes("corregir direcc") ||
+      lower.includes("otra direcc") ||
+      lower.includes("nueva direcc") ||
+      lower.includes("dirección equivocada") ||
+      lower.includes("direccion equivocada") ||
+      lower.includes("la dirección que di") ||
+      lower.includes("la direccion que di");
+
+    const directAddress =
+      extractAddress(text) ||
+      (lower.startsWith("dirección ") || lower.startsWith("direccion ") || lower.startsWith("nueva dirección ") || lower.startsWith("nueva direccion ")
+        ? cleanAddressCandidate(text.replace(/^(?:nueva\s+)?direcci[oó]n:?\s*/i, ""))
+        : null);
+
+    // Revisar si en el mensaje anterior el bot preguntó por la nueva dirección
+    const rawPrev = await getMessages(conversationKey);
+    const lastAsst = [...rawPrev].reverse().find((m) => m.role === "assistant")?.content.toLowerCase() || "";
+    const wasAskedNewAddress =
+      lastAsst.includes("nueva dirección") ||
+      lastAsst.includes("nueva direccion") ||
+      lastAsst.includes("a qué dirección deseas que enviemos") ||
+      lastAsst.includes("a que direccion deseas que enviemos") ||
+      lastAsst.includes("indícanosla aquí para actualizarla");
+
+    if (wasAskedNewAddress && (directAddress || text.trim().length >= 4)) {
+      const finalAddress = directAddress || cleanAddressCandidate(text) || text.trim();
+      await updateOrderAddress(latestOrder.id, finalAddress);
+      logSystemEvent("info", "agent", `Dirección de pedido #${latestOrder.id.slice(0, 8)} actualizada a ${finalAddress}`, {
+        orderId: latestOrder.id,
+        newAddress: finalAddress,
+      });
+      const reply = `¡Listo! ✅ Hemos actualizado con éxito la dirección de entrega de tu pedido *#${latestOrder.id.slice(0, 8)}* a:\n📍 *${finalAddress}*\n\n¡En cocina y con el domiciliario ya tienen tu nueva dirección! 🛵🥟🔥`;
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "keyword" };
+    }
+
+    if (isAskingToChangeAddress) {
+      if (directAddress) {
+        await updateOrderAddress(latestOrder.id, directAddress);
+        logSystemEvent("info", "agent", `Dirección de pedido #${latestOrder.id.slice(0, 8)} actualizada a ${directAddress}`, {
+          orderId: latestOrder.id,
+          newAddress: directAddress,
+        });
+        const reply = `¡Listo! ✅ Hemos actualizado con éxito la dirección de entrega de tu pedido *#${latestOrder.id.slice(0, 8)}* a:\n📍 *${directAddress}*\n\n¡En cocina y con el domiciliario ya tienen tu nueva dirección! 🛵🥟🔥`;
+        await appendMessage(conversationKey, "assistant", reply);
+        return { reply, mode: "keyword" };
+      }
+
+      const reply = `¡Con mucho gusto! ✍️📍 ¿A qué nueva dirección deseas que enviemos tu pedido *#${latestOrder.id.slice(0, 8)}*? Indícanosla aquí para actualizarla de inmediato. 🛵`;
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "keyword" };
+    }
+  }
+
   if (hasActiveOrder && !isOrderingNewItems && !isModifyingOrPayingActiveOrder) {
     const statusText =
       latestOrder.status === "delivering"
@@ -940,9 +1001,19 @@ export async function handleSalesMessage(
     knownCustomerName = latestOrder.customerName.trim();
   }
 
-  // Si no está en BD, buscar en los mensajes del usuario de esta sesión (incluyendo el actual `text`)
+  // Si no está en BD, buscar en los mensajes del usuario de esta sesión (incluyendo transcripciones de voz y el actual `text`)
   if (!knownCustomerName) {
-    const allUserTexts = [...previous.filter((m) => m.role === "user").map((m) => m.content), text];
+    const voiceTextsForName = previous
+      .filter((m) => m.role === "system" && m.content.includes("[Nota de voz transcrita]"))
+      .map((m) => {
+        const match = m.content.match(/\[Nota de voz transcrita\][^"]*"([^"]+)"/);
+        return match ? match[1] : m.content.replace(/🎤.*?\]:\s*/g, "").replace(/"/g, "");
+      });
+    const allUserTexts = [
+      ...previous.filter((m) => m.role === "user").map((m) => m.content),
+      ...voiceTextsForName,
+      text,
+    ];
     for (const uText of allUserTexts) {
       const lines = uText.split(/[\r\n]+/);
       for (const l of lines) {
@@ -991,8 +1062,18 @@ export async function handleSalesMessage(
   }
 
   // Extraer TODO el contexto acumulado de la conversación del cliente (Memoria Activa)
+  // Incluye transcripciones de notas de voz (mensajes system con 🎤 [Nota de voz transcrita])
+  const voiceTranscriptions = previous
+    .filter((m) => m.role === "system" && m.content.includes("[Nota de voz transcrita]"))
+    .map((m) => {
+      // Extraer el texto entre comillas: 🎤 [Nota de voz transcrita]: "texto aquí"
+      const match = m.content.match(/\[Nota de voz transcrita\][^"]*"([^"]+)"/);
+      return match ? match[1] : m.content.replace(/🎤.*?\]:\s*/g, "").replace(/"/g, "");
+    });
+
   const allUserChatText = [
     ...previous.filter((m) => m.role === "user").map((m) => m.content),
+    ...voiceTranscriptions,
     text,
   ].join("\n");
 
@@ -1013,9 +1094,13 @@ export async function handleSalesMessage(
     sessionSalsas.push("Suero Costeño");
   }
 
-  // Extraer dirección ya mencionada
+  // Extraer dirección ya mencionada (incluyendo transcripciones de voz)
   let sessionAddress: string | null = null;
-  for (const m of [...previous].filter((m) => m.role === "user").reverse()) {
+  const allUserAndVoiceMsgs = [
+    ...previous.filter((m) => m.role === "user"),
+    ...voiceTranscriptions.map((t) => ({ role: "user" as const, content: t, id: "", conversationId: "", createdAt: 0 })),
+  ];
+  for (const m of [...allUserAndVoiceMsgs].reverse()) {
     const addr = extractAddress(m.content);
     if (addr) {
       sessionAddress = addr;
@@ -1026,9 +1111,9 @@ export async function handleSalesMessage(
     sessionAddress = extractAddress(text);
   }
 
-  // Extraer medio de pago ya mencionado
+  // Extraer medio de pago ya mencionado (incluyendo transcripciones de voz)
   let sessionPayment: string | null = null;
-  for (const m of [...previous].filter((m) => m.role === "user").reverse()) {
+  for (const m of [...allUserAndVoiceMsgs].reverse()) {
     const pay = extractPaymentMethod(m.content);
     if (pay) {
       sessionPayment = pay;

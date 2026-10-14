@@ -57,9 +57,16 @@ export async function getStore(): Promise<IStore> {
       try {
         await ensureTursoReady();
         const client = getTursoClient();
-        const res = await client.execute(
-          "SELECT * FROM conversations ORDER BY updated_at DESC"
-        );
+        const res = await client.execute(`
+          SELECT c.id, c.phone, c.from_wa, c.customer_name, c.status, c.created_at, c.updated_at
+          FROM conversations c
+          UNION
+          SELECT m.conversation_id as id, m.conversation_id as phone, m.conversation_id as from_wa, NULL as customer_name, 'bot' as status, MIN(m.created_at) as created_at, MAX(m.created_at) as updated_at
+          FROM messages m
+          WHERE m.conversation_id NOT IN (SELECT id FROM conversations)
+          GROUP BY m.conversation_id
+          ORDER BY updated_at DESC
+        `);
         return res.rows.map((r: any) => {
           const rawId = String(r.id);
           const rawPhone = String(r.phone || r.from_wa || r.id);

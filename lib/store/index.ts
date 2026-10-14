@@ -456,7 +456,7 @@ export async function setConversationStatus(id: string, status: ConversationStat
   getMemoryStore().setConversationStatus(id, status);
   if (isTursoConfigured()) {
     try {
-      await ensureTursoReady();
+      await getOrCreateConversation(id);
       const client = getTursoClient();
       await client.execute({
         sql: "UPDATE conversations SET status = ?, updated_at = ? WHERE id = ?",
@@ -481,7 +481,7 @@ export async function setConversationCustomerName(
 
   if (isTursoConfigured()) {
     try {
-      await ensureTursoReady();
+      await getOrCreateConversation(conversationId);
       const client = getTursoClient();
       await client.execute({
         sql: "UPDATE conversations SET customer_name = ? WHERE id = ?",
@@ -493,7 +493,6 @@ export async function setConversationCustomerName(
   }
 }
 
-
 export async function appendMessage(
   conversationId: string,
   role: "user" | "assistant" | "system",
@@ -504,10 +503,15 @@ export async function appendMessage(
     try {
       await ensureTursoReady();
       const client = getTursoClient();
-      await client.execute({
-        sql: `INSERT INTO messages (id, conversation_id, role, content, at, created_at) VALUES (?, ?, ?, ?, '', ?)`,
-        args: [memoryMsg.id, conversationId, role, content, memoryMsg.createdAt],
+      // En Turso, la columna 'id' de 'messages' es INTEGER PRIMARY KEY AUTOINCREMENT.
+      // Insertamos sin especificar 'id' para evitar error SQLITE_MISMATCH (datatype mismatch con UUID).
+      const res = await client.execute({
+        sql: `INSERT INTO messages (conversation_id, role, content, at, created_at) VALUES (?, ?, ?, '', ?)`,
+        args: [conversationId, role, content, memoryMsg.createdAt],
       });
+      if (res?.lastInsertRowid != null) {
+        memoryMsg.id = String(res.lastInsertRowid);
+      }
       await client.execute({
         sql: "UPDATE conversations SET updated_at = ? WHERE id = ?",
         args: [Date.now(), conversationId],
@@ -526,8 +530,8 @@ export async function updateMessageContent(id: string, content: string): Promise
       await ensureTursoReady();
       const client = getTursoClient();
       await client.execute({
-        sql: "UPDATE messages SET content = ? WHERE id = ?",
-        args: [content, id],
+        sql: "UPDATE messages SET content = ? WHERE id = ? OR rowid = ?",
+        args: [content, id, id],
       });
     } catch (err) {
       console.warn("[store] updateMessageContent Turso error:", err);
@@ -784,6 +788,30 @@ export async function updateOrderInvoice(
       console.error("[store] updateOrderInvoice error:", err);
     }
   }
+}
+
+export async function updateOrderAddress(id: string, newAddress: string): Promise<boolean> {
+  const mem = getMemoryStore();
+  const memOrder = mem.orders.get(id);
+  if (memOrder) {
+    memOrder.deliveryAddress = newAddress;
+  }
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: "UPDATE orders SET delivery_address = ? WHERE id = ?",
+        args: [newAddress, id],
+      });
+      return true;
+    } catch (err) {
+      console.error("[store] updateOrderAddress error:", err);
+      return false;
+    }
+  }
+  return true;
 }
 
 export async function getOrders(): Promise<Order[]> {
