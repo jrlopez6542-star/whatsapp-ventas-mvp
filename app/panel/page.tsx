@@ -236,6 +236,7 @@ export default function PanelDashboard() {
   // Conversations & Chat
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [draft, setDraft] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
@@ -684,8 +685,13 @@ export default function PanelDashboard() {
   };
 
   const filteredConversations = conversations.filter((c) => {
-    if (filter === "all") return true;
-    return c.status === filter;
+    if (filter !== "all" && c.status !== filter) return false;
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase().trim();
+    const nameMatch = (c.customerName || "").toLowerCase().includes(q);
+    const phoneMatch = (c.phone || "").toLowerCase().includes(q);
+    const idMatch = (c.id || "").toLowerCase().includes(q);
+    return nameMatch || phoneMatch || idMatch;
   });
 
   const selectedConv = conversations.find((c) => c.id === selectedConvId);
@@ -848,9 +854,20 @@ export default function PanelDashboard() {
                   <i className="ph ph-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-base"></i>
                   <input 
                     type="text" 
-                    placeholder="Buscar conversación..." 
-                    className="w-full bg-[#202c33] text-sm text-white placeholder-slate-400 pl-9 pr-3 py-2 rounded-lg border border-transparent focus:border-[#1f2c34] transition"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Buscar por nombre, teléfono o ID..." 
+                    className="w-full bg-[#202c33] text-sm text-white placeholder-slate-400 pl-9 pr-8 py-2 rounded-lg border border-transparent focus:border-[#1f2c34] transition"
                   />
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery("")}
+                      className="absolute right-3 top-2.5 text-slate-400 hover:text-white"
+                      title="Limpiar búsqueda"
+                    >
+                      <i className="ph ph-x text-sm"></i>
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex gap-4 text-[13px] font-medium border-b border-[#1f2c34]">
@@ -972,7 +989,14 @@ export default function PanelDashboard() {
                               </span>
                             </div>
                           )}
-                          {isBot ? (
+                          {m.role === "system" ? (
+                            <div className="flex justify-center my-2 w-full">
+                              <div className="bg-[#f59e0b]/10 border border-[#f59e0b]/30 text-[#f59e0b] text-xs px-3.5 py-1.5 rounded-lg flex items-center gap-2 max-w-md shadow-sm text-center">
+                                <i className="ph-fill ph-warning shrink-0 text-sm"></i>
+                                <span className="leading-snug font-medium">{text}</span>
+                              </div>
+                            </div>
+                          ) : isBot ? (
                             <div className="flex flex-col items-start w-full">
                               <div className="bg-[#202c33] text-slate-200 p-3 rounded-lg rounded-tl-none text-[14.5px] max-w-md shadow-sm border border-transparent">
                                 <p className="whitespace-pre-wrap leading-relaxed">{text}</p>

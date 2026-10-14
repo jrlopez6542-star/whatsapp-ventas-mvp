@@ -406,22 +406,28 @@ async function tryExtractAndRegisterOrder(
   products: Product[],
   clientName?: string
 ) {
-  const combined = (userText + " " + assistantReply).toLowerCase();
+  const replyLower = assistantReply.toLowerCase();
+
+  // Si la respuesta es el Paso 6 (Resumen Previo con opciones 1 o 2), NO crear orden prematuramente
+  const isPreConfirmationStep =
+    (replyLower.includes("1️⃣") && (replyLower.includes("confirmar") || replyLower.includes("modificar"))) ||
+    replyLower.includes("¿deseas confirmar?") ||
+    replyLower.includes("¿todo está correcto?");
+
+  if (isPreConfirmationStep) return null;
 
   const hasConfirmationKeyword =
-    combined.includes("pedido confirmado") ||
-    combined.includes("confirmado y registrado") ||
-    combined.includes("pedido registrado") ||
-    combined.includes("hemos registrado tu pedido") ||
-    combined.includes("pedido creado") ||
-    combined.includes("van en camino") ||
-    combined.includes("sale en camino") ||
-    combined.includes("preparando tus buñuelos") ||
-    combined.includes("preparando tu pedido") ||
-    (combined.includes("total a pagar") && (combined.includes("dirección") || combined.includes("direccion") || combined.includes("calle") || combined.includes("cra")));
+    replyLower.includes("pedido confirmado") ||
+    replyLower.includes("confirmado y registrado") ||
+    replyLower.includes("pedido registrado") ||
+    replyLower.includes("hemos registrado tu pedido") ||
+    replyLower.includes("pedido creado") ||
+    replyLower.includes("van en camino calienticos") ||
+    replyLower.includes("¡pedido confirmado");
 
   if (!hasConfirmationKeyword) return null;
 
+  const combined = (userText + " " + assistantReply).toLowerCase();
   const { items: extractedItems, total: extractedTotal } = extractProductsFromText(combined, products);
 
   const orderItems: Array<{ sku: string; quantity: number; unitPrice: number }> = [];
@@ -552,14 +558,8 @@ async function tryExtractAndRegisterOrder(
     }
   }
 
-  // 6. Extraer costo de domicilio
-  let detectedFee = 0;
-  const feeMatch = assistantReply.match(/(?:🛵\s*)?\*?(?:Costo de )?Domicilio:\*?\s*(?:COP|\$)?\s*([\d.,]+|gratis)/i);
-  if (feeMatch && feeMatch[1]) {
-    if (!feeMatch[1].toLowerCase().includes("gratis")) {
-      detectedFee = parseInt(feeMatch[1].replace(/[.,]/g, ""), 10) || 0;
-    }
-  }
+  // 6. Costo de domicilio: 100% GRATIS siempre ($0)
+  const detectedFee = 0;
 
   // 7. Extraer notas especiales de entrega
   let detectedNotes: string | undefined = undefined;
@@ -806,10 +806,13 @@ export async function handleSalesMessage(
 
   const nequiNumber = settings.nequiNumber || "3228964947";
   const brebKey = settings.brebKey || "3228964947";
-  const deliveryFee = parseInt(settings.deliveryFee || "4000", 10) || 4000;
-  const freeThreshold = parseInt(settings.freeDeliveryThreshold || "40000", 10) || 40000;
+  const deliveryFee = 0; // Domicilio 100% GRATIS permanente
 
   const systemPrompt = `Eres el asistente virtual y vendedor estrella por WhatsApp de "${settings.name}".
+
+  ⚡ REGLA DE BREVEDAD ESTRICTA (¡OBLIGATORIA!):
+  - Envía SIEMPRE respuestas cortas, directas y fáciles de leer en dispositivos móviles (máximo de 3 a 4 líneas por mensaje).
+  - Elimina bloques de texto extensos, rodeos o explicaciones innecesarias.
 
   🎭 PERSONALIDAD Y TONO:
   ¡Eres MUY carismático, alegre, persuasivo y antojador! Tu objetivo principal es: ${settings.botObjective || "vender y hacer agua la boca del cliente."} 
@@ -820,41 +823,38 @@ export async function handleSalesMessage(
 
   Reglas del negocio: ${settings.rules}
 
+  🛵 DOMICILIO 100% GRATIS:
+  - El costo de envío es SIEMPRE $0 (¡GRATIS!) para todos los pedidos, sin umbrales ni cobros adicionales.
+
   🔥 CATÁLOGO ESTRICTO (Precios en COP):
   ${catalogText}
   ¡REGLA DE ORO!: NO inventes productos, tamaños ni sabores que no estén en este catálogo. Solo vendemos cajas de 4 o de 8, y las bebidas del menú.
 
   📌 FLUJO DE VENTA PASO A PASO (Sigue este orden estrictamente):
   1. SALUDO Y MENÚ: Inicia SIEMPRE con mucho entusiasmo (ej. "¡Hola, hola! 🥳 ¡Bienvenido a *BUÑUELANDIA*! 🥟🔥"). Antoja al cliente y muéstrale nuestras Cajas Tradicionales y Surtidas.
-  2. ELECCIÓN Y SALSAS: 
+  2. ELECCIÓN Y SALSAS (OBLIGATORIO): 
      - Si el cliente elige una caja "Tradicional", es sin salsa, pasa al paso 3.
-     - Si el cliente elige una caja "Surtida", TIENES QUE PREGUNTARLE QUÉ SALSAS QUIERE (Mora, Arequipe, Bocadillo, Suero Costeño). Puedes mezclarlas como prefiera.
+     - Si el cliente elige una caja "Surtida" (C4S o C8S), ES OBLIGATORIO PREGUNTARLE LAS SALSAS antes de pedir la dirección:
+       «¿Qué salsas prefieres para tu caja surtida? Tenemos Mora, Arequipe, Bocadillo y Suero Costeño 🤤 (puedes combinarlas como prefieras).»
   ${upsellDrinks ? `3. VENTA CRUZADA Y CATÁLOGO DE BEBIDAS:
      - Justo después de que el cliente elija su caja (y salsas si aplica), antes de pedir la dirección, pregúntale amigablemente si desea agregar bebidas para acompañar:
-       «¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤 Tenemos café campesino recién colado ($3.500), chocolate caliente tradicional ($4.000), gaseosa bien helada ($4.500), jugo natural de mora ($6.000) o agua ($3.000).»
-     - Si el cliente pregunta en cualquier momento por bebidas (ej: "¿qué bebidas tienen?", "¿tienen algo de tomar?", "muéstrame las bebidas"), preséntale con entusiasmo el catálogo completo:
-       ☕ *Bebidas Calientes:*
-       • Café Campesino recién colado ($3.500)
-       • Chocolate Caliente Tradicional ($4.000)
-       🥤 *Bebidas Frías:*
-       • Gaseosa 400ml helada ($4.500) (Coca-Cola, Colombiana, Manzana)
-       • Jugo Natural de Mora ($6.000)
-       • Agua Mineral 500ml ($3.000)
-     - Si el cliente acepta alguna bebida, agrégala con su precio al pedido; si dice que no, avanza inmediatamente al paso 4 sin insistir.` : `3. BEBIDAS DESACTIVADAS (NO OFRECER BEBIDAS):
-     - El interruptor de venta de bebidas está APAGADO. NO ofrezcas, NO sugieras ni menciones bebidas activamente al cliente. Pasa DIRECTAMENTE al paso 4 (Recolección de datos de entrega).`}
+       «¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤 Tenemos café campesino ($3.500), chocolate caliente ($4.000), gaseosa helada ($4.500), jugo de mora ($6.000) o agua ($3.000).»
+     - Si el cliente pregunta en cualquier momento por bebidas, preséntale amigablemente las opciones.
+     - Si el cliente acepta alguna bebida, agrégala al pedido; si dice que no, avanza inmediatamente al paso 4 sin insistir.` : `3. BEBIDAS DESACTIVADAS (NO OFRECER BEBIDAS):
+     - El interruptor de venta de bebidas está APAGADO. NO ofrezcas bebidas activamente. Pasa DIRECTAMENTE al paso 4 (Recolección de datos de entrega).`}
   4. RECOLECCIÓN DE DATOS DE ENTREGA:
      - RECONOCIMIENTO AMPLIO DE DIRECCIONES COLOMBIANAS:
        Acepta y reconoce de inmediato CUALQUIER variedad de dirección:
-       * Conjuntos residenciales, edificios, condominios, urbanizaciones, ciudadelas (ej: "Conjunto Puertas del Sol", "Conjunto Puertas del Sol Casa 4", "Condominio Campestre El Peñón", "Edificio Mirador Apto 502", "Urbanización Los Sauces", "Reserva de la Sierra").
-       * Veredas, fincas, haciendas, corregimientos, sectores rurales o vías (ej: "Vereda La Balsa sector Los Molinos", "Vereda El Rosal finca La Florida", "Vereda tal", "Finca El Recreo vereda Chimbi", "Vda Centro", "Km 5 Vía Suba").
+       * Conjuntos residenciales, edificios, condominios, urbanizaciones, ciudadelas (ej: "Conjunto Puertas del Sol Casa 4", "Condominio Campestre El Peñón", "Edificio Mirador Apto 502", "Urbanización Los Sauces", "Reserva de la Sierra").
+       * Veredas, fincas, haciendas, corregimientos, sectores rurales o vías (ej: "Vereda La Balsa sector Los Molinos", "Vereda El Rosal finca La Florida", "Finca El Recreo vereda Chimbi", "Km 5 Vía Suba").
        * Nomenclatura urbana estándar (Calle, Carrera, Diagonal, Transversal, Avenida, etc.).
        * Manzanas y lotes (ej: "Mz 4 Casa 12 Barrio El Progreso").
-       * Indicaciones o referencias libres (ej: "frente a la escuela", "casa verde de rejas negras", "al lado de la droguería", "sobre la vía principal").
+       * Indicaciones o referencias libres (ej: "frente a la escuela", "casa verde de rejas negras", "sobre la vía principal").
      - 🚨 REGLA ESTRICTA (CERO BUCLES DE DIRECCIÓN):
        Si tú (el bot) ya pediste la dirección en el mensaje anterior y el cliente responde indicando su ubicación (incluso si no tiene nomenclatura tradicional, o dice un conjunto, vereda o referencia):
        ¡ACÉPTALO DE INMEDIATO como dirección de entrega! NUNCA vuelvas a enviar el mensaje pidiendo la dirección nuevamente. Agradece la indicación y avanza DIRECTAMENTE al paso 5 (medio de pago).
-  5. MEDIO DE PAGO Y COSTO DE DOMICILIO:
-     - Informa sobre el domicilio: Tarifa fija de ${formatCop(deliveryFee)} (o ¡GRATIS si el pedido supera ${formatCop(freeThreshold)}!).
+  5. MEDIO DE PAGO:
+     - Informa que el domicilio es ¡100% GRATIS!
      - Opciones de pago:
        1️⃣ *Nequi*
        2️⃣ *Bre-B*
@@ -863,32 +863,50 @@ export async function handleSalesMessage(
        Infórmale alegremente que le envías el código QR oficial de pago y OBLIGATORIAMENTE incluye este bloque en texto limpio con acento grave para que el cliente pueda copiar el número con un solo toque:
        📱 *Nequi:* \`${nequiNumber}\`
        🔑 *Llave Bre-B:* \`${brebKey}\`
-       💰 *Total exacto a pagar:* [Total con domicilio incluido]
+       💰 *Total exacto a pagar:* [Total en COP]
        *(Toca y mantén presionado el número para copiarlo rápidamente a tu app bancaria)*
      - SI ELIGE EFECTIVO:
        Pregúntale: «¿Con qué billete vas a pagar? (ej: billete de $50.000 o monto exacto) para que el domiciliario te lleve el cambio listo 💵»
-  6. CONFIRMACIÓN FINAL: SÓLO cuando tengas los productos, la dirección Y el medio de pago, enviarás el resumen final usando ESTE FORMATO EXACTO:
+  6. RESUMEN PREVIO (PRE-CONFIRMACIÓN):
+     SÓLO cuando tengas los productos (con salsas si aplica), la dirección Y el medio de pago, enviarás un resumen compacto con opciones en texto plano:
 
-  ✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🛵🥟
+     📋 *Resumen de tu Pedido:*
+     • [Productos x cantidad y salsas/bebidas]
+     📦 *Subtotal productos:* [Subtotal en COP]
+     🛵 *Domicilio:* ¡GRATIS!
+     💰 *Total a pagar:* [Total en COP]
+     📍 *Dirección de entrega:* [Dirección exacta del cliente]
+     💳 *Medio de pago:* [Medio de pago]
 
-  🛒 *Detalle del Pedido:*
-  [Lista de productos x cantidad, salsas y bebidas si aplica]
+     ¿Todo está correcto? Elige una opción:
+     1️⃣ ✅ Confirmar pedido
+     2️⃣ ✏️ Modificar algún dato
 
-  📦 *Subtotal productos:* [Subtotal exacto en COP]
-  🛵 *Costo de domicilio:* [${formatCop(deliveryFee)} o ¡GRATIS!]
-  💰 *Total a pagar:* [Total exacto con domicilio en COP]
-  📍 *Dirección de entrega:* [Escribe la dirección exacta dada por el cliente: conjunto con casa/apto/torre, vereda/finca o calle/carrera. NUNCA pongas "indicada en chat" ni "por confirmar"]
-  🏢 *Notas de entrega:* [Indicaciones de torre/apto/portería o "Ninguna"]
-  💳 *Medio de pago:* [Medio ingresado, y si es efectivo con cuánto paga y cambio]
-  👤 *Cliente:* [Nombre del cliente o "Cliente"]
-  ⏱️ *Tiempo estimado de entrega:* ${etaTime}
+  7. CONFIRMACIÓN FINAL Y FACTURACIÓN:
+     SÓLO cuando el cliente responda con el número "1" (o palabras como "confirmar", "sí", "confirmo", "dale"), enviarás la confirmación final usando este formato:
 
-  🔥 ¡Tus buñuelos van en camino calienticos y crujientes! ¡Gracias por tu compra en BUÑUELANDIA! 🥟
+     ✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🛵🥟
+
+     🛒 *Detalle del Pedido:*
+     [Lista de productos x cantidad, salsas y bebidas si aplica]
+
+     📦 *Subtotal productos:* [Subtotal exacto en COP]
+     🛵 *Costo de domicilio:* ¡GRATIS!
+     💰 *Total a pagar:* [Total exacto en COP]
+     📍 *Dirección de entrega:* [Dirección exacta del cliente]
+     🏢 *Notas de entrega:* [Indicaciones de torre/apto/portería o "Ninguna"]
+     💳 *Medio de pago:* [Medio ingresado, y si es efectivo con cuánto paga y cambio]
+     👤 *Cliente:* [Nombre del cliente o "Cliente"]
+     ⏱️ *Tiempo estimado de entrega:* ${etaTime}
+
+     🔥 ¡Tus buñuelos van en camino calienticos y crujientes! ¡Gracias por tu compra en BUÑUELANDIA! 🥟
+
+     - Si el cliente responde "2" o dice que quiere modificar algún dato, pregúntale amablemente qué desea cambiar (productos, dirección o medio de pago) y NO registres el pedido.
 
   ⛔ RESTRICCIONES IMPORTANTES:
-  - YA NO SE VENDE POR UNIDAD. SOLO SE VENDEN CAJAS DE 4 O DE 8. Si alguien pide unidades sueltas (ej: "quiero 2 buñuelos"), explícale amablemente que solo manejamos cajas de 4 o de 8.
+  - YA NO SE VENDE POR UNIDAD. SOLO SE VENDEN CAJAS DE 4 O DE 8. Si alguien pide unidades sueltas, explícale amablemente que solo manejamos cajas de 4 o de 8.
   - NUNCA inventes precios ni sumes mal.
-  - NO confirmes el pedido hasta tener dirección, método de pago y las salsas elegidas si pidió una caja surtida.
+  - NO confirmes ni registres el pedido hasta que el cliente responda "1" confirmando el resumen previo.
   - 🚨 ¡PROHIBICIÓN ESTRICTA!: NUNCA escribas frases como "*(Imagina aquí el Código QR...)*", ni inventes cuentas bancarias. El sistema de WhatsApp enviará automáticamente la imagen real del código QR oficial de BUÑUELANDIA.
 
   OPCIONES Y FORMATO DE RESPUESTA:
@@ -1128,99 +1146,150 @@ export async function handleSalesMessage(
   } else if (isAskingDrinks && upsellDrinks) {
     reply = `☕🥤 *Menú de Bebidas en BUÑUELANDIA:*\n\n☕ *Bebidas Calientes:*\n• *Café Campesino recién colado:* $3.500\n• *Chocolate Caliente Tradicional:* $4.000\n\n🥤 *Bebidas Frías:*\n• *Gaseosa 400ml helada:* $4.500 (Coca-Cola, Colombiana, Manzana)\n• *Jugo Natural de Mora:* $6.000\n• *Agua Mineral 500ml:* $3.000\n\n¿Deseas agregar alguna bebida a tus buñuelos? 🤤`;
   } else if (!hasActiveOrder && extractedItems.length > 0 && foundAddress && foundPayment) {
-    // SÓLO cuando el cliente eligió productos reales (extractedItems.length > 0), dio dirección Y eligió medio de pago, y no tiene ya una orden activa
     const finalItems = extractedItems;
     const finalTotal = extractedTotal;
     const finalPayment = foundPayment;
     const finalAddress = foundAddress;
     const clientName = pushName || `Cliente WhatsApp ${conversationKey.replace(/[^0-9]/g, "").slice(-4) || ""}`;
 
-    const order = await createOrder(
-      conversationKey,
-      finalItems.map((it) => ({ sku: it.sku, quantity: it.quantity, unitPrice: it.unitPrice })),
-      finalTotal,
-      {
-        customerName: clientName,
-        deliveryAddress: finalAddress,
-        paymentMethod: finalPayment,
-        itemsSummary: finalItems.map((it) => `${it.sku} x${it.quantity}`).join(", "),
+    const lastAssistantMsg = previous.filter((m) => m.role === "assistant").pop()?.content || "";
+    const isPreviousPreConfirmation =
+      lastAssistantMsg.includes("1️⃣") &&
+      (lastAssistantMsg.toLowerCase().includes("confirmar pedido") || lastAssistantMsg.toLowerCase().includes("modificar"));
+
+    const isUserConfirming =
+      lower === "1" ||
+      lower.startsWith("1.") ||
+      lower.startsWith("1 ") ||
+      lower.includes("confirmar") ||
+      lower.includes("confirmo") ||
+      lower.includes("confirmado") ||
+      lower === "si" ||
+      lower === "sí" ||
+      lower === "dale" ||
+      lower === "de una";
+
+    const isUserModifying =
+      lower === "2" ||
+      lower.startsWith("2.") ||
+      lower.startsWith("2 ") ||
+      lower.includes("modificar") ||
+      lower.includes("cambiar");
+
+    if (isPreviousPreConfirmation && isUserModifying) {
+      reply = `¡Claro que sí! 🥟✏️ Cuéntanos qué dato te gustaría modificar: ¿los productos, la dirección de entrega o el medio de pago?`;
+    } else if (!isPreviousPreConfirmation && !isUserConfirming) {
+      // PASO 6: RESUMEN PREVIO (Pre-confirmación)
+      const itemsListText = finalItems.map((it) => `• ${it.name} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
+      reply = `📋 *Resumen de tu Pedido:*\n${itemsListText}\n\n📦 *Subtotal productos:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n💰 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n\n¿Todo está correcto? Elige una opción:\n1️⃣ ✅ Confirmar pedido\n2️⃣ ✏️ Modificar algún dato`;
+    } else {
+      // PASO 7: CONFIRMACIÓN OFICIAL Y FACTURACIÓN (Solo tras responder 1 o confirmar)
+      const order = await createOrder(
+        conversationKey,
+        finalItems.map((it) => ({ sku: it.sku, quantity: it.quantity, unitPrice: it.unitPrice })),
+        finalTotal,
+        {
+          customerName: clientName,
+          deliveryAddress: finalAddress,
+          paymentMethod: finalPayment,
+          itemsSummary: finalItems.map((it) => `${it.sku} x${it.quantity}`).join(", "),
+          deliveryFee: 0,
+        }
+      );
+
+      if (clientName && !clientName.toLowerCase().startsWith("cliente whatsapp")) {
+        await setConversationCustomerName(conversationKey, clientName).catch(() => {});
       }
-    );
 
-    if (clientName && !clientName.toLowerCase().startsWith("cliente whatsapp")) {
-      await setConversationCustomerName(conversationKey, clientName).catch(() => {});
-    }
+      let invoiceNotice = "";
+      try {
+        const invRes = await createInvoiceInContabilidad({
+          orderId: order.id,
+          customerName: clientName,
+          phone: conversationKey.replace(/^whatsapp:/i, ""),
+          deliveryAddress: finalAddress,
+          paymentMethod: finalPayment,
+          items: finalItems.map((it) => ({
+            sku: it.sku,
+            name: it.name,
+            quantity: it.quantity,
+            unitPrice: it.unitPrice,
+          })),
+          deliveryFee: 0,
+          total: finalTotal,
+        });
+        if (invRes.ok && invRes.invoiceNumber) {
+          await updateOrderInvoice(
+            order.id,
+            invRes.invoiceNumber,
+            invRes.invoiceId,
+            invRes.invoiceUrl,
+            invRes.invoicePdfUrl
+          );
+          order.invoiceNumber = invRes.invoiceNumber;
+          order.invoiceId = invRes.invoiceId;
+          order.invoiceUrl = invRes.invoiceUrl;
+          order.invoicePdfUrl = invRes.invoicePdfUrl;
+          createdInvoiceNumber = invRes.invoiceNumber;
+          createdInvoiceUrl = invRes.invoiceUrl;
+          createdInvoicePdfUrl = invRes.invoicePdfUrl;
+          const publicUrl = invRes.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${invRes.invoiceId || ""}`;
+          invoiceNotice = `\n🧾 *Factura Oficial Registrada:* #${invRes.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
+        }
+      } catch (invErr) {
+        console.warn("[sales-agent] Error generando factura en fallback:", invErr);
+      }
 
-    let invoiceNotice = "";
-    try {
-      const invRes = await createInvoiceInContabilidad({
-        orderId: order.id,
-        customerName: clientName,
-        phone: conversationKey.replace(/^whatsapp:/i, ""),
-        deliveryAddress: finalAddress,
-        paymentMethod: finalPayment,
-        items: finalItems.map((it) => ({
-          sku: it.sku,
-          name: it.name,
-          quantity: it.quantity,
-          unitPrice: it.unitPrice,
-        })),
-        total: finalTotal,
+      // Notificar automáticamente al domiciliario asignado por WhatsApp
+      notifyDeliveryDriver(order).catch((dErr) => {
+        console.warn("[sales-agent] Error notificando al domiciliario en fallback:", dErr);
       });
-      if (invRes.ok && invRes.invoiceNumber) {
-        await updateOrderInvoice(
-          order.id,
-          invRes.invoiceNumber,
-          invRes.invoiceId,
-          invRes.invoiceUrl,
-          invRes.invoicePdfUrl
-        );
-        order.invoiceNumber = invRes.invoiceNumber;
-        order.invoiceId = invRes.invoiceId;
-        order.invoiceUrl = invRes.invoiceUrl;
-        order.invoicePdfUrl = invRes.invoicePdfUrl;
-        createdInvoiceNumber = invRes.invoiceNumber;
-        createdInvoiceUrl = invRes.invoiceUrl;
-        createdInvoicePdfUrl = invRes.invoicePdfUrl;
-        const publicUrl = invRes.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${invRes.invoiceId || ""}`;
-        invoiceNotice = `\n🧾 *Factura Oficial Registrada:* #${invRes.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
-      }
-    } catch (invErr) {
-      console.warn("[sales-agent] Error generando factura en fallback:", invErr);
+
+      const itemsListText = finalItems.map((it) => `- ${it.name} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
+
+      reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*${invoiceNotice}\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
+      mode = "order_created";
     }
-
-    // Notificar automáticamente al domiciliario asignado por WhatsApp
-    notifyDeliveryDriver(order).catch((dErr) => {
-      console.warn("[sales-agent] Error notificando al domiciliario en fallback:", dErr);
-    });
-
-    const itemsListText = finalItems.map((it) => `- ${it.name} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
-
-    reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*${invoiceNotice}\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
-    mode = "order_created";
   } else if (extractedItems.length > 0) {
     const chosenProduct = extractedItems[0];
     const totalEst = extractedTotal > 0 ? extractedTotal : chosenProduct.unitPrice;
 
-    // Verificar si ya tiene bebida o ya se le ofreció
-    const hasDrinkInCart = extractedItems.some((it) => it.sku.startsWith("BEB"));
-    const alreadyAskedDrinks = previous.some(
-      (m) => m.role === "assistant" && (m.content.includes("acompañar tus buñuelos") || m.content.includes("bebida bien fría"))
-    );
-    const hasDeclinedDrinks =
-      lower.includes("sin bebida") ||
-      lower.includes("no quiero bebida") ||
-      lower.includes("no gracias") ||
-      lower.includes("solo los buñuelos") ||
-      lower.includes("solo buñuelos") ||
-      lower === "no";
+    // VALIDACIÓN OBLIGATORIA DE SALSAS PARA CAJAS SURTIDAS (C4S / C8S)
+    const hasSurtida = extractedItems.some((it) => it.sku === "C4S" || it.sku === "C8S");
+    const mentionsSauces =
+      lower.includes("mora") ||
+      lower.includes("arequipe") ||
+      lower.includes("bocadillo") ||
+      lower.includes("suero") ||
+      lower.includes("queso") ||
+      userChatText.toLowerCase().includes("mora") ||
+      userChatText.toLowerCase().includes("arequipe") ||
+      userChatText.toLowerCase().includes("bocadillo") ||
+      userChatText.toLowerCase().includes("suero");
 
-    if (upsellDrinks && !hasDrinkInCart && !alreadyAskedDrinks && !hasDeclinedDrinks) {
-      reply = `¡Excelente elección! 🤤 Tomamos nota de tu pedido:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\n¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤\n• *Café Campesino recién colado:* $3.500\n• *Chocolate Caliente Tradicional:* $4.000\n• *Gaseosa helada (Coca-Cola, Colombiana, Manzana):* $4.500\n• *Jugo Natural de Mora:* $6.000\n• *Agua Mineral:* $3.000\n\n_(Indícanos qué bebida deseas agregar, o compártenos tu dirección de entrega si solo deseas los buñuelos)_ 🥟`;
-    } else if (!foundAddress) {
-      reply = `¡Perfecto! 🤤 Tenemos anotado:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviártelo calientito a tu casa, por favor compártenos:\n📍 *Dirección exacta de Entrega, Conjunto o Vereda*\n🏢 *Indicaciones de entrega (torre/apto/casa/portería)*`;
+    if (hasSurtida && !mentionsSauces) {
+      reply = `¡Excelente elección con tu caja surtida! 🤤 ¿Qué salsas prefieres para acompañar tus buñuelos? Tenemos Mora, Arequipe, Bocadillo y Suero Costeño (puedes combinarlas como prefieras).`;
     } else {
-      reply = `¡Excelente! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
+      // Verificar si ya tiene bebida o ya se le ofreció
+      const hasDrinkInCart = extractedItems.some((it) => it.sku.startsWith("BEB"));
+      const alreadyAskedDrinks = previous.some(
+        (m) => m.role === "assistant" && (m.content.includes("acompañar tus buñuelos") || m.content.includes("bebida bien fría"))
+      );
+      const hasDeclinedDrinks =
+        lower.includes("sin bebida") ||
+        lower.includes("no quiero bebida") ||
+        lower.includes("no gracias") ||
+        lower.includes("solo los buñuelos") ||
+        lower.includes("solo buñuelos") ||
+        lower === "no";
+
+      if (upsellDrinks && !hasDrinkInCart && !alreadyAskedDrinks && !hasDeclinedDrinks) {
+        reply = `¡Excelente elección! 🤤 Tomamos nota de tu pedido:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\n¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤\n• *Café Campesino:* $3.500\n• *Chocolate Caliente:* $4.000\n• *Gaseosa helada:* $4.500\n• *Jugo de Mora:* $6.000\n• *Agua Mineral:* $3.000\n\n_(Indícanos qué bebida deseas agregar, o compártenos tu dirección si solo deseas los buñuelos)_ 🥟`;
+      } else if (!foundAddress) {
+        reply = `¡Perfecto! 🤤 Tenemos anotado:\n• *${chosenProduct.name}* (${formatCop(totalEst)})\n\nPara enviártelo calientito a tu casa, por favor compártenos:\n📍 *Dirección exacta de Entrega, Conjunto o Vereda*\n🏢 *Indicaciones de entrega (torre/apto/casa/portería)*`;
+      } else {
+        reply = `¡Excelente! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
+      }
     }
   } else if (foundAddress && !foundPayment) {
     reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\n¿Qué buñuelos o bebidas deseas agregar a tu pedido? (Escribe *catálogo* para ver las opciones).`;
