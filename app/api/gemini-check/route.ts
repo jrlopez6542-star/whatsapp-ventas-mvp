@@ -11,14 +11,21 @@ export async function GET() {
       const { GoogleGenAI } = await import("@google/genai");
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
-      const candidateModels = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-exp-1206"];
+      const candidateModels = [
+        "gemini-flash-lite-latest",
+        "gemini-3.5-flash-lite",
+        "gemini-flash-latest",
+        "gemini-3.5-flash",
+        "gemini-3.8-flash",
+      ];
       if (process.env.GEMINI_MODEL) candidateModels.unshift(process.env.GEMINI_MODEL.trim());
       
+      const uniqueModels = Array.from(new Set(candidateModels));
       let success = false;
       let lastErr = "";
       let successfulModel = "";
 
-      for (const model of candidateModels) {
+      for (const model of uniqueModels) {
         try {
           const response = await ai.models.generateContent({
             model,
@@ -27,6 +34,7 @@ export async function GET() {
           if (response.text) {
             success = true;
             successfulModel = model;
+            results[`model_${model}`] = `OK: ${response.text.trim()}`;
             break;
           }
         } catch (err: any) {
@@ -36,7 +44,7 @@ export async function GET() {
       }
 
       if (success) {
-        results.gemini = `OK (using ${successfulModel})`;
+        results.gemini = `OK (usando ${successfulModel})`;
       } else {
         results.gemini = `Error: ${lastErr}`;
       }
@@ -45,6 +53,23 @@ export async function GET() {
     }
   } else {
     results.gemini = "Not configured";
+  }
+
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const { OpenAI } = await import("openai");
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      const response = await openai.chat.completions.create({
+        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+        messages: [{ role: "user", content: "Responde únicamente con la palabra 'OK'" }],
+        max_tokens: 10,
+      });
+      results.openai = `OK: ${response.choices[0]?.message?.content?.trim()}`;
+    } catch (err: any) {
+      results.openai = `Error: ${err.message}`;
+    }
+  } else {
+    results.openai = "Not configured";
   }
 
   return NextResponse.json({ ok: true, results });
