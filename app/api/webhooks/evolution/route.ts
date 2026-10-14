@@ -237,18 +237,35 @@ export async function POST(request: NextRequest) {
       await setConversationStatus(fromKey, "bot").catch(() => {});
     }
 
+    const incomingMsgTimestamp = Date.now();
+    lastIncomingTimestamp.set(fromKey, incomingMsgTimestamp);
+
     // FAST ACK: Responder 200 OK inmediatamente (<80ms) delegando todo el procesamiento a after()
     after(async () => {
       try {
         let currentText = text;
 
-        // SISTEMA DE DEBOUNCING: Esperar 3.2s para agrupar ráfagas de mensajes de texto del cliente
-        if (!isImage && !isAudio && DEBOUNCE_WINDOW_MS > 0 && savedMsg?.id) {
+        // SISTEMA DE DEBOUNCING: Esperar para agrupar ráfagas de mensajes de texto del cliente
+        if (!isImage && !isAudio && DEBOUNCE_WINDOW_MS > 0) {
           await new Promise((r) => setTimeout(r, DEBOUNCE_WINDOW_MS));
-          const recentMessages = await getMessages(fromKey).catch(() => []);
-          const lastUserMsg = [...recentMessages].reverse().find((m) => m.role === "user");
-          if (lastUserMsg && lastUserMsg.id !== savedMsg.id) {
-            return; // Entró un mensaje más nuevo en la ráfaga; se procesa en la última ejecución
+          const latestTs = lastIncomingTimestamp.get(fromKey);
+          if (latestTs && latestTs > incomingMsgTimestamp) {
+            console.log("[evolution] debounce: newer message arrived in burst, skipping superseded execution", { from: fromKey });
+            return;
+          }
+
+          // Si llegaron varios mensajes del usuario seguidos antes de responder, agruparlos
+          const allConvMsgs = await getMessages(fromKey).catch(() => []);
+          const lastAssistantIdx = allConvMsgs.map((m) => m.role).lastIndexOf("assistant");
+          const unhandledUserMsgs = allConvMsgs
+            .slice(lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0)
+            .filter((m) => m.role === "user" && m.content && !m.content.startsWith("📷") && !m.content.startsWith("🎤"))
+            .map((m) => m.content.trim())
+            .filter(Boolean);
+
+          if (unhandledUserMsgs.length > 1) {
+            currentText = unhandledUserMsgs.join("\n");
+            console.log("[evolution] Ráfaga de mensajes agrupada:", currentText);
           }
         }
 
