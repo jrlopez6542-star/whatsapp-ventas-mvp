@@ -60,7 +60,7 @@ export async function GET() {
   });
 }
 
-const DEBOUNCE_WINDOW_MS = 1000;
+const DEBOUNCE_WINDOW_MS = 1200;
 const lastIncomingTimestamp = new Map<string, number>();
 
 /**
@@ -298,6 +298,13 @@ export async function POST(request: NextRequest) {
           const latestTs = lastIncomingTimestamp.get(fromKey);
           if (latestTs && latestTs > incomingMsgTimestamp) {
             console.log("[evolution] debounce: newer message arrived in burst, skipping superseded execution", { from: fromKey });
+            return;
+          }
+
+          // Verificar también en base de datos si llegó un mensaje posterior durante la ventana (multiproceso / serverless)
+          const convCheck = await getConversation(fromKey).catch(() => null);
+          if (convCheck && convCheck.updatedAt > incomingMsgTimestamp + 150) {
+            console.log("[evolution] debounce: newer message detected in DB, skipping superseded execution", { from: fromKey });
             return;
           }
 
