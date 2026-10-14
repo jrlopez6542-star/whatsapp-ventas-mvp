@@ -15,6 +15,7 @@ import { sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
 import { claimWebhookEvent } from "@/lib/webhook-dedupe";
 import { handleSalesMessage } from "@/lib/agent/sales-agent";
 import { verifyReceiptWithGemini } from "@/lib/agent/receipt-verifier";
+import { pickRandomVariation } from "@/lib/anti-ban";
 import { logSystemEvent } from "@/lib/logger";
 import {
   appendMessage,
@@ -359,10 +360,12 @@ export async function POST(request: NextRequest) {
               currentText = transcribed.trim();
               console.log("[evolution] Transcripción exitosa:", currentText);
               await updateMessageContent(savedMsg.id, `🎤 [Nota de voz]: "${currentText}"`).catch(() => {});
-            } else {
               console.warn("[evolution] Audio inaudible o no se pudo transcribir");
-              const inaudibleReply =
-                "¡Hola! Recibimos tu nota de voz 🎤 pero no logramos escucharla con claridad. ¿Podrías enviárnosla de nuevo o escribirnos tu pedido por aquí? ¡Con gusto te atendemos!";
+              const inaudibleReply = pickRandomVariation([
+                "¡Hola! Recibimos tu nota de voz 🎤 pero no logramos escucharla con claridad. ¿Podrías enviárnosla de nuevo o escribirnos tu pedido por aquí? ¡Con gusto te atendemos! 😊",
+                "¡Hola! Qué pena contigo, el audio no se escucha muy claro 🎤. ¿Nos podrías escribir tu pedido o reenviar la nota de voz? ¡Aquí estamos listos para prepararlo!",
+                "¡Hola! Tuvimos un pequeño inconveniente al escuchar tu nota de voz 🎤. ¿Te queda fácil escribirnos lo que deseas pedir para tomártelo de una? 🥟✨",
+              ]);
               await appendMessage(fromKey, "assistant", inaudibleReply);
               try {
                 await sendDelayedOutboundWhatsApp(fromKey, replyTo, inaudibleReply, parsed.messageId);
@@ -373,8 +376,11 @@ export async function POST(request: NextRequest) {
             }
           } else {
             console.warn("[evolution] No se pudo obtener el audio en base64");
-            const noAudioReply =
-              "¡Hola! Recibimos tu nota de voz 🎤 pero ocurrió un inconveniente al procesarla. Por favor escríbenos tu pedido por aquí para poder ayudarte de inmediato.";
+            const noAudioReply = pickRandomVariation([
+              "¡Hola! Recibimos tu nota de voz 🎤 pero ocurrió un inconveniente al procesarla. Por favor escríbenos tu pedido por aquí para poder ayudarte de inmediato. 😊",
+              "¡Hola! No pudimos descargar tu nota de voz en el sistema 🎤. ¿Nos podrías escribir qué te gustaría pedir hoy para agilizar tu pedido? 🥟",
+              "¡Hola! Parece que el archivo de audio no se descargó correctamente 🎤. Porfa escríbenos por aquí tu pedido y con gusto te colaboramos.",
+            ]);
             await appendMessage(fromKey, "assistant", noAudioReply);
             try {
               await sendDelayedOutboundWhatsApp(fromKey, replyTo, noAudioReply, parsed.messageId);
@@ -467,10 +473,12 @@ export async function POST(request: NextRequest) {
 
               return;
             }
-          } else if (!text) {
             // No se pudo descargar la imagen y no hay texto: enviar mensaje amigable
-            const fallbackReply =
-              "¡Recibimos tu imagen! 📸 Nuestro equipo en Buñuelandia la está revisando en este momento para continuar con tu pedido. 👨‍🍳";
+            const fallbackReply = pickRandomVariation([
+              "¡Recibimos tu imagen! 📸 Nuestro equipo en Buñuelandia la está revisando en este momento para continuar con tu pedido. 👨‍🍳",
+              "¡Muchas gracias por la foto! 📸 La estamos verificando en cocina para ayudarte con tu pedido. 🥟✨",
+              "¡Recibido! 📸 Estamos chequeando la imagen que nos enviaste. Si deseas añadir algún detalle a tu pedido, escríbenos por aquí. 😊",
+            ]);
             await appendMessage(fromKey, "assistant", fallbackReply);
 
             try {

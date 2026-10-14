@@ -1,10 +1,16 @@
-import { markEvolutionMessageAsRead } from "@/lib/evolution";
+import { markEvolutionMessageAsRead, sendEvolutionPresence } from "@/lib/evolution";
 import { randomUUID } from "crypto";
 import { ensureTursoReady, getTursoClient, isTursoConfigured } from "@/lib/store/db";
 import {
   sendOutboundWhatsApp,
   type OutboundWhatsAppResult,
 } from "@/lib/whatsapp-send";
+import {
+  calculateHumanDelays,
+  checkOutboundRateLimit,
+  isDuplicateOutbound,
+  recordOutboundSent,
+} from "@/lib/anti-ban";
 
 const DEFAULT_MIN_DELAY_MS = 300;
 const DEFAULT_MAX_DELAY_MS = 800;
@@ -188,6 +194,11 @@ export type DelayedOutboundResult = OutboundWhatsAppResult & {
 /**
  * Human-like delayed send, serialized per conversation. Turso provides a short
  * distributed lock across Vercel instances; the in-memory FIFO is the fallback.
+ * Incorporates Meta anti-ban heuristic protections:
+ * - Duplicate suppression
+ * - Circuit breaker against automated bot loops
+ * - Realistic reading pause + WhatsApp 'composing' presence
+ * - Dynamic character-weighted typing duration
  */
 export async function sendDelayedOutboundWhatsApp(
   conversationKey: string,
@@ -195,23 +206,79 @@ export async function sendDelayedOutboundWhatsApp(
   body: string,
   messageIdToMarkRead?: string
 ): Promise<DelayedOutboundResult> {
+  // 1. Anti-Ban: Supresión de mensajes idénticos consecutivos en ráfagas cortas
+  if (isDuplicateOutbound(conversationKey, body)) {
+    console.log("[anti-ban] duplicate outbound message suppressed", { conversationKey });
+    return {
+      ok: true,
+      channel: "evolution",
+      id: "suppressed_duplicate",
+      delayMs: 0,
+    };
+  }
+
+  // 2. Anti-Ban: Circuit breaker contra bucles infinitos de bots
+  const rateLimit = await checkOutboundRateLimit(conversationKey);
+  if (!rateLimit.allowed) {
+    console.warn("[anti-ban] outbound blocked by circuit breaker", {
+      conversationKey,
+      reason: rateLimit.reason,
+    });
+    return {
+      ok: false,
+      channel: "evolution",
+      error: rateLimit.reason || "Rate limit exceeded",
+      delayMs: 0,
+    };
+  }
+
   return runSerializedConversation(conversationKey, async () => {
     const config = getReplyDelayConfig();
+    const hasCustomEnv = Boolean(
+      process.env.WHATSAPP_REPLY_DELAY_MIN_MS?.trim() ||
+      process.env.WHATSAPP_REPLY_DELAY_MAX_MS?.trim()
+    );
+
+    const delays = calculateHumanDelays(
+      body.length,
+      hasCustomEnv ? config.minMs : undefined,
+      hasCustomEnv ? config.maxMs : undefined
+    );
+
     return withDistributedConversationLock(
       conversationKey,
-      config.maxMs,
+      Math.max(config.maxMs, delays.totalDelayMs + 2000),
       async () => {
-        const delayMs = randomReplyDelayMs(config);
-        console.log("[outbound queue] scheduled", {
+        console.log("[outbound queue] human delay scheduled", {
           conversationKey,
-          delayMs,
+          readingMs: delays.readingDelayMs,
+          typingMs: delays.typingDelayMs,
+          totalDelayMs: delays.totalDelayMs,
         });
-        await sleep(delayMs);
-        if (messageIdToMarkRead) {
-          await markEvolutionMessageAsRead(to, messageIdToMarkRead);
+
+        // Fase 1: Simulación de lectura del mensaje
+        if (delays.readingDelayMs > 0) {
+          await sleep(delays.readingDelayMs);
         }
+
+        // Marcar como leído al momento de "abrir" el chat y empezar a tipear
+        if (messageIdToMarkRead) {
+          await markEvolutionMessageAsRead(to, messageIdToMarkRead).catch(() => {});
+        }
+
+        // Fase 2: Simulación de tipeo en WhatsApp ('composing')
+        await sendEvolutionPresence(to, "composing", delays.typingDelayMs).catch(() => {});
+        if (delays.typingDelayMs > 0) {
+          await sleep(delays.typingDelayMs);
+        }
+
+        // Fase 3: Despacho final del mensaje
         const result = await sendOutboundWhatsApp(to, body);
-        return { ...result, delayMs };
+        if (result.ok) {
+          recordOutboundSent(conversationKey, body);
+        }
+
+        return { ...result, delayMs: delays.totalDelayMs };
       }
     );
   });

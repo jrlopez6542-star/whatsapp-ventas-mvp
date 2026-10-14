@@ -16,6 +16,7 @@ import {
 import { createInvoiceInContabilidad } from "@/lib/contabilidad";
 import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { logSystemEvent } from "@/lib/logger";
+import { pickRandomVariation } from "@/lib/anti-ban";
 
 export interface SalesMessageResult {
   reply: string;
@@ -759,17 +760,24 @@ export async function handleSalesMessage(
     // ----------------------------
 
 
-  // 1. Escalamiento a humano inmediato
+  // 1. Escalamiento a humano inmediato (Protección Anti-Ban: prevenir que el cliente reporte o bloquee)
   if (
     lower.includes("escalar humano") ||
     lower.includes("humano") ||
     lower.includes("asesor") ||
     lower.includes("persona") ||
-    lower.includes("hablar con alguien")
+    lower.includes("hablar con alguien") ||
+    lower.includes("operador") ||
+    lower.includes("queja") ||
+    lower.includes("reclamo") ||
+    lower.includes("atención al cliente")
   ) {
     await setConversationStatus(conversationKey, "human");
-    const reply =
-      "Entendido, he transferido esta conversación a uno de nuestros asesores humanos. En breve te responderán por este mismo chat. ¡Gracias por tu paciencia!";
+    const reply = pickRandomVariation([
+      "Entendido, he transferido esta conversación a uno de nuestros asesores humanos. En breve te responderán por este mismo chat. ¡Gracias por tu paciencia! 😊",
+      "¡Con gusto! Te pongo en contacto de inmediato con nuestro equipo de atención humana. En un momento te escriben por aquí. 🥟",
+      "Comprendo perfectamente. Ya le notifiqué a nuestro asesor de turno para que continúe la conversación contigo directamente. ¡Un momento, por favor!",
+    ]);
     await appendMessage(conversationKey, "assistant", reply);
     return { reply, mode: "human_escalated" };
   }

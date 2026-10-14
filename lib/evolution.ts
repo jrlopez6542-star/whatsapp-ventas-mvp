@@ -678,6 +678,51 @@ export async function markEvolutionMessageAsRead(remoteJid: string, messageId: s
   }
 }
 
+/**
+ * Emite estado de presencia en WhatsApp a través de Evolution API v2:
+ * "composing" (Escribiendo...), "recording" (Grabando audio...), "paused" (Detenido).
+ * Endpoint: POST /chat/sendPresence/{instance}
+ */
+export async function sendEvolutionPresence(
+  toPhone: string,
+  presence: "composing" | "recording" | "available" | "paused" = "composing",
+  delayMs?: number
+): Promise<boolean> {
+  const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "");
+  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const instance = process.env.EVOLUTION_INSTANCE?.trim();
+  if (!base || !apiKey || !instance) return false;
+
+  const resolved = resolveEvolutionSendNumber(toPhone);
+  if (resolved.kind === "invalid" || !resolved.number) return false;
+
+  const url = `${base}/chat/sendPresence/${encodeURIComponent(instance)}`;
+  try {
+    const payload: { number: string; presence: string; delay?: number } = {
+      number: resolved.number,
+      presence,
+    };
+    if (typeof delayMs === "number" && delayMs > 0) {
+      payload.delay = Math.round(delayMs);
+    }
+
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: apiKey,
+      },
+      body: JSON.stringify(payload),
+    });
+    return res.ok;
+  } catch (err) {
+    // Non-blocking: la presencia no debe interrumpir el flujo si hay un parpadeo de red
+    console.warn("[evolution] sendPresence error (non-blocking):", err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
+
 
 export async function sendEvolutionPoll(
   toPhone: string,
