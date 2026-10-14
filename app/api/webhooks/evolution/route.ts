@@ -255,14 +255,25 @@ export async function POST(request: NextRequest) {
         if (isAudio) {
           console.log("[evolution] Procesando nota de voz entrante...", { from: fromKey });
           let audioBase64 = parsed.mediaBase64;
-          let audioMime = parsed.mimeType || "audio/ogg";
+          let audioMime = (parsed.mimeType && parsed.mimeType.toLowerCase().startsWith("audio/"))
+            ? parsed.mimeType
+            : "audio/ogg";
+
           if (!audioBase64 && parsed.messageId) {
             const fetched = await getEvolutionMediaBase64(parsed.messageId, parsed.rawMsg);
             if (fetched) {
               audioBase64 = fetched.base64;
-              audioMime = fetched.mimeType || audioMime;
+              if (fetched.mimeType && fetched.mimeType.toLowerCase().startsWith("audio/")) {
+                audioMime = fetched.mimeType;
+              }
             }
           }
+
+          console.log("[evolution audio payload]", {
+            hasBase64: Boolean(audioBase64),
+            length: audioBase64?.length || 0,
+            mime: audioMime,
+          });
 
           if (audioBase64) {
             const transcribed = await transcribeWhatsAppAudio(audioBase64, audioMime);

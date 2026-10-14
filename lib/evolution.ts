@@ -923,9 +923,16 @@ export async function getEvolutionMediaBase64(
     const data = await res.json().catch(() => null);
     const b64 = data?.base64 || data?.data;
     if (b64 && typeof b64 === "string") {
+      const msgObj = rawMsg && (asRecord(rawMsg.message) || rawMsg);
+      const isAudioMsg = Boolean(
+        msgObj && (msgObj.audioMessage || String(rawMsg?.messageType || "").toLowerCase().includes("audio") || String(rawMsg?.messageType || "").toLowerCase().includes("ptt"))
+      );
+      const defaultMime = isAudioMsg ? "audio/ogg" : "image/jpeg";
+      const returnedMime = (data?.mimetype as string) || (data?.mimeType as string) || defaultMime;
+
       return {
         base64: b64,
-        mimeType: (data?.mimetype as string) || (data?.mimeType as string) || "image/jpeg",
+        mimeType: returnedMime,
       };
     }
   } catch (err) {

@@ -7,8 +7,8 @@ const WHISPER_PROMPT =
 
 /**
  * Transcribe un archivo o nota de voz de WhatsApp enviado en Base64.
- * 1. Opción Primaria: OpenAI Whisper-1 (alta fidelidad en acento colombiano, jerga de buñuelos y velocidad <700ms).
- * 2. Opción Fallback: Google Gemini Multimodal (@google/genai con gemini-3.5-transcribe / gemini-flash-latest).
+ * 1. Opción Primaria: OpenAI Whisper-1 vía REST FormData (100% compatible con Vercel Serverless, ultra-rápido y máxima fidelidad).
+ * 2. Opción Fallback: Google Gemini Multimodal (@google/genai).
  */
 export async function transcribeWhatsAppAudio(
   base64Audio: string,
@@ -18,18 +18,41 @@ export async function transcribeWhatsAppAudio(
     return null;
   }
 
-  const pureBase64 = base64Audio.replace(/^data:[^;]+;base64,/, "").trim();
+  // 1. Extraer MIME type real si viene embebido en data URI
+  let cleanMime = "audio/ogg";
+  if (base64Audio.startsWith("data:")) {
+    const match = base64Audio.match(/^data:([^;,]+)/i);
+    if (match && match[1] && match[1].toLowerCase().startsWith("audio/")) {
+      cleanMime = match[1].trim().toLowerCase();
+    }
+  } else if (mimeType && mimeType.toLowerCase().startsWith("audio/")) {
+    cleanMime = mimeType.split(";")[0].trim().toLowerCase();
+  }
+
+  // 2. Extraer Base64 puro eliminando cualquier prefijo data:audio/...;base64,
+  const pureBase64 = (
+    base64Audio.includes(",") ? base64Audio.split(",")[1] : base64Audio
+  )
+    .replace(/\s+/g, "")
+    .trim();
+
   if (!pureBase64) return null;
 
-  const cleanMime = mimeType.split(";")[0].trim() || "audio/ogg";
+  const audioBuffer = Buffer.from(pureBase64, "base64");
+  if (audioBuffer.length === 0) {
+    console.warn("[audio-transcriber] Buffer de audio vacío tras decodificar Base64");
+    return null;
+  }
 
-  // 1. PRIORIDAD: OPENAI WHISPER-1 (El estándar de oro para reconocimiento de voz en español)
+  console.log("[audio-transcriber] Audio listo para transcribir:", {
+    bytes: audioBuffer.length,
+    mimeType: cleanMime,
+  });
+
+  // 3. INTENTO PRIMARIO: OPENAI WHISPER-1 VÍA NATIVE REST FORMDATA
   const openaiKey = process.env.OPENAI_API_KEY?.trim();
   if (openaiKey) {
     try {
-      const { OpenAI, toFile } = await import("openai");
-      const openai = new OpenAI({ apiKey: openaiKey });
-      const buffer = Buffer.from(pureBase64, "base64");
       const ext =
         cleanMime.includes("mp4") || cleanMime.includes("m4a")
           ? "m4a"
@@ -38,29 +61,43 @@ export async function transcribeWhatsAppAudio(
           : cleanMime.includes("wav")
           ? "wav"
           : "ogg";
-      const file = await toFile(buffer, `audio.${ext}`, { type: cleanMime });
 
-      const transcription = await openai.audio.transcriptions.create({
-        model: "whisper-1",
-        language: "es",
-        prompt: WHISPER_PROMPT,
-        temperature: 0.0,
-        file,
+      const uint8 = new Uint8Array(audioBuffer);
+      const audioBlob = new Blob([uint8], { type: cleanMime });
+
+      const formData = new FormData();
+      formData.append("file", audioBlob, `audio.${ext}`);
+      formData.append("model", "whisper-1");
+      formData.append("language", "es");
+      formData.append("prompt", WHISPER_PROMPT);
+      formData.append("temperature", "0");
+
+      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openaiKey}`,
+        },
+        body: formData,
       });
 
-      const whisperText = transcription.text?.trim();
-      if (whisperText) {
-        // Limpiar comillas extras si las hay
-        const cleaned = whisperText.replace(/^["'«“]+|["'»”]+$/g, "").trim();
-        console.log("[audio-transcriber] Whisper-1 transcribió con éxito:", cleaned);
-        return cleaned;
+      if (res.ok) {
+        const data = (await res.json()) as { text?: string };
+        const text = data?.text?.trim();
+        if (text) {
+          const cleaned = text.replace(/^["'«“]+|["'»”]+$/g, "").trim();
+          console.log("[audio-transcriber] Whisper-1 transcribió con éxito:", cleaned);
+          return cleaned;
+        }
+      } else {
+        const errText = await res.text().catch(() => "");
+        console.warn(`[audio-transcriber] Whisper HTTP ${res.status}:`, errText);
       }
     } catch (whisperErr: any) {
-      console.warn("[audio-transcriber] Whisper falló al transcribir; pasando a Gemini fallback:", whisperErr?.message || whisperErr);
+      console.warn("[audio-transcriber] Error en llamada REST a Whisper:", whisperErr?.message || whisperErr);
     }
   }
 
-  // 2. FALLBACK: GEMINI MULTIMODAL (@google/genai)
+  // 4. FALLBACK: GOOGLE GEMINI MULTIMODAL
   const geminiKey = process.env.GEMINI_API_KEY?.trim();
   if (geminiKey) {
     try {
@@ -70,9 +107,8 @@ export async function transcribeWhatsAppAudio(
         "Devuelve ÚNICAMENTE las palabras dichas por el cliente, sin comillas, sin introducciones ni comentarios. " +
         "Si el audio es completamente inaudible o silencio, responde exactamente: VACIO";
 
-      // Modelos válidos y activos en el API
       const candidateModels = [
-        "gemini-3.5-transcribe",
+        "gemini-2.5-flash",
         "gemini-flash-latest",
         "gemini-3.5-flash",
       ];
