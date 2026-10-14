@@ -47,11 +47,54 @@ export async function transcribeWhatsAppAudio(
 
   logSystemEvent("info", "voice", `Nota de voz recibida (${audioBuffer.length} bytes, ${cleanMime})`);
 
-  // 3. INTENTO CON GEMINI FLASH-LITE (Modelos confirmados y activos sin 503)
+  // 3. INTENTO CON GOOGLE GEMINI (@google/genai)
   const geminiKey = process.env.GEMINI_API_KEY?.trim();
   if (geminiKey) {
     try {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
+
+      // 3a. INTENTO ESPECIALIZADO: gemini-3.5-transcribe (Speech-to-Text nativo de Google)
+      try {
+        const timeoutTranscribe = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Timeout")), 10000)
+        );
+        const transcribePromise = ai.models.generateContent({
+          model: "gemini-3.5-transcribe",
+          contents: [
+            {
+              role: "user",
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: cleanMime,
+                    data: pureBase64,
+                  },
+                },
+              ],
+            },
+          ],
+          config: {
+            audioTranscriptionConfig: {
+              mode: "SMART" as any,
+            },
+          },
+        });
+
+        const transcribeRes = await Promise.race([transcribePromise, timeoutTranscribe]);
+        const transcribeText = transcribeRes.text?.trim() || "";
+        const lower = transcribeText.toLowerCase();
+
+        if (transcribeText && !lower.includes("vacio") && !lower.includes("vacío")) {
+          const cleaned = transcribeText.replace(/^["'«“]+|["'»”]+$/g, "").trim();
+          console.log("[audio-transcriber] gemini-3.5-transcribe transcribió con éxito:", cleaned);
+          logSystemEvent("success", "voice", `Audio transcrito con éxito (gemini-3.5-transcribe): "${cleaned}"`);
+          return cleaned;
+        }
+      } catch (sttErr: any) {
+        console.warn("[audio-transcriber] gemini-3.5-transcribe falló, pasando a modelos multimodales:", sttErr?.message || sttErr);
+      }
+
+      // 3b. INTENTO MULTIMODAL CON PROMPT (gemini-flash-lite-latest, gemini-3.5-flash-lite, gemini-3.8-flash, gemini-flash-latest)
       const prompt =
         "Transcribe con total exactitud este audio de un cliente en Colombia haciendo un pedido en Buñuelandia. " +
         "Devuelve ÚNICAMENTE las palabras dichas por el cliente en español, sin comillas, sin introducciones ni comentarios. " +
@@ -60,12 +103,14 @@ export async function transcribeWhatsAppAudio(
       const candidateModels = [
         "gemini-flash-lite-latest",
         "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
+        "gemini-flash-latest",
       ];
 
       for (const model of candidateModels) {
         try {
           const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Timeout")), 6000)
+            setTimeout(() => reject(new Error("Timeout")), 9000)
           );
 
           const genPromise = ai.models.generateContent({
@@ -100,7 +145,7 @@ export async function transcribeWhatsAppAudio(
             return cleaned;
           }
           if (lower === "vacio" || lower === "vacío") {
-            logSystemEvent("warn", "voice", "Audio inaudible o en silencio");
+            logSystemEvent("warn", "voice", `Audio inaudible o silencio (${model})`);
             return null;
           }
         } catch (modelErr: any) {
