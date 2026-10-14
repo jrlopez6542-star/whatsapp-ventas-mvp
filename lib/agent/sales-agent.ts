@@ -875,7 +875,20 @@ export async function handleSalesMessage(
     lower.includes("nequi") ||
     lower.includes("bre-b") ||
     lower.includes("breb") ||
-    lower.includes("qr");
+    lower.includes("qr") ||
+    lower.includes("dirección") ||
+    lower.includes("direccion") ||
+    lower.includes("equivocada") ||
+    lower.includes("equivocado") ||
+    lower.includes("incorrecta") ||
+    lower.includes("incorrecto") ||
+    lower.includes("otra direc") ||
+    lower.includes("nueva direc") ||
+    lower.includes("actualizar") ||
+    lower.includes("calle") ||
+    lower.includes("carrera") ||
+    lower.includes("conjunto") ||
+    lower.includes("barrio");
 
   if (hasActiveOrder && !isOrderingNewItems && !isModifyingOrPayingActiveOrder) {
     const statusText =
@@ -1133,12 +1146,16 @@ Desglosa el carrito completo, subtotal, domicilio GRATIS, total exacto, direcci�
 
   📌 FLUJO DE VENTA PASO A PASO (Sigue este orden estrictamente):
   1. SALUDO Y MENÚ: Inicia SIEMPRE con mucho entusiasmo (ej. "¡Hola, hola! 🥳 ¡Bienvenido a *BUÑUELANDIA*! 🥟🔥"). Antoja al cliente y muéstrale nuestras Cajas Tradicionales y Surtidas.
-  2. ELECCIÓN Y SALSAS (OBLIGATORIO): 
-     - Si el cliente menciona que quiere buñuelos o una caja pero no especificó cuál:
+  2. ELECCIÓN Y SALSAS${sessionItems.length > 0 ? ` — ✅ COMPLETADO` : ` (OBLIGATORIO)`}: 
+${sessionItems.length > 0
+  ? `     - ✅ EL CLIENTE YA ELIGIÓ SU CAJA: ${sessionItems.map(i => i.name).join(", ")}. ESTE PASO ESTÁ COMPLETADO AL 100%.
+     - ❌ ABSOLUTAMENTE PROHIBIDO volver a preguntar "¿qué caja te gustaría pedir?", "¿qué se te antoja?" o cualquier variante.
+     - ❌ NO regreses al Paso 1 ni al Paso 2. Continúa desde donde está el cliente según la MEMORIA ACTIVA.`
+  : `     - Si el cliente menciona que quiere buñuelos o una caja pero no especificó cuál:
        Pregúntale de inmediato: «¡Con gusto! 🤤 ¿Qué caja te gustaría: Tradicional o Surtida, de 4 o de 8 buñuelos?» antes de pasar a la dirección.
      - Si el cliente elige una caja "Tradicional", es sin salsa, pasa al paso 3.
      - Si el cliente elige una caja "Surtida" (C4S o C8S), ES OBLIGATORIO PREGUNTARLE LAS SALSAS antes de pedir la dirección:
-       «¿Qué salsas prefieres para tu caja surtida? Tenemos Mora, Arequipe, Bocadillo y Suero Costeño 🤤 (puedes combinarlas como prefieras).»
+       «¿Qué salsas prefieres para tu caja surtida? Tenemos Mora, Arequipe, Bocadillo y Suero Costeño 🤤 (puedes combinarlas como prefieras).»`}
   ${upsellDrinks ? `3. VENTA CRUZADA Y CATÁLOGO DE BEBIDAS:
      - Justo después de que el cliente elija su caja (y salsas si aplica), antes de pedir la dirección, pregúntale amigablemente si desea agregar bebidas para acompañar:
        «¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤 Tenemos café campesino ($3.500), chocolate caliente ($4.000), gaseosa helada ($4.500), jugo de mora ($6.000) o agua ($3.000).»
