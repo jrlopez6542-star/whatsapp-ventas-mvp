@@ -933,9 +933,9 @@ export async function handleSalesMessage(
     const rawEnvModel = process.env.GEMINI_MODEL?.trim();
     const candidateGeminiModels = [
       rawEnvModel,
+      "gemini-flash-latest",
+      "gemini-3.5-flash",
       "gemini-2.5-flash",
-      "gemini-2.0-flash",
-      "gemini-1.5-flash",
     ].filter(Boolean) as string[];
 
     const uniqueModels = Array.from(new Set(candidateGeminiModels));

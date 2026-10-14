@@ -6,8 +6,8 @@ import {
   type OutboundWhatsAppResult,
 } from "@/lib/whatsapp-send";
 
-const DEFAULT_MIN_DELAY_MS = 2_500;
-const DEFAULT_MAX_DELAY_MS = 5_500;
+const DEFAULT_MIN_DELAY_MS = 300;
+const DEFAULT_MAX_DELAY_MS = 800;
 const MAX_CONFIGURED_DELAY_MS = 30_000;
 const LOCK_WAIT_MS = 45_000;
 const LOCK_POLL_MS = 150;
