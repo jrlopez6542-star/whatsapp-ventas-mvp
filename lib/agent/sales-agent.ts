@@ -1143,10 +1143,10 @@ export async function handleSalesMessage(
     let nextStepInstruction = "";
     if (hasSurtida && sessionSalsas.length === 0) {
       nextStepInstruction = "👉 El cliente ya eligió su caja surtida pero NO ha dicho las salsas. Pregúntale amablemente qué salsas desea (Mora, Arequipe, Bocadillo, Suero Costeño).";
-    } else if (!sessionAddress || !knownCustomerName) {
-      nextStepInstruction = `👉 Ya eligió productos (${sessionItems.map((i) => i.name).join(", ")}). Ahora pídele amablemente ${!sessionAddress ? "su dirección de entrega en Neiva" : ""} ${!knownCustomerName ? "y su nombre" : ""} para la entrega. ¡PROHIBIDO volver a preguntarle qué caja quiere!`;
+    } else if (!sessionAddress) {
+      nextStepInstruction = `👉 Ya eligió productos (${sessionItems.map((i) => i.name).join(", ")}). Ahora pídele amablemente su dirección de entrega exacta en Neiva para el envío. ¡PROHIBIDO volver a preguntarle qué caja quiere!`;
     } else if (!sessionPayment) {
-      nextStepInstruction = `👉 Ya tenemos productos (${sessionItems.map((i) => i.name).join(", ")}), salsas, dirección y nombre. AHORA PASA AL MEDIO DE PAGO: Ofrécele Nequi, Bre-B o Efectivo contra entrega (recordándole que el domicilio es ¡GRATIS!). ¡PROHIBIDO volver a preguntar por productos!`;
+      nextStepInstruction = `👉 Ya tenemos productos (${sessionItems.map((i) => i.name).join(", ")}), salsas y dirección ("${sessionAddress}"). AHORA PASA DIRECTAMENTE AL MEDIO DE PAGO: Ofrécele Nequi, Bre-B o Efectivo contra entrega (recordándole que el domicilio es ¡GRATIS!). ¡PROHIBIDO volver a pedir la dirección de entrega porque ya la tienes anotada ("${sessionAddress}")!`;
     } else {
       nextStepInstruction = `👉 ¡YA TENEMOS TODOS LOS DATOS COMPLETOS! Presenta DIRECTAMENTE el Resumen Previo (Paso 6) con las opciones: 1️⃣ Confirmar pedido y 2️⃣ Modificar algún dato.`;
     }
@@ -1161,6 +1161,8 @@ ${itemsFormatted}
 
 🚨🚨 REGLA SUPREMA DE MEMORIA Y CONTINUIDAD (¡CERO AMNESIA!):
 - El cliente YA ELIGIÓ sus productos: ${sessionItems.map((i) => i.name).join(", ")}.
+${sessionAddress ? `- 📍 DIRECCIÓN CONFIRMADA: "${sessionAddress}". ¡PROHIBIDO volver a pedir dirección!` : ""}
+${sessionPayment ? `- 💳 MEDIO DE PAGO ELEGIDO: "${sessionPayment}".` : ""}
 - ❌ PROHIBIDO VOLVER A PREGUNTAR: "¿qué caja te gustaría pedir hoy?", "¿qué se te antoja?", o "parece que no has elegido buñuelos".
 - ❌ NO vuelvas al Paso 1 ni al Paso 2 del menú general.
 ${nextStepInstruction}
