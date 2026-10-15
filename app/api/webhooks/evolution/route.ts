@@ -303,10 +303,18 @@ export async function POST(request: NextRequest) {
       try {
         // Disparar inmediatamente visto azul y presencia "Escribiendo..." en WhatsApp
         const presenceTarget = parsed.replyJid || replyTo;
+        const rawKey = (parsed.rawMsg && (parsed.rawMsg.key as Record<string, unknown>)) || null;
+        const markJid = (rawKey && typeof rawKey.remoteJid === "string" ? rawKey.remoteJid : null) || presenceTarget;
+        const participant = rawKey && typeof rawKey.participant === "string" ? rawKey.participant : undefined;
+
         if (parsed.messageId) {
-          markEvolutionMessageAsRead(presenceTarget, parsed.messageId).catch(() => {});
+          markEvolutionMessageAsRead(markJid, parsed.messageId, participant).catch(() => {});
+          if (presenceTarget && presenceTarget !== markJid) {
+            markEvolutionMessageAsRead(presenceTarget, parsed.messageId, participant).catch(() => {});
+          }
         }
         sendEvolutionPresence(presenceTarget, "composing", 6000).catch(() => {});
+
 
         let currentText = text;
 

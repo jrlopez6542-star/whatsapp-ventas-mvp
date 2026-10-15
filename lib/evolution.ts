@@ -673,7 +673,11 @@ export async function sendEvolutionText(
     };
   }
 }
-export async function markEvolutionMessageAsRead(remoteJid: string, messageId: string) {
+export async function markEvolutionMessageAsRead(
+  remoteJid: string,
+  messageId: string,
+  participant?: string
+) {
   const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "");
   const apiKey = process.env.EVOLUTION_API_KEY?.trim();
   const instance = process.env.EVOLUTION_INSTANCE?.trim();
@@ -687,18 +691,61 @@ export async function markEvolutionMessageAsRead(remoteJid: string, messageId: s
 
   const url = `${base}/chat/markMessageAsRead/${encodeURIComponent(instance)}`;
   try {
+    const readItem: Record<string, unknown> = {
+      remoteJid: jid,
+      fromMe: false,
+      id: messageId,
+    };
+    if (participant) {
+      readItem.participant = participant;
+    }
+
     await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         apikey: apiKey,
       },
-      body: JSON.stringify({ readMessages: [{ remoteJid: jid, fromMe: false, id: messageId }] }),
+      body: JSON.stringify({ readMessages: [readItem] }),
     });
   } catch (e) {
     console.error("[evolution] markRead error:", e);
   }
 }
+
+/**
+ * Asegura que la instancia de Evolution API tenga activado readMessages: true
+ * para emitir el visto azul (doble check azul) nativamente en WhatsApp.
+ */
+export async function ensureEvolutionSettings(): Promise<boolean> {
+  const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "");
+  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const instance = process.env.EVOLUTION_INSTANCE?.trim();
+  if (!base || !apiKey || !instance) return false;
+
+  try {
+    const res = await fetch(`${base}/settings/set/${encodeURIComponent(instance)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: apiKey,
+      },
+      body: JSON.stringify({
+        rejectCall: false,
+        msgCall: "",
+        groupsIgnore: false,
+        alwaysOnline: true,
+        readMessages: true,
+        readStatus: false,
+        syncFullHistory: false,
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 
 /**
  * Emite estado de presencia en WhatsApp a través de Evolution API v2:

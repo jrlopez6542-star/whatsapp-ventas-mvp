@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isEvolutionConfigured } from "@/lib/evolution";
+import { isEvolutionConfigured, ensureEvolutionSettings } from "@/lib/evolution";
 import { isTwilioSendConfigured } from "@/lib/twilio";
 import { isTursoConfigured } from "@/lib/store/db";
 import { getWhatsAppChannel } from "@/lib/whatsapp-send";
@@ -8,9 +8,13 @@ export const runtime = "nodejs";
 
 export async function GET() {
   const evolution = isEvolutionConfigured();
+  if (evolution) {
+    ensureEvolutionSettings().catch(() => {});
+  }
   const twilio = isTwilioSendConfigured();
   const turso = isTursoConfigured();
   const channel = getWhatsAppChannel();
+
 
   return NextResponse.json(
     {
