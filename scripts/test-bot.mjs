@@ -95,6 +95,34 @@ async function sendWebhookMessage(text) {
   return { ok: res.ok, status: res.status, json, messageId };
 }
 
+async function waitForAssistantReply(afterTimestamp, maxWaitMs = 15000) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const msgs = await querySql(
+      `SELECT id, role, content, created_at FROM messages WHERE conversation_id LIKE '%${TEST_PHONE}%' AND role = 'assistant' AND created_at > ${afterTimestamp} ORDER BY created_at DESC LIMIT 1`
+    );
+    if (msgs.length > 0 && msgs[0].content) {
+      return msgs[0];
+    }
+    await sleep(800);
+  }
+  return null;
+}
+
+async function waitForOrder(afterTimestamp, maxWaitMs = 15000) {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    const orders = await querySql(
+      `SELECT * FROM orders WHERE conversation_id LIKE '%${TEST_PHONE}%' AND created_at >= ${afterTimestamp - 2000} ORDER BY created_at DESC LIMIT 1`
+    );
+    if (orders.length > 0) {
+      return orders[0];
+    }
+    await sleep(800);
+  }
+  return null;
+}
+
 async function run() {
   console.log(`\n${c.bright}${c.cyan}====================================================${c.reset}`);
   console.log(`${c.bright}${c.cyan}  🤖 TEST END-TO-END DE WHATSAPP VENTAS (BUÑUELANDIA)${c.reset}`);
@@ -139,6 +167,7 @@ async function run() {
   console.log(`${c.bright}PASO 2: Test Ráfaga (Debounce)${c.reset}`);
   console.log(`Disparando 3 peticiones POST /api/webhooks/evolution separadas por 500ms...`);
   try {
+    const step2Start = Date.now();
     const p1 = sendWebhookMessage("Hola");
     console.log(`  [t=0ms]   Disparado: "Hola"`);
     await sleep(500);
@@ -152,8 +181,11 @@ async function run() {
 
     await Promise.all([p1, p2, p3]);
 
-    console.log(`⏳ Esperando 7 segundos a que se procese el debounce (2000ms) y la IA responda...`);
-    await sleep(7000);
+    console.log(`⏳ Esperando respuesta del bot (debounce + presencia + IA)...`);
+    const replyMsg = await waitForAssistantReply(step2Start, 16000);
+    if (!replyMsg) {
+      throw new Error("Tiempo de espera agotado sin respuesta del bot tras ráfaga.");
+    }
 
     // Consultar mensajes en Turso
     const msgs = await querySql(
@@ -169,7 +201,7 @@ async function run() {
       throw new Error(`Debounce falló: Se esperaban exactamente 1 respuesta del asistente, pero se encontraron ${assistantMsgs.length}.`);
     }
 
-    const firstReply = String(assistantMsgs[0].content || "");
+    const firstReply = String(replyMsg.content || "");
     const lowerReply = firstReply.toLowerCase();
     const asksSalsas =
       lowerReply.includes("salsa") ||
@@ -195,15 +227,16 @@ async function run() {
   console.log(`${c.bright}PASO 3: Test Salsas y Dirección${c.reset}`);
   console.log(`Enviando: "Con mora y arequipe para el Conjunto Puertas del Sol Torre 2 Apto 301"...`);
   try {
+    const step3Start = Date.now();
     await sendWebhookMessage("Con mora y arequipe para el Conjunto Puertas del Sol Torre 2 Apto 301");
-    console.log(`⏳ Esperando 5.5 segundos a que la IA procese la dirección...`);
-    await sleep(5500);
+    console.log(`⏳ Esperando respuesta del bot con dirección procesada...`);
 
-    const msgs = await querySql(
-      `SELECT role, content FROM messages WHERE conversation_id LIKE '%${TEST_PHONE}%' AND role = 'assistant' ORDER BY created_at DESC LIMIT 1`
-    );
+    const replyMsg = await waitForAssistantReply(step3Start, 16000);
+    if (!replyMsg) {
+      throw new Error("Tiempo de espera agotado sin respuesta del bot tras enviar salsas y dirección.");
+    }
 
-    const reply = String(msgs[0]?.content || "");
+    const reply = String(replyMsg.content || "");
     const lower = reply.toLowerCase();
 
     const asksPayment =
@@ -256,15 +289,16 @@ async function run() {
   console.log(`${c.bright}PASO 4: Test Pre-Confirmación (No facturar antes de tiempo)${c.reset}`);
   console.log(`Enviando: "Nequi"...`);
   try {
+    const step4Start = Date.now();
     await sendWebhookMessage("Nequi");
-    console.log(`⏳ Esperando 5.5 segundos a que la IA genere el resumen previo...`);
-    await sleep(5500);
+    console.log(`⏳ Esperando resumen previo del pedido...`);
 
-    const msgs = await querySql(
-      `SELECT role, content FROM messages WHERE conversation_id LIKE '%${TEST_PHONE}%' AND role = 'assistant' ORDER BY created_at DESC LIMIT 1`
-    );
+    const replyMsg = await waitForAssistantReply(step4Start, 16000);
+    if (!replyMsg) {
+      throw new Error("Tiempo de espera agotado sin resumen previo del bot.");
+    }
 
-    const reply = String(msgs[0]?.content || "");
+    const reply = String(replyMsg.content || "");
     const lower = reply.toLowerCase();
 
     const hasSummaryOrOptions =
@@ -301,19 +335,15 @@ async function run() {
   console.log(`${c.bright}PASO 5: Test Confirmación Final y Factura Oficial${c.reset}`);
   console.log(`Enviando confirmación: "1"...`);
   try {
+    const step5Start = Date.now();
     await sendWebhookMessage("1");
-    console.log(`⏳ Esperando 7 segundos a que se registre el pedido y se genere la factura en Contabilidad...`);
-    await sleep(7000);
+    console.log(`⏳ Esperando confirmación y factura en Contabilidad...`);
 
-    const orders = await querySql(
-      `SELECT * FROM orders WHERE conversation_id LIKE '%${TEST_PHONE}%' ORDER BY created_at DESC`
-    );
-
-    if (orders.length !== 1) {
-      throw new Error(`Se esperaba exactamente 1 pedido en 'orders', pero se encontraron ${orders.length}.`);
+    const order = await waitForOrder(step5Start, 18000);
+    if (!order) {
+      throw new Error("Tiempo de espera agotado sin pedido registrado en 'orders'.");
     }
 
-    const order = orders[0];
     const total = Number(order.total);
     const address = String(order.delivery_address || "");
     const invoiceNum = String(order.invoice_number || "");
