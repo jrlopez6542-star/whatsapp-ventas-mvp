@@ -735,12 +735,13 @@ export async function ensureEvolutionSettings(): Promise<boolean> {
         msgCall: "",
         groupsIgnore: false,
         alwaysOnline: true,
-        readMessages: true,
+        readMessages: false, // Desactivado para que el visto azul tenga demora humana natural controlada
         readStatus: false,
         syncFullHistory: false,
       }),
     });
     return res.ok;
+
   } catch {
     return false;
   }

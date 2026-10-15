@@ -301,24 +301,10 @@ export async function POST(request: NextRequest) {
     // FAST ACK: Responder 200 OK inmediatamente (<80ms) delegando todo el procesamiento a after()
     after(async () => {
       try {
-        // Disparar inmediatamente visto azul y presencia "Escribiendo..." en WhatsApp
-        const presenceTarget = parsed.replyJid || replyTo;
-        const rawKey = (parsed.rawMsg && (parsed.rawMsg.key as Record<string, unknown>)) || null;
-        const markJid = (rawKey && typeof rawKey.remoteJid === "string" ? rawKey.remoteJid : null) || presenceTarget;
-        const participant = rawKey && typeof rawKey.participant === "string" ? rawKey.participant : undefined;
-
-        if (parsed.messageId) {
-          markEvolutionMessageAsRead(markJid, parsed.messageId, participant).catch(() => {});
-          if (presenceTarget && presenceTarget !== markJid) {
-            markEvolutionMessageAsRead(presenceTarget, parsed.messageId, participant).catch(() => {});
-          }
-        }
-        sendEvolutionPresence(presenceTarget, "composing", 6000).catch(() => {});
-
-
         let currentText = text;
 
-        // SISTEMA DE DEBOUNCING: Esperar para agrupar ráfagas de mensajes de texto del cliente
+        // 1. ESPERA HUMANA NATURAL Y DEBOUNCE (1.8s a 2.5s)
+        // Durante este tiempo, los ticks en WhatsApp permanecen en doble check gris (entregado pero no leído).
         if (!isImage && !isAudio && DEBOUNCE_WINDOW_MS > 0) {
           await new Promise((r) => setTimeout(r, DEBOUNCE_WINDOW_MS));
           const latestTs = lastIncomingTimestamp.get(fromKey);
@@ -347,13 +333,36 @@ export async function POST(request: NextRequest) {
             currentText = unhandledUserMsgs.join("\n");
             console.log("[evolution] Ráfaga de mensajes agrupada:", currentText);
           }
+        } else if (isImage || isAudio) {
+          // Pausa humana corta (1.8s) antes de abrir audios o fotos
+          await new Promise((r) => setTimeout(r, 1800));
         }
+
+        // 2. AHORA: El asesor "abre el chat" -> Se marca como VISTO AZUL en WhatsApp tras la espera humana
+        const presenceTarget = parsed.replyJid || replyTo;
+        const rawKey = (parsed.rawMsg && (parsed.rawMsg.key as Record<string, unknown>)) || null;
+        const markJid = (rawKey && typeof rawKey.remoteJid === "string" ? rawKey.remoteJid : null) || presenceTarget;
+        const participant = rawKey && typeof rawKey.participant === "string" ? rawKey.participant : undefined;
+
+        if (parsed.messageId) {
+          markEvolutionMessageAsRead(markJid, parsed.messageId, participant).catch(() => {});
+          if (presenceTarget && presenceTarget !== markJid) {
+            markEvolutionMessageAsRead(presenceTarget, parsed.messageId, participant).catch(() => {});
+          }
+        }
+
+        // 3. Breve pausa humana de lectura (800ms) antes de empezar a redactar
+        await new Promise((r) => setTimeout(r, 800));
+
+        // 4. El asesor empieza a redactar: emitir presencia "Escribiendo..."
+        sendEvolutionPresence(presenceTarget, "composing", 7000).catch(() => {});
 
         const currentConv = await getConversation(fromKey);
         if (currentConv?.status === "human") {
           console.log("[evolution] human mode — skip AI", { from: fromKey });
           return;
         }
+
 
         // SI ES NOTA DE VOZ / AUDIO: Transcribir con Gemini Multimodal / Whisper
         if (isAudio) {
