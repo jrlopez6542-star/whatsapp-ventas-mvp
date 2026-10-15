@@ -8,6 +8,7 @@ import {
   getProducts,
   setConversationStatus,
   setConversationCustomerName,
+  setConversationPhone,
   updateOrderInvoice,
   updateOrderAddress,
   type Message,
@@ -179,7 +180,13 @@ function extractAddress(text: string): string | null {
 // Extrae número de celular o teléfono colombiano (10 dígitos comenzando en 3)
 export function extractColombianPhone(text: string): string | null {
   if (!text) return null;
-  const match = text.match(
+  // Limpiar para evitar falsos positivos con identificadores de @lid
+  let clean = text;
+  if (clean.includes("@lid") || clean.includes("lid:")) {
+    clean = clean.replace(/whatsapp:lid:\d+/gi, "").replace(/\d+@lid/gi, "");
+  }
+
+  const match = clean.match(
     /(?:(?:cel(?:ular)?|tel(?:[eé]fono)?|wpp|whatsapp|contacto|llamar(?:\s+al)?)\s*[:#\-]?\s*)?(?:\+?57[\s.-]?)?(3\d{2}[\s.-]?\d{3}[\s.-]?\d{4})\b/i
   );
   if (match && match[1]) {
@@ -187,7 +194,17 @@ export function extractColombianPhone(text: string): string | null {
     if (digits.length === 10 && digits.startsWith("3")) {
       return digits;
     }
+    if (digits.length === 12 && digits.startsWith("573")) {
+      return digits.slice(2);
+    }
   }
+
+  // Búsqueda directa de 10 dígitos que empiecen por 3
+  const directMatch = clean.match(/\b3\d{9}\b/);
+  if (directMatch) {
+    return directMatch[0];
+  }
+
   return null;
 }
 
@@ -277,64 +294,75 @@ function extractPaymentMethod(text: string): string | null {
   return null;
 }
 
-// Verifica si el cliente o la respuesta hace referencia a pagar por Nequi o Bre-B (o QR/transferencia)
-function shouldSendTransferQr(userText: string, assistantReply: string): boolean {
+// Verifica si se debe enviar el código QR oficial de transferencia
+export function shouldSendTransferQr(
+  userText: string,
+  assistantReply: string,
+  isOrderCreated?: boolean,
+  paymentMethod?: string | null
+): boolean {
   const u = (userText || "").toLowerCase().trim();
   const a = (assistantReply || "").toLowerCase();
 
-  // Si el usuario eligió efectivo o la confirmación indica efectivo, JAMÁS enviar QR
-  if (
-    a.includes("efectivo") ||
-    a.includes("contra entrega") ||
-    a.includes("contraentrega") ||
+  // 1. Resumen previo (Paso 6): NUNCA debe enviar el QR ni cuentas
+  const isPreConfirmationSummary =
+    a.includes("resumen de tu pedido") ||
+    a.includes("1️⃣ ✅ confirmar") ||
+    a.includes("¿todo está correcto?") ||
+    (a.includes("1️⃣") && (a.includes("confirmar") || a.includes("modificar")));
+
+  if (isPreConfirmationSummary) {
+    return false;
+  }
+
+  // 2. Si el medio de pago es efectivo: JAMÁS enviar QR
+  const isCash =
+    (paymentMethod &&
+      (paymentMethod.toLowerCase().includes("efectivo") ||
+        paymentMethod.toLowerCase().includes("contra entrega") ||
+        paymentMethod.toLowerCase().includes("contraentrega"))) ||
+    a.includes("efectivo contra entrega") ||
+    a.includes("en efectivo") ||
     u.includes("efectivo") ||
     u.includes("contra entrega") ||
     u.includes("contraentrega") ||
     u === "3" ||
     u.startsWith("3.") ||
-    u.startsWith("3 ")
-  ) {
+    u.startsWith("3 ");
+
+  if (isCash) {
     return false;
   }
 
-  // 1. El usuario seleccionó explícitamente Nequi, Bre-B o QR
-  const userExplicitlySelectedQr =
-    u.includes("nequi") ||
-    u.includes("bre-b") ||
-    u.includes("breb") ||
-    u.includes("bre b") ||
-    u.includes("transferencia") ||
-    u.includes("código qr") ||
-    u.includes("codigo qr") ||
+  // 3. Confirmación final del pedido (Paso 7):
+  const isFinalConfirmation =
+    Boolean(isOrderCreated) ||
+    a.includes("pedido confirmado y registrado") ||
+    a.includes("¡pedido confirmado") ||
+    a.includes("pedido registrado") ||
+    a.includes("van en camino calienticos");
+
+  if (isFinalConfirmation) {
+    const isTransfer =
+      (paymentMethod &&
+        (paymentMethod.toLowerCase().includes("nequi") ||
+          paymentMethod.toLowerCase().includes("bre") ||
+          paymentMethod.toLowerCase().includes("transferencia"))) ||
+      a.includes("nequi") ||
+      a.includes("bre-b") ||
+      a.includes("breb") ||
+      a.includes("transferencia");
+
+    return Boolean(isTransfer);
+  }
+
+  // 4. Solicitud explícita del cliente para recibir el QR
+  const isExplicitQrRequest =
     /\bqr\b/i.test(u) ||
-    u === "1" ||
-    u === "2" ||
-    u.startsWith("1.") ||
-    u.startsWith("2.") ||
-    u.startsWith("1 ") ||
-    u.startsWith("2 ");
+    u.includes("codigo qr") ||
+    u.includes("código qr");
 
-  // 2. El asistente indica explícitamente que adjunta o envía la imagen del QR oficial
-  const assistantSendingQr =
-    a.includes("código qr oficial") ||
-    a.includes("codigo qr oficial") ||
-    a.includes("te envío el código qr") ||
-    a.includes("te envio el codigo qr") ||
-    a.includes("te adjunto el qr") ||
-    a.includes("aquí tienes el código qr") ||
-    a.includes("aqui tienes el codigo qr") ||
-    a.includes("aquí te dejamos el qr") ||
-    a.includes("escanea el código qr") ||
-    a.includes("escanea este qr") ||
-    a.includes("envío la imagen del qr");
-
-  // El QR se envía si el asistente confirmó el envío del QR,
-  // O si el usuario eligió Nequi/Bre-B y el asistente está gestionando el pago de Nequi/Bre-B
-  if (assistantSendingQr) return true;
-  if (
-    userExplicitlySelectedQr &&
-    (a.includes("nequi") || a.includes("bre-b") || a.includes("breb") || a.includes("llave"))
-  ) {
+  if (isExplicitQrRequest) {
     return true;
   }
 
@@ -807,6 +835,15 @@ async function tryExtractAndRegisterOrder(
       }
     } catch {}
   }
+  if (!customerPhone) {
+    try {
+      const conv = await getConversation(conversationKey);
+      if (conv?.phone && !conv.phone.toLowerCase().includes("lid")) {
+        const found = extractColombianPhone(conv.phone);
+        if (found) customerPhone = found;
+      }
+    } catch {}
+  }
   if (!customerPhone && !conversationKey.toLowerCase().includes("lid:") && !conversationKey.toLowerCase().includes("@lid")) {
     const rawDigits = conversationKey.replace(/\D/g, "");
     if (rawDigits.length === 12 && rawDigits.startsWith("573")) {
@@ -814,6 +851,10 @@ async function tryExtractAndRegisterOrder(
     } else if (rawDigits.length === 10 && rawDigits.startsWith("3")) {
       customerPhone = rawDigits;
     }
+  }
+
+  if (customerPhone) {
+    await setConversationPhone(conversationKey, customerPhone).catch(() => {});
   }
 
   const order = await createOrder(conversationKey, orderItems, detectedTotal, {
@@ -1221,6 +1262,52 @@ export async function handleSalesMessage(
     nameContext = `👤 DATOS DEL CLIENTE: Aún no tenemos el nombre de la persona. Es OBLIGATORIO pedir su nombre en el Paso 4.`;
   }
 
+  const isLidConversation = conversationKey.toLowerCase().includes("lid:") || conversationKey.toLowerCase().includes("@lid");
+
+  // Resolver teléfono guardado del cliente
+  let knownCustomerPhone: string | null = null;
+  if (conv?.phone) {
+    const rawClean = conv.phone.replace(/^whatsapp:/i, "").trim();
+    if (!rawClean.toLowerCase().includes("lid")) {
+      const parsed = extractColombianPhone(rawClean);
+      if (parsed) knownCustomerPhone = parsed;
+    }
+  }
+  if (!knownCustomerPhone && latestOrder?.customerPhone) {
+    const parsed = extractColombianPhone(latestOrder.customerPhone);
+    if (parsed) knownCustomerPhone = parsed;
+  }
+
+  // Detectar si en el mensaje actual el cliente envía un número de celular colombiano
+  const phoneInText = extractColombianPhone(text);
+  if (phoneInText) {
+    knownCustomerPhone = phoneInText;
+    await setConversationPhone(conversationKey, phoneInText).catch(() => {});
+  }
+
+  // INTERCEPTAR: Si es conversación @lid SIN teléfono registrado y el cliente responde «al mismo número»
+  const isSayingSameNumber =
+    /\b(al\s+mismo(\s+n[uú]mero|\s+cel|\s+celular)?|a\s+este(\s+mismo)?|al\s+que\s+tengo(\s+registrado)?|al\s+de\s+este\s+whatsapp)\b/i.test(text);
+
+  if (isLidConversation && !knownCustomerPhone && isSayingSameNumber) {
+    const reply =
+      "Al comunicarte desde una cuenta privada de WhatsApp, tu número de contacto no es visible en nuestro sistema 🔒📱.\n\nPor favor escríbenos tu número de celular (10 dígitos que comiencen por 3) para que el domiciliario se pueda comunicar contigo al entregar tu pedido.";
+    await appendMessage(conversationKey, "assistant", reply);
+    return {
+      reply,
+      mode: "keyword",
+    };
+  }
+
+  let phoneContext = "";
+  if (knownCustomerPhone) {
+    phoneContext = `📱 CELULAR DE CONTACTO: El número de celular colombiano del cliente es "${knownCustomerPhone}". ¡YA ESTÁ REGISTRADO Y CONFIRMADO! NUNCA vuelvas a pedir su número de teléfono.`;
+  } else if (isLidConversation) {
+    phoneContext = `🚨 CUENTA PRIVADA DE WHATSAPP (@lid): El número de teléfono no es visible en el sistema. Es OBLIGATORIO solicitar un número de celular de contacto de 10 dígitos (que empiece por 3) para el domiciliario en el Paso 4. Si el cliente dice «al mismo número», NO lo aceptes y vuelve a solicitarle amablemente que escriba su número celular de 10 dígitos.`;
+  } else {
+    phoneContext = `📱 CELULAR: Si el cliente proporciona su número de celular, úsalo para el domicilio.`;
+  }
+
   // Extraer TODO el contexto acumulado de la conversación del cliente (Memoria Activa)
   // Incluye transcripciones de notas de voz (mensajes system con 🎤 [Nota de voz transcrita])
   const voiceTranscriptions = previous
@@ -1269,6 +1356,18 @@ export async function handleSalesMessage(
   }
   if (!sessionAddress) {
     sessionAddress = extractAddress(text);
+  }
+
+  // Si aún no tenemos teléfono, revisar en mensajes anteriores
+  if (!knownCustomerPhone) {
+    for (const m of [...allUserAndVoiceMsgs].reverse()) {
+      const p = extractColombianPhone(m.content);
+      if (p) {
+        knownCustomerPhone = p;
+        await setConversationPhone(conversationKey, p).catch(() => {});
+        break;
+      }
+    }
   }
 
   // Extraer medio de pago ya mencionado (incluyendo transcripciones de voz)
@@ -1369,11 +1468,10 @@ Desglosa el carrito completo, subtotal, domicilio GRATIS, total exacto, direcci�
 ¡BAJO NINGUNA CIRCUNSTANCIA vuelvas a pedir su nombre, ni dirección, ni caja, ni confirmación adicional!`
     : "";
 
-  const isLidConversation = conversationKey.toLowerCase().includes("lid:") || conversationKey.toLowerCase().includes("@lid");
-
   const systemPrompt = `Eres el asistente virtual y vendedor estrella por WhatsApp de "${settings.name}".
 
   ${nameContext}
+  ${phoneContext}
   ${activeMemoryDirective}
   ${confirmationDirective}
 
@@ -1416,9 +1514,11 @@ ${sessionItems.length > 0
      - Si el cliente acepta alguna bebida, agrégala al pedido; si dice que no, avanza inmediatamente al paso 4 sin insistir.` : `3. BEBIDAS DESACTIVADAS (NO OFRECER BEBIDAS):
      - El interruptor de venta de bebidas está APAGADO. NO ofrezcas bebidas activamente. Pasa DIRECTAMENTE al paso 4 (Recolección de datos de entrega).`}
   4. RECOLECCIÓN DE DATOS DE ENTREGA Y NOMBRE DEL CLIENTE:
-     - ✍️ PEDIR NOMBRE, DIRECCIÓN ${isLidConversation ? "Y CELULAR DE CONTACTO" : ""}:
-       ${isLidConversation ? `🚨 ATENCIÓN - CUENTA PRIVADA DE WHATSAPP: El número de celular de este cliente está oculto por privacidad de WhatsApp. En este paso solicita OBLIGATORIAMENTE un número de celular de contacto:
-       «¿A nombre de quién dejamos registrado el pedido, cuál es tu dirección de entrega y un número de celular de contacto para el domiciliario? ✍️📍📱»` : `Pide SIEMPRE el nombre de la persona que recibe y la dirección de entrega para registrar su pedido:
+     - ✍️ PEDIR NOMBRE, DIRECCIÓN ${knownCustomerPhone ? "" : isLidConversation ? "Y CELULAR DE CONTACTO (10 DÍGITOS)" : ""}:
+       ${knownCustomerPhone ? `Pide el nombre de la persona que recibe y la dirección de entrega (el celular ya lo tenemos registrado: ${knownCustomerPhone}):
+       «¿A nombre de quién dejamos registrado el pedido y cuál es tu dirección de entrega? ✍️📍»` : isLidConversation ? `🚨 ATENCIÓN - CUENTA PRIVADA DE WHATSAPP: El número de celular no es visible en el sistema. En este paso solicita OBLIGATORIAMENTE su número de celular móvil de 10 dígitos:
+       «¿A nombre de quién dejamos registrado el pedido, cuál es tu dirección de entrega y un número de celular de contacto (10 dígitos que empiece por 3) para el domiciliario? ✍️📍📱»
+       Si el cliente responde «al mismo número», NO lo aceptes ya que no conocemos su número privado; pídele amablemente que escriba su número.` : `Pide SIEMPRE el nombre de la persona que recibe y la dirección de entrega para registrar su pedido:
        «¿A nombre de quién dejamos registrado el pedido y cuál es tu dirección de entrega? ✍️📍»`}
      - Si el cliente ya dio su dirección pero aún no ha dicho su nombre:
        Pregúntale amablemente: «¡Listo! ¿A nombre de quién registramos el pedido? 👤»
@@ -1441,17 +1541,15 @@ ${sessionItems.length > 0
        2️⃣ *Bre-B*
        3️⃣ *Efectivo contra entrega*
      - SI ELIGE NEQUI O BRE-B (o pide QR/transferencia):
-       Infórmale alegremente que le envías el código QR oficial de pago y OBLIGATORIAMENTE incluye este bloque en texto limpio con acento grave para que el cliente pueda copiar el número con un solo toque:
-       📱 *Nequi:* \`${nequiNumber}\`
-       🔑 *Llave Bre-B:* \`${brebKey}\`
-       💰 *Total exacto a pagar:* [Total en COP]
-       *(Toca y mantén presionado el número para copiarlo rápidamente a tu app bancaria)*
+       Confirma amablemente el medio de pago seleccionado (ej: «¡Listo! Pago por Nequi 📲») y avanza DIRECTAMENTE al Paso 6 (Resumen Previo).
+       🚨 REGLA ESTRICTA: NO envíes el código QR ni el bloque largo de cuentas bancarias en este paso. Se enviarán únicamente en la confirmación final del Paso 7.
      - SI ELIGE EFECTIVO:
        Pregúntale: «¿Con qué billete vas a pagar? (ej: billete de $50.000 o monto exacto) para que el domiciliario te lleve el cambio listo 💵»
   6. RESUMEN PREVIO (PRE-CONFIRMACIÓN):
      🚨 REGLA ESTRICTA DE CONTINUIDAD (¡CERO AMNESIA DE PRODUCTOS!):
      - Revisa SIEMPRE todo el historial de la conversación. Si el cliente ya eligió sus productos o caja de buñuelos en cualquier mensaje previo (texto o nota de voz), JAMÁS vuelvas a preguntarle qué caja desea ni digas "parece que aún no elegiste tus buñuelos".
      - Una vez tengas los productos (con desglose exacto de cuántos de cada sabor si es surtida), el nombre del cliente, la dirección Y el medio de pago (y si es efectivo, la denominación del billete/cambio), envía DIRECTAMENTE el resumen compacto con opciones en texto plano:
+     🚨 REGLA ESTRICTA: El resumen previo NO debe enviar el código QR ni incluir anticipadamente el bloque largo de cuentas bancarias.
 
      📋 *Resumen de tu Pedido:*
      • [Productos x cantidad, detallando cuántos buñuelos de cada sabor si es caja surtida, ej: 1x Caja x8 Surtida (4 de Mora, 4 de Arequipe)]
@@ -1482,6 +1580,16 @@ ${sessionItems.length > 0
      💳 *Medio de pago:* [Medio ingresado, y si es efectivo con cuánto paga y cambio]
      👤 *Cliente:* [Nombre del cliente o "Cliente"]
      ⏱️ *Tiempo estimado de entrega:* ${etaTime}
+
+     SI EL PAGO ES POR NEQUI O BRE-B:
+     OBLIGATORIAMENTE incluye a continuación los datos de pago oficiales (el sistema enviará automáticamente la imagen del código QR una sola vez):
+     📱 *Nequi:* \`${nequiNumber}\`
+     🔑 *Llave Bre-B:* \`${brebKey}\`
+     💰 *Total exacto a transferir:* [Total exacto en COP]
+     *(Toca y mantén presionado el número para copiarlo rápidamente a tu app bancaria. Por favor envíanos la captura del comprobante por aquí una vez realizada la transferencia para que cocina inicie la preparación 👨‍🍳📲)*
+
+     SI EL PAGO ES EN EFECTIVO:
+     NO envíes cuentas ni QR. Confirma el cambio y que el domiciliario cobrará al entregar.
 
      🔥 ¡Tus buñuelos van en camino calienticos y crujientes! ¡Gracias por tu compra en BUÑUELANDIA! 🥟
 
@@ -1587,7 +1695,13 @@ ${sessionItems.length > 0
           await appendMessage(conversationKey, "assistant", reply);
 
           const shouldSendQr = Boolean(
-            settings.transferQrImage && shouldSendTransferQr(text, reply)
+            settings.transferQrImage &&
+              shouldSendTransferQr(
+                text,
+                reply,
+                Boolean(maybeOrder),
+                maybeOrder?.paymentMethod || sessionPayment
+              )
           );
 
           return {
@@ -1642,7 +1756,13 @@ ${sessionItems.length > 0
       await appendMessage(conversationKey, "assistant", reply);
 
       const shouldSendQr = Boolean(
-        settings.transferQrImage && shouldSendTransferQr(text, reply)
+        settings.transferQrImage &&
+          shouldSendTransferQr(
+            text,
+            reply,
+            Boolean(maybeOrder),
+            maybeOrder?.paymentMethod || sessionPayment
+          )
       );
 
       return {
@@ -1941,7 +2061,8 @@ ${sessionItems.length > 0
   }
 
   const shouldSendQr = Boolean(
-    settings.transferQrImage && shouldSendTransferQr(text, reply)
+    settings.transferQrImage &&
+      shouldSendTransferQr(text, reply, mode === "order_created", foundPayment || sessionPayment)
   );
 
   await appendMessage(conversationKey, "assistant", reply);

@@ -209,6 +209,12 @@ class MemoryStore {
     c.updatedAt = Date.now();
   }
 
+  setConversationPhone(id: string, phone: string): void {
+    const c = this.getOrCreateConversation(id);
+    c.phone = phone;
+    c.updatedAt = Date.now();
+  }
+
   deleteConversation(id: string): void {
     this.conversations.delete(id);
     this.messages = this.messages.filter((m) => m.conversationId !== id);
@@ -493,6 +499,34 @@ export async function setConversationCustomerName(
       });
     } catch (err) {
       console.warn("[store] setConversationCustomerName Turso error:", err);
+    }
+  }
+}
+
+export async function setConversationPhone(
+  conversationId: string,
+  phone: string
+): Promise<void> {
+  const trimmed = (phone || "").trim();
+  if (!trimmed) return;
+
+  const mem = getMemoryStore();
+  const c = mem.conversations.get(conversationId);
+  if (c) {
+    c.phone = trimmed;
+    c.updatedAt = Date.now();
+  }
+
+  if (isTursoConfigured()) {
+    try {
+      await getOrCreateConversation(conversationId);
+      const client = getTursoClient();
+      await client.execute({
+        sql: "UPDATE conversations SET phone = ?, updated_at = ? WHERE id = ?",
+        args: [trimmed, Date.now(), conversationId],
+      });
+    } catch (err) {
+      console.warn("[store] setConversationPhone Turso error:", err);
     }
   }
 }

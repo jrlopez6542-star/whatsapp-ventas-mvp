@@ -33,22 +33,25 @@ export function resolveCustomerPhoneForDriver(order: Order): CustomerPhoneInfo {
   // 1. Número registrado explícitamente en order.customerPhone
   if (order.customerPhone) {
     const raw = order.customerPhone.trim();
-    const formatted = formatColombianPhone(raw);
-    if (formatted) {
-      const ten = raw.replace(/\D/g, "").slice(-10);
-      return {
-        displayPhone: formatted,
-        waUrl: `https://wa.me/57${ten}`,
-        isLidWithoutPhone: false,
-      };
-    }
-    const digits = raw.replace(/\D/g, "");
-    if (digits.length >= 7 && digits.length <= 15) {
-      return {
-        displayPhone: `+${digits}`,
-        waUrl: `https://wa.me/${digits}`,
-        isLidWithoutPhone: false,
-      };
+    const isRawLid = raw.toLowerCase().includes("lid:") || raw.toLowerCase().includes("@lid");
+    if (!isRawLid) {
+      const formatted = formatColombianPhone(raw);
+      if (formatted) {
+        const ten = raw.replace(/\D/g, "").slice(-10);
+        return {
+          displayPhone: formatted,
+          waUrl: `https://wa.me/57${ten}`,
+          isLidWithoutPhone: false,
+        };
+      }
+      const digits = raw.replace(/\D/g, "");
+      if (digits.length >= 8 && digits.length <= 13) {
+        return {
+          displayPhone: `+${digits}`,
+          waUrl: `https://wa.me/${digits}`,
+          isLidWithoutPhone: false,
+        };
+      }
     }
   }
 
@@ -97,7 +100,7 @@ export function resolveCustomerPhoneForDriver(order: Order): CustomerPhoneInfo {
       isLidWithoutPhone: false,
     };
   }
-  if (digits.length >= 7 && digits.length <= 15) {
+  if (digits.length >= 8 && digits.length <= 13) {
     return {
       displayPhone: `+${digits}`,
       waUrl: `https://wa.me/${digits}`,
@@ -142,9 +145,21 @@ export function formatDeliveryDriverMessage(
     paymentMethod.toLowerCase().includes("contra entrega") ||
     paymentMethod.toLowerCase().includes("contraentrega");
 
-  const cashNotice = isCash
-    ? "⚠️ *ATENCIÓN:* Cobrar en efectivo al entregar y llevar el cambio listo 💵"
-    : "✅ *YA PAGADO / TRANSFERENCIA:* No cobrar productos al cliente.";
+  let paymentNotice = "";
+  if (isCash) {
+    paymentNotice = "⚠️ *ATENCIÓN:* Cobrar en efectivo al entregar y llevar el cambio listo 💵";
+  } else {
+    const isVerified =
+      order.status === "preparing" ||
+      order.status === "delivering" ||
+      order.status === "delivered";
+
+    if (isVerified) {
+      paymentNotice = "✅ *TRANSFERENCIA VERIFICADA:* Pago confirmado exitosamente. No cobrar al cliente.";
+    } else {
+      paymentNotice = "⚠️ *ATENCIÓN - TRANSFERENCIA PENDIENTE:* No se ha verificado el comprobante de pago. Verificar con administración antes de entregar 📲";
+    }
+  }
 
   const invoiceLine = order.invoiceNumber
     ? `🧾 *Factura Oficial:* #${order.invoiceNumber}\n`
@@ -173,7 +188,7 @@ export function formatDeliveryDriverMessage(
     `💵 *${formatCop(order.total || 0)}*\n` +
     `💳 *Medio de Pago:* ${paymentMethod}\n` +
     changeLine +
-    `\n${cashNotice}\n\n` +
+    `\n${paymentNotice}\n\n` +
     `¡Buen viaje y maneja con precaución! 🛵💨`
   );
 }

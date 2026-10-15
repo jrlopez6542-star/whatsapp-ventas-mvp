@@ -16,6 +16,7 @@ import { sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
 import { claimWebhookEvent } from "@/lib/webhook-dedupe";
 import { handleSalesMessage } from "@/lib/agent/sales-agent";
 import { verifyReceiptWithGemini } from "@/lib/agent/receipt-verifier";
+import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { pickRandomVariation } from "@/lib/anti-ban";
 import { logSystemEvent } from "@/lib/logger";
 import {
@@ -427,8 +428,8 @@ export async function POST(request: NextRequest) {
 
         // SI ES UNA IMAGEN: Intentar verificar como comprobante de pago con Gemini Visión
         if (isImage) {
-          console.log("[evolution] Analizando imagen entrante con Gemini Visión...", { from: fromKey });
-          
+          console.log("[evolution] Analizando imagen entrante...", { from: fromKey });
+
           let imageBase64 = parsed.mediaBase64;
           let mimeType = "image/jpeg";
           if (!imageBase64 && parsed.messageId) {
@@ -439,89 +440,139 @@ export async function POST(request: NextRequest) {
             }
           }
 
-          // Buscar si el cliente tiene un pedido activo esperando comprobante
+          // Buscar pedidos asociados a la conversación
           const allOrders = await getOrders().catch(() => []);
-          const pendingOrder = allOrders.find(
-            (o) =>
-              (o.conversationId === fromKey || (conv.phone && o.conversationId.includes(conv.phone))) &&
-              (o.status === "pending" || o.status === "confirmed")
-          );
+          const convOrders = allOrders
+            .filter((o) => o.conversationId === fromKey || (conv?.phone && o.conversationId.includes(conv.phone)))
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
-          if (imageBase64) {
-            const verification = await verifyReceiptWithGemini(
-              imageBase64,
-              mimeType,
-              pendingOrder?.total
-            );
+          const latestOrder = convOrders[0];
 
-            console.log("[evolution receipt verification]", verification);
+          if (latestOrder) {
+            const paymentMethod = (latestOrder.paymentMethod || "").toLowerCase();
+            const isCash =
+              paymentMethod.includes("efectivo") ||
+              paymentMethod.includes("contra entrega") ||
+              paymentMethod.includes("contraentrega");
 
-            if (verification.isReceipt) {
-              if (pendingOrder) {
-                await updateOrderStatus(pendingOrder.id, "preparing").catch((err) => {
-                  console.error("[evolution] error updating order status to preparing:", err);
-                });
-              }
-
-              const bankName = verification.bank || "transferencia";
-              const amountFormatted = verification.amount
-                ? `$${verification.amount.toLocaleString("es-CO")} COP`
-                : pendingOrder
-                ? `$${pendingOrder.total.toLocaleString("es-CO")} COP`
-                : "";
-              const refPart = verification.reference
-                ? `\n🧾 *Aprobación / Comprobante:* #${verification.reference}`
-                : "";
-
-              logSystemEvent(
-                "success",
-                "payment",
-                `Comprobante verificado con éxito: ${bankName} ${amountFormatted}`,
-                { ref: verification.reference, from: fromKey }
-              );
-
-              const receiptReply = `¡Comprobante de ${bankName} verificado con éxito${amountFormatted ? ` por ${amountFormatted}` : ""}! 🎉${refPart}\n\nTu pedido ya entró a preparación en cocina 👨‍🍳🔥 En unos momentos tus buñuelos estarán doraditos, crujientes y listos para salir a domicilio. ¡Muchas gracias!`;
-
-              await appendMessage(fromKey, "assistant", receiptReply);
-
+            // 1. Si el pedido es en efectivo, conserva el flujo en efectivo (no requiere comprobante)
+            if (isCash) {
+              console.log("[evolution] Pedido en efectivo, no requiere comprobante", { orderId: latestOrder.id });
+            } else if (
+              latestOrder.status === "preparing" ||
+              latestOrder.status === "delivering" ||
+              latestOrder.status === "delivered"
+            ) {
+              // 2. Si ya fue procesado, evitar notificaciones duplicadas
+              console.log("[evolution] Comprobante recibido pero el pedido ya fue verificado", {
+                orderId: latestOrder.id,
+                status: latestOrder.status,
+              });
+              const alreadyProcessedReply =
+                "¡Hola! Te recordamos que el pago de tu pedido ya fue verificado exitosamente y se encuentra en proceso de preparación/entrega 🥟🛵. ¡Muchas gracias!";
+              await appendMessage(fromKey, "assistant", alreadyProcessedReply);
               try {
-                await sendDelayedOutboundWhatsApp(fromKey, replyTo, receiptReply, parsed.messageId);
+                await sendDelayedOutboundWhatsApp(fromKey, replyTo, alreadyProcessedReply, parsed.messageId);
               } catch (err) {
-                console.error("[evolution] error sending receipt confirmation:", err);
+                console.error("[evolution] error sending alreadyProcessed reply:", err);
               }
-
               return;
-            }
+            } else if (latestOrder.status === "pending" || latestOrder.status === "confirmed") {
+              // 3. Pedido pendiente de comprobante
+              const pendingOrder = latestOrder;
+              if (imageBase64) {
+                const verification = await verifyReceiptWithGemini(
+                  imageBase64,
+                  mimeType,
+                  pendingOrder.total
+                );
 
-            // Si la imagen NO es comprobante de pago y no vino con texto explicativo:
-            if (!text) {
-              const notReceiptReply =
-                "Recibimos tu imagen 📸, pero no pudimos identificar con claridad los datos de un comprobante de pago exitoso (valor, fecha o entidad bancaria). Por favor verifica y envíanos la captura clara del comprobante de Nequi o Bre-B, o cuéntanos si necesitas ayuda con otro medio de pago.";
-              await appendMessage(fromKey, "assistant", notReceiptReply);
+                console.log("[evolution receipt verification]", verification);
 
-              try {
-                await sendDelayedOutboundWhatsApp(fromKey, replyTo, notReceiptReply, parsed.messageId);
-              } catch (err) {
-                console.error("[evolution] error sending notReceipt reply:", err);
+                // Comprobar que sea comprobante legible
+                if (verification.isReceipt) {
+                  const detectedAmount = verification.amount ? Number(verification.amount) : null;
+                  const expectedAmount = pendingOrder.total;
+                  const amountMatches =
+                    detectedAmount !== null &&
+                    Math.abs(detectedAmount - expectedAmount) <= 1000;
+
+                  // Antes de marcarlo como pagado, comprobar que el importe corresponda al pedido
+                  if (!amountMatches) {
+                    console.warn("[evolution] Comprobante con importe discrepante:", {
+                      detected: detectedAmount,
+                      expected: expectedAmount,
+                    });
+
+                    let mismatchReply = "";
+                    if (detectedAmount !== null) {
+                      mismatchReply = `Recibimos tu comprobante de pago 📸, pero el valor transferido ($${detectedAmount.toLocaleString("es-CO")} COP) no coincide con el total exacto de tu pedido ($${expectedAmount.toLocaleString("es-CO")} COP). Por favor verifica y envíanos el comprobante por el valor correcto para poder pasar tu pedido a cocina.`;
+                    } else {
+                      mismatchReply = `Recibimos tu comprobante de pago 📸, pero no pudimos leer con claridad el monto transferido. Por favor envíanos una captura más nítida donde sea visible el valor de $${expectedAmount.toLocaleString("es-CO")} COP para confirmarlo.`;
+                    }
+
+                    await appendMessage(fromKey, "assistant", mismatchReply);
+                    try {
+                      await sendDelayedOutboundWhatsApp(fromKey, replyTo, mismatchReply, parsed.messageId);
+                    } catch (err) {
+                      console.error("[evolution] error sending mismatch reply:", err);
+                    }
+                    return;
+                  }
+
+                  // Comprobante e importe correctos: marcar como preparing
+                  await updateOrderStatus(pendingOrder.id, "preparing").catch((err) => {
+                    console.error("[evolution] error updating order status to preparing:", err);
+                  });
+                  pendingOrder.status = "preparing";
+
+                  const bankName = verification.bank || "transferencia";
+                  const amountFormatted = `$${expectedAmount.toLocaleString("es-CO")} COP`;
+                  const refPart = verification.reference
+                    ? `\n🧾 *Aprobación / Comprobante:* #${verification.reference}`
+                    : "";
+
+                  logSystemEvent(
+                    "success",
+                    "payment",
+                    `Comprobante verificado con éxito: ${bankName} ${amountFormatted}`,
+                    { ref: verification.reference, from: fromKey, orderId: pendingOrder.id }
+                  );
+
+                  // Notificar al domiciliario que el comprobante se validó satisfactoriamente
+                  notifyDeliveryDriver(pendingOrder).catch((dErr) => {
+                    console.warn("[evolution] error notificando al domiciliario tras verificar comprobante:", dErr);
+                  });
+
+                  const receiptReply = `¡Comprobante de ${bankName} verificado con éxito por ${amountFormatted}! 🎉${refPart}\n\nTu pedido ya entró a preparación en cocina 👨‍🍳🔥 En unos momentos tus buñuelos estarán doraditos, crujientes y listos para salir a domicilio. ¡Muchas gracias!`;
+
+                  await appendMessage(fromKey, "assistant", receiptReply);
+
+                  try {
+                    await sendDelayedOutboundWhatsApp(fromKey, replyTo, receiptReply, parsed.messageId);
+                  } catch (err) {
+                    console.error("[evolution] error sending receipt confirmation:", err);
+                  }
+
+                  return;
+                }
+
+                // Si la imagen NO es comprobante de pago y no vino con texto explicativo:
+                if (!text) {
+                  const notReceiptReply =
+                    "Recibimos tu imagen 📸, pero no pudimos identificar con claridad los datos de un comprobante de pago exitoso (valor, fecha o entidad bancaria). Por favor verifica y envíanos la captura clara del comprobante de Nequi o Bre-B, o cuéntanos si necesitas ayuda con otro medio de pago.";
+                  await appendMessage(fromKey, "assistant", notReceiptReply);
+
+                  try {
+                    await sendDelayedOutboundWhatsApp(fromKey, replyTo, notReceiptReply, parsed.messageId);
+                  } catch (err) {
+                    console.error("[evolution] error sending notReceipt reply:", err);
+                  }
+
+                  return;
+                }
               }
-
-              return;
             }
-            // No se pudo descargar la imagen y no hay texto: enviar mensaje amigable
-            const fallbackReply = pickRandomVariation([
-              "¡Recibimos tu imagen! 📸 Nuestro equipo en Buñuelandia la está revisando en este momento para continuar con tu pedido. 👨‍🍳",
-              "¡Muchas gracias por la foto! 📸 La estamos verificando en cocina para ayudarte con tu pedido. 🥟✨",
-              "¡Recibido! 📸 Estamos chequeando la imagen que nos enviaste. Si deseas añadir algún detalle a tu pedido, escríbenos por aquí. 😊",
-            ]);
-            await appendMessage(fromKey, "assistant", fallbackReply);
-
-            try {
-              await sendDelayedOutboundWhatsApp(fromKey, replyTo, fallbackReply, parsed.messageId);
-            } catch (err) {
-              console.error("[evolution] error sending fallback reply:", err);
-            }
-
-            return;
           }
         }
 

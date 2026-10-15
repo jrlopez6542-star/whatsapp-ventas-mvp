@@ -6,8 +6,8 @@ import {
   runSerializedConversation,
 } from "./outbound-queue";
 
-test("reply delay defaults to 2.5–5.5 seconds", () => {
-  assert.deepEqual(getReplyDelayConfig({}), { minMs: 2500, maxMs: 5500 });
+test("reply delay defaults to 300–800 milliseconds", () => {
+  assert.deepEqual(getReplyDelayConfig({}), { minMs: 300, maxMs: 800 });
 });
 
 test("reply delay config clamps and sorts bounds", () => {
@@ -23,7 +23,7 @@ test("reply delay config clamps and sorts bounds", () => {
       WHATSAPP_REPLY_DELAY_MIN_MS: "invalid",
       WHATSAPP_REPLY_DELAY_MAX_MS: "999999",
     }),
-    { minMs: 2500, maxMs: 30000 }
+    { minMs: 300, maxMs: 30000 }
   );
 });
 
