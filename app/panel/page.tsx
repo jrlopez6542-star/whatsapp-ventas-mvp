@@ -26,6 +26,7 @@ interface Conversation {
   status: "bot" | "human" | "closed";
   createdAt: number;
   updatedAt: number;
+  lastMessage?: string;
 }
 
 interface Message {
@@ -278,6 +279,10 @@ export default function PanelDashboard() {
     );
     setSelectedSidebarOrderId(matching.length > 0 ? matching[0].id : "");
   }, [selectedConvId, orders]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages.length, selectedConvId]);
 
   // Catalog
   const [products, setProducts] = useState<Product[]>([]);
@@ -935,7 +940,7 @@ export default function PanelDashboard() {
                             )}
                           </div>
                           
-                          <p className="text-sm text-slate-400 truncate">Conversación activa</p>
+                          <p className="text-sm text-slate-400 truncate">{conv.lastMessage || "Conversación activa"}</p>
                         </div>
                       </div>
                     </div>

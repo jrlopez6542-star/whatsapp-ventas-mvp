@@ -194,8 +194,9 @@ function shouldSendTransferQr(userText: string, assistantReply: string): boolean
 
   // Si el usuario eligió efectivo o la confirmación indica efectivo, JAMÁS enviar QR
   if (
-    a.includes("efectivo contra entrega") ||
-    a.includes("medio de pago: efectivo") ||
+    a.includes("efectivo") ||
+    a.includes("contra entrega") ||
+    a.includes("contraentrega") ||
     u.includes("efectivo") ||
     u.includes("contra entrega") ||
     u.includes("contraentrega") ||
@@ -897,7 +898,9 @@ export async function handleSalesMessage(
     lower.includes("calle") ||
     lower.includes("carrera") ||
     lower.includes("conjunto") ||
-    lower.includes("barrio");
+    lower.includes("barrio") ||
+    lower.includes("cancelar") ||
+    lower.includes("anular");
 
   // --- MANEJO DE CAMBIO DE DIRECCIÓN PARA PEDIDO ACTIVO ---
   if (hasActiveOrder) {

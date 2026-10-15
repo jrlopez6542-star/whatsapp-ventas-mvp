@@ -277,8 +277,17 @@ export async function POST(request: NextRequest) {
     }
 
     if (conv.status === "human") {
-      console.log("[evolution] human mode — skip AI", { from: fromKey });
-      return jsonOk({ mode: "human" });
+      const HUMAN_TIMEOUT_MS = 12 * 60 * 60 * 1000; // 12 horas de inactividad
+      const isExpired = Date.now() - conv.updatedAt > HUMAN_TIMEOUT_MS;
+      if (isExpired) {
+        console.log("[evolution] human mode expired (>12h) — auto-reactivating bot", { from: fromKey });
+        await setConversationStatus(fromKey, "bot").catch(() => {});
+        await appendMessage(fromKey, "system", "🤖 Auto-reactivación: Más de 12 horas sin interacción humana. Bot reactivado.").catch(() => {});
+        logSystemEvent("info", "agent", "Bot reactivado automáticamente por expiración de 12h en modo humano", { from: fromKey });
+      } else {
+        console.log("[evolution] human mode — skip AI", { from: fromKey });
+        return jsonOk({ mode: "human" });
+      }
     }
 
     if (conv.status === "closed") {
@@ -520,10 +529,20 @@ export async function POST(request: NextRequest) {
         const send = await sendDelayedOutboundWhatsApp(fromKey, replyTo, reply, parsed.messageId);
         if (mediaUrl) {
           try {
+            // Pausa humana antes de enviar multimedia (2.2s a 3.8s)
+            const mediaDelay = 2200 + Math.floor(Math.random() * 1600);
+            await new Promise((r) => setTimeout(r, mediaDelay));
+
+            const qrCaption = pickRandomVariation([
+              "📲 Aquí tienes el código QR para realizar tu pago por Nequi o Bre-B. Por favor envíanos el comprobante una vez realizado. ¡Muchas gracias!",
+              "📲 Te comparto el código QR oficial de pago (Nequi / Bre-B). Cuando realices la transferencia, nos adjuntas el comprobante por aquí. 😊",
+              "📲 Aquí tienes el código QR para tu transferencia bancaria. Apenas esté listo, envíanos el pantallazo para pasarlo a cocina de inmediato. 🥟✨",
+            ]);
+
             await sendOutboundWhatsAppMedia(
               replyTo,
               mediaUrl,
-              "📲 Aquí tienes el código QR para realizar tu pago por Nequi o Bre-B. Por favor envíanos el comprobante una vez realizado."
+              qrCaption
             );
           } catch (mErr) {
             console.error("[evolution] media outbound error", mErr);
@@ -531,10 +550,20 @@ export async function POST(request: NextRequest) {
         }
         if (invoicePdfUrl) {
           try {
+            // Pausa humana antes de enviar factura PDF (2.2s a 3.8s)
+            const pdfDelay = 2200 + Math.floor(Math.random() * 1600);
+            await new Promise((r) => setTimeout(r, pdfDelay));
+
+            const invoiceCaption = pickRandomVariation([
+              `🧾 Factura Oficial #${invoiceNumber || ""} - ¡Gracias por tu compra en Buñuelandia! 🥟`,
+              `🧾 Aquí tienes tu Factura Oficial #${invoiceNumber || ""}. ¡Tus buñuelos van en preparación con todo el amor! 👨‍🍳🔥`,
+              `🧾 Adjuntamos la Factura Oficial #${invoiceNumber || ""} de tu pedido. ¡Muchas gracias por preferirnos! ✨`,
+            ]);
+
             await sendOutboundWhatsAppMedia(
               replyTo,
               invoicePdfUrl,
-              `🧾 Factura Oficial #${invoiceNumber || ""} - ¡Gracias por tu compra en Buñuelandia! 🥟`
+              invoiceCaption
             );
           } catch (pdfErr) {
             console.error("[evolution] invoice pdf outbound error", pdfErr);

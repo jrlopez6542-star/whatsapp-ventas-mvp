@@ -205,6 +205,16 @@ function extractTextFromMessage(message: UnknownRecord | null): string {
   }
   const list = asRecord(message.listResponseMessage);
   if (list && typeof list.title === "string") return list.title;
+  const loc = asRecord(message.locationMessage) || asRecord(message.liveLocationMessage);
+  if (loc) {
+    const lat = loc.degreesLatitude ?? loc.latitude;
+    const lng = loc.degreesLongitude ?? loc.longitude;
+    const name = strField(loc.name);
+    const address = strField(loc.address);
+    const label = name || address || (lat && lng ? `${lat}, ${lng}` : "");
+    const mapUrl = lat && lng ? ` - https://maps.google.com/?q=${lat},${lng}` : "";
+    return `📍 [Ubicación GPS compartida: ${label || "Punto en el mapa"}${mapUrl}]`;
+  }
   return "";
 }
 

@@ -10,6 +10,7 @@ export interface Conversation {
   status: ConversationStatus;
   createdAt: number;
   updatedAt: number;
+  lastMessage?: string;
 }
 
 export interface Message {

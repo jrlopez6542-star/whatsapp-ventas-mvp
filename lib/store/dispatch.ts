@@ -58,10 +58,12 @@ export async function getStore(): Promise<IStore> {
         await ensureTursoReady();
         const client = getTursoClient();
         const res = await client.execute(`
-          SELECT c.id, c.phone, c.from_wa, c.customer_name, c.status, c.created_at, c.updated_at
+          SELECT c.id, c.phone, c.from_wa, c.customer_name, c.status, c.created_at, c.updated_at,
+            (SELECT content FROM messages WHERE conversation_id = c.id ORDER BY created_at DESC LIMIT 1) as last_message
           FROM conversations c
           UNION
-          SELECT m.conversation_id as id, m.conversation_id as phone, m.conversation_id as from_wa, NULL as customer_name, 'bot' as status, MIN(m.created_at) as created_at, MAX(m.created_at) as updated_at
+          SELECT m.conversation_id as id, m.conversation_id as phone, m.conversation_id as from_wa, NULL as customer_name, 'bot' as status, MIN(m.created_at) as created_at, MAX(m.created_at) as updated_at,
+            (SELECT content FROM messages WHERE conversation_id = m.conversation_id ORDER BY created_at DESC LIMIT 1) as last_message
           FROM messages m
           WHERE m.conversation_id NOT IN (SELECT id FROM conversations)
           GROUP BY m.conversation_id
@@ -78,6 +80,7 @@ export async function getStore(): Promise<IStore> {
             status: (r.status as ConversationStatus) || "bot",
             createdAt: parseTimestamp(r.created_at),
             updatedAt: parseTimestamp(r.updated_at),
+            lastMessage: r.last_message ? String(r.last_message) : undefined,
           };
         });
       } catch (err) {

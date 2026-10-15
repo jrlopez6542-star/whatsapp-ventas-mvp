@@ -66,6 +66,19 @@ declare global {
   var __whatsappConversationQueueTails: Map<string, Promise<void>> | undefined;
 }
 
+let lastGlobalOutboundTimestamp = 0;
+const GLOBAL_MIN_PACING_MS = 1200;
+
+async function waitForGlobalPacing(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastGlobalOutboundTimestamp;
+  if (elapsed < GLOBAL_MIN_PACING_MS) {
+    const waitMs = GLOBAL_MIN_PACING_MS - elapsed;
+    await sleep(waitMs);
+  }
+  lastGlobalOutboundTimestamp = Date.now();
+}
+
 function localTails(): Map<string, Promise<void>> {
   if (!globalThis.__whatsappConversationQueueTails) {
     globalThis.__whatsappConversationQueueTails = new Map();
@@ -272,7 +285,8 @@ export async function sendDelayedOutboundWhatsApp(
           await sleep(delays.typingDelayMs);
         }
 
-        // Fase 3: Despacho final del mensaje
+        // Fase 3: Despacho final del mensaje (con espaciado global mínimo entre conversaciones)
+        await waitForGlobalPacing();
         const result = await sendOutboundWhatsApp(to, body);
         if (result.ok) {
           recordOutboundSent(conversationKey, body);
