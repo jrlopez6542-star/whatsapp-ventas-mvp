@@ -5,6 +5,7 @@ import {
   parseEvolutionUpsert,
   verifyEvolutionWebhookSecret,
   markEvolutionMessageAsRead,
+  sendEvolutionPresence,
   getEvolutionMediaBase64,
   parseEvolutionCall,
   rejectEvolutionCall,
@@ -300,6 +301,13 @@ export async function POST(request: NextRequest) {
     // FAST ACK: Responder 200 OK inmediatamente (<80ms) delegando todo el procesamiento a after()
     after(async () => {
       try {
+        // Disparar inmediatamente visto azul y presencia "Escribiendo..." en WhatsApp
+        const presenceTarget = parsed.replyJid || replyTo;
+        if (parsed.messageId) {
+          markEvolutionMessageAsRead(presenceTarget, parsed.messageId).catch(() => {});
+        }
+        sendEvolutionPresence(presenceTarget, "composing", 6000).catch(() => {});
+
         let currentText = text;
 
         // SISTEMA DE DEBOUNCING: Esperar para agrupar ráfagas de mensajes de texto del cliente

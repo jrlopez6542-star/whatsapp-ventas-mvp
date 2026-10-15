@@ -239,11 +239,19 @@ export default function PanelDashboard() {
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [draft, setDraft] = useState('');
+  const chatContainerRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [filter, setFilter] = useState<"all" | "bot" | "human" | "closed">("all");
   const [messages, setMessages] = useState<Message[]>([]);
   const [replyText, setReplyText] = useState("");
+
+  const scrollToBottom = useCallback((smooth = false) => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+    messagesEndRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
+  }, []);
   const handleToggleBot = async (id: string, newStatus: string) => {
     if (!id) return;
     try {
@@ -281,8 +289,15 @@ export default function PanelDashboard() {
   }, [selectedConvId, orders]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages.length, selectedConvId]);
+    if (!messages.length) return;
+    scrollToBottom(false);
+    const t1 = setTimeout(() => scrollToBottom(true), 50);
+    const t2 = setTimeout(() => scrollToBottom(false), 200);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [messages.length, selectedConvId, scrollToBottom]);
 
   // Catalog
   const [products, setProducts] = useState<Product[]>([]);
@@ -624,21 +639,27 @@ export default function PanelDashboard() {
   };
 
   const handleSendReply = async (e?: any) => {
-    e.preventDefault();
+    if (e && typeof e.preventDefault === "function") {
+      e.preventDefault();
+    }
     if (!selectedConvId || !replyText.trim() || sending) return;
+    const textToSend = replyText.trim();
     setSending(true);
+    setReplyText("");
     try {
-      await fetch(`/api/panel/conversations/${encodeURIComponent(selectedConvId)}/messages`, {
+      const res = await fetch(`/api/panel/conversations/${encodeURIComponent(selectedConvId)}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ body: replyText }),
+        body: JSON.stringify({ body: textToSend }),
       });
-      setReplyText("");
-      const res = await fetch(`/api/panel/conversations/${encodeURIComponent(selectedConvId)}/messages`, { cache: "no-store" });
-      const data = await res.json();
-      if (data.ok) setMessages(data.messages || []);
-      loadConversations();
-    } catch {} finally {
+      if (res.ok) {
+        await loadMessagesForConv(selectedConvId);
+        loadConversations();
+        scrollToBottom(true);
+      }
+    } catch (err) {
+      console.error("[panel] Error sending reply:", err);
+    } finally {
       setSending(false);
     }
   };
@@ -980,7 +1001,7 @@ export default function PanelDashboard() {
                     </div>
                   </header>
 
-                  <div className="flex-1 overflow-y-auto p-6 space-y-3">
+                  <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
                     {messages.map((m, idx) => {
                       const isBot = m.role === "assistant";
                       const isSystem = m.role === "system";
@@ -1036,22 +1057,26 @@ export default function PanelDashboard() {
                     <div ref={messagesEndRef} />
                   </div>
 
-                  <div className="p-3 bg-[#121b22] flex items-center gap-3 shrink-0 border-t border-[#1f2c34]">
-                    <button className="text-slate-400 hover:text-white p-2 rounded-lg transition">
+                  <form onSubmit={handleSendReply} className="p-3 bg-[#121b22] flex items-center gap-2 sm:gap-3 shrink-0 border-t border-[#1f2c34]">
+                    <button type="button" className="text-slate-400 hover:text-white p-2 rounded-lg transition shrink-0" title="Adjuntar archivo">
                       <i className="ph ph-paperclip text-[22px]"></i>
                     </button>
                     <input 
                       type="text" 
                       value={replyText}
                       onChange={(e) => setReplyText(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && handleSendReply()}
                       placeholder="Escribe un mensaje como asesor..." 
                       className="flex-1 bg-[#202c33] text-[15px] text-white placeholder-slate-400 px-4 py-3 rounded-lg border-none focus:ring-0 transition"
                     />
-                    <button onClick={() => handleSendReply()} className="bg-[#202c33] hover:bg-[#2a3942] text-slate-300 p-3 rounded-lg transition flex items-center justify-center">
-                      <i className="ph-fill ph-paper-plane-tilt text-xl"></i>
+                    <button 
+                      type="submit" 
+                      disabled={sending || !replyText.trim()}
+                      className="bg-[#202c33] hover:bg-[#2a3942] disabled:opacity-50 disabled:cursor-not-allowed text-slate-300 hover:text-white p-3 rounded-lg transition flex items-center justify-center shrink-0"
+                      title="Enviar mensaje"
+                    >
+                      <i className={`ph-fill ${sending ? 'ph-spinner animate-spin' : 'ph-paper-plane-tilt'} text-xl text-[#00a884]`}></i>
                     </button>
-                  </div>
+                  </form>
                 </>
               ) : (
                 <div className="flex-1 flex items-center justify-center text-slate-500">

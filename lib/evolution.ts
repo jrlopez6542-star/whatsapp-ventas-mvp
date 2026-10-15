@@ -549,7 +549,12 @@ async function postSendText(
       "Content-Type": "application/json",
       apikey: apiKey,
     },
-    body: JSON.stringify({ number, text }),
+    body: JSON.stringify({
+      number,
+      text,
+      delay: 1000,
+      presence: "composing",
+    }),
   });
 
   const rawBody = await res.text().catch(() => "");
@@ -672,16 +677,23 @@ export async function markEvolutionMessageAsRead(remoteJid: string, messageId: s
   const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "");
   const apiKey = process.env.EVOLUTION_API_KEY?.trim();
   const instance = process.env.EVOLUTION_INSTANCE?.trim();
-  if (!base || !apiKey || !instance) return;
+  if (!base || !apiKey || !instance || !messageId) return;
+
+  let jid = remoteJid.trim().replace(/^whatsapp:/i, "").replace(/^\+/, "");
+  if (!jid.includes("@")) {
+    const digits = jid.replace(/\D/g, "");
+    jid = `${digits}@s.whatsapp.net`;
+  }
+
   const url = `${base}/chat/markMessageAsRead/${encodeURIComponent(instance)}`;
   try {
     await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "apikey": apiKey,
+        apikey: apiKey,
       },
-      body: JSON.stringify({ readMessages: [{ remoteJid, fromMe: false, id: messageId }] }),
+      body: JSON.stringify({ readMessages: [{ remoteJid: jid, fromMe: false, id: messageId }] }),
     });
   } catch (e) {
     console.error("[evolution] markRead error:", e);
@@ -696,7 +708,7 @@ export async function markEvolutionMessageAsRead(remoteJid: string, messageId: s
 export async function sendEvolutionPresence(
   toPhone: string,
   presence: "composing" | "recording" | "available" | "paused" = "composing",
-  delayMs?: number
+  delayMs = 3000
 ): Promise<boolean> {
   const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "");
   const apiKey = process.env.EVOLUTION_API_KEY?.trim();
@@ -706,15 +718,18 @@ export async function sendEvolutionPresence(
   const resolved = resolveEvolutionSendNumber(toPhone);
   if (resolved.kind === "invalid" || !resolved.number) return false;
 
+  let numberTarget = resolved.number;
+  if (resolved.kind === "phone" && !numberTarget.includes("@")) {
+    numberTarget = `${numberTarget}@s.whatsapp.net`;
+  }
+
   const url = `${base}/chat/sendPresence/${encodeURIComponent(instance)}`;
   try {
-    const payload: { number: string; presence: string; delay?: number } = {
-      number: resolved.number,
+    const payload = {
+      number: numberTarget,
       presence,
+      delay: Math.max(1200, Math.round(delayMs || 3000)),
     };
-    if (typeof delayMs === "number" && delayMs > 0) {
-      payload.delay = Math.round(delayMs);
-    }
 
     const res = await fetch(url, {
       method: "POST",
