@@ -119,6 +119,7 @@ export async function ensureTursoReady(): Promise<void> {
       "invoice_number TEXT",
       "invoice_id TEXT",
       "invoice_url TEXT",
+      "customer_phone TEXT",
     ];
     for (const col of alterOrders) {
       try {

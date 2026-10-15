@@ -176,6 +176,96 @@ function extractAddress(text: string): string | null {
   return null;
 }
 
+// Extrae número de celular o teléfono colombiano (10 dígitos comenzando en 3)
+export function extractColombianPhone(text: string): string | null {
+  if (!text) return null;
+  const match = text.match(
+    /(?:(?:cel(?:ular)?|tel(?:[eé]fono)?|wpp|whatsapp|contacto|llamar(?:\s+al)?)\s*[:#\-]?\s*)?(?:\+?57[\s.-]?)?(3\d{2}[\s.-]?\d{3}[\s.-]?\d{4})\b/i
+  );
+  if (match && match[1]) {
+    const digits = match[1].replace(/\D/g, "");
+    if (digits.length === 10 && digits.startsWith("3")) {
+      return digits;
+    }
+  }
+  return null;
+}
+
+// Extrae desglose de sabores para cajas surtidas (Mora, Arequipe, Bocadillo, Suero Costeño)
+export function extractFlavorBreakdown(chatText: string, boxCapacity: number = 8): string | null {
+  if (!chatText) return null;
+  const lower = chatText.toLowerCase();
+
+  const flavorNames = [
+    { key: "mora", label: "Mora", patterns: ["mora"] },
+    { key: "arequipe", label: "Arequipe", patterns: ["arequipe", "dulce de leche", "manjar"] },
+    { key: "bocadillo", label: "Bocadillo", patterns: ["bocadillo", "guayaba"] },
+    { key: "suero", label: "Suero Costeño", patterns: ["suero", "queso", "costeño", "costeno"] },
+  ];
+
+  // 1. Detección de "todos los sabores" / "de todas" / "surtido completo"
+  const isAllFlavors =
+    lower.includes("todos los sabores") ||
+    lower.includes("todas las salsas") ||
+    lower.includes("de todos") ||
+    lower.includes("de todas") ||
+    lower.includes("de cada una") ||
+    lower.includes("de cada uno") ||
+    lower.includes("surtido de todo") ||
+    lower.includes("surtidas de todo");
+
+  if (isAllFlavors && !lower.includes("mitad")) {
+    const each = boxCapacity === 4 ? 1 : 2;
+    return flavorNames.map((f) => `${each} ${f.label}`).join(", ");
+  }
+
+  // 2. Detección de cantidades explícitas (ej: "4 mora y 4 arequipe", "6 de arequipe, 2 de bocadillo")
+  const counts: Record<string, number> = {};
+  for (const f of flavorNames) {
+    for (const pat of f.patterns) {
+      const m1 = lower.match(new RegExp(`(\\d+)\\s*(?:de\\s*)?${pat}\\b`, "i"));
+      const m2 = lower.match(new RegExp(`\\b${pat}\\s*(?:de\\s*)?(\\d+)`, "i"));
+      const foundQty = m1 ? parseInt(m1[1], 10) : m2 ? parseInt(m2[1], 10) : null;
+      if (foundQty !== null && !isNaN(foundQty) && foundQty > 0) {
+        counts[f.key] = foundQty;
+        break;
+      }
+    }
+  }
+
+  if (Object.keys(counts).length > 0) {
+    return flavorNames
+      .filter((f) => counts[f.key])
+      .map((f) => `${counts[f.key]} ${f.label}`)
+      .join(", ");
+  }
+
+  // 3. Fallbacks: "mitad y mitad" o mención de salsas sin números explícitos
+  const mentionedFlavors = flavorNames.filter((f) =>
+    f.patterns.some((p) => lower.includes(p))
+  );
+
+  if (mentionedFlavors.length === 1) {
+    return `${boxCapacity} ${mentionedFlavors[0].label}`;
+  }
+
+  if (mentionedFlavors.length === 2) {
+    const half = Math.floor(boxCapacity / 2);
+    return `${half} ${mentionedFlavors[0].label}, ${boxCapacity - half} ${mentionedFlavors[1].label}`;
+  }
+
+  if (mentionedFlavors.length === 4) {
+    const each = boxCapacity === 4 ? 1 : 2;
+    return mentionedFlavors.map((f) => `${each} ${f.label}`).join(", ");
+  }
+
+  if (mentionedFlavors.length > 0) {
+    return mentionedFlavors.map((f) => f.label).join(", ");
+  }
+
+  return null;
+}
+
 // Extrae medio de pago colombiano
 function extractPaymentMethod(text: string): string | null {
   const lower = text.toLowerCase();
@@ -648,6 +738,24 @@ async function tryExtractAndRegisterOrder(
     }
   }
 
+  // Si incluye caja surtida y el resumen no contiene cantidades por sabor, inyectar el desglose exacto
+  const hasSurtida = orderItems.some((it) => it.sku === "C8S" || it.sku === "C4S") || /surtid/i.test(summary);
+  const hasFlavorCounts = /\d+\s*(?:de\s*)?(?:mora|arequipe|bocadillo|suero|queso)/i.test(summary);
+  if (hasSurtida && !hasFlavorCounts) {
+    const boxCap = orderItems.some((it) => it.sku === "C8S") ? 8 : 4;
+    const breakdown = extractFlavorBreakdown(combined, boxCap);
+    if (breakdown) {
+      if (summary.includes("C8S") || summary.includes("C4S") || summary.toLowerCase().includes("surtida")) {
+        summary = summary.replace(/(caja\s*(?:x[48]|\d)?\s*surtida[^\n,\.]*)/i, `$1 (${breakdown})`);
+        if (!summary.includes(breakdown)) {
+          summary = `${summary} (${breakdown})`;
+        }
+      } else {
+        summary = `${summary} (Surtida: ${breakdown})`;
+      }
+    }
+  }
+
   // 6. Costo de domicilio: 100% GRATIS siempre ($0)
   const detectedFee = 0;
 
@@ -668,8 +776,49 @@ async function tryExtractAndRegisterOrder(
     detectedChange = changeMatch[1].trim();
   }
 
+  // 9. Extraer número de celular de contacto del cliente
+  let customerPhone: string | undefined = undefined;
+  const assistantPhoneMatch = assistantReply.match(
+    /(?:📱\s*)?\*?(?:Celular|Tel[eé]fono|WhatsApp):\*?\s*([^\n\r*]+)/i
+  );
+  if (assistantPhoneMatch && assistantPhoneMatch[1]) {
+    const cand = extractColombianPhone(assistantPhoneMatch[1]);
+    if (cand) customerPhone = cand;
+  }
+  if (!customerPhone) {
+    customerPhone = extractColombianPhone(userText) || undefined;
+  }
+  if (!customerPhone && address) {
+    customerPhone = extractColombianPhone(address) || undefined;
+  }
+  if (!customerPhone) {
+    customerPhone = extractColombianPhone(combined) || undefined;
+  }
+  if (!customerPhone) {
+    try {
+      const history = await getMessages(conversationKey);
+      const userMsgs = history.filter((m) => m.role === "user").reverse();
+      for (const m of userMsgs) {
+        const found = extractColombianPhone(m.content);
+        if (found) {
+          customerPhone = found;
+          break;
+        }
+      }
+    } catch {}
+  }
+  if (!customerPhone && !conversationKey.toLowerCase().includes("lid:") && !conversationKey.toLowerCase().includes("@lid")) {
+    const rawDigits = conversationKey.replace(/\D/g, "");
+    if (rawDigits.length === 12 && rawDigits.startsWith("573")) {
+      customerPhone = rawDigits.slice(2);
+    } else if (rawDigits.length === 10 && rawDigits.startsWith("3")) {
+      customerPhone = rawDigits;
+    }
+  }
+
   const order = await createOrder(conversationKey, orderItems, detectedTotal, {
     customerName,
+    customerPhone,
     deliveryAddress: address,
     paymentMethod,
     itemsSummary: summary,
@@ -687,7 +836,7 @@ async function tryExtractAndRegisterOrder(
     const invRes = await createInvoiceInContabilidad({
       orderId: order.id,
       customerName,
-      phone: conversationKey.replace(/^whatsapp:/i, ""),
+      phone: customerPhone ? `+57${customerPhone}` : conversationKey.replace(/^whatsapp:/i, ""),
       deliveryAddress: address,
       deliveryNotes: detectedNotes,
       paymentMethod,
@@ -1141,9 +1290,13 @@ export async function handleSalesMessage(
       .map((it) => `• ${it.name} (x${it.quantity}) - ${formatCop(it.unitPrice * it.quantity)}`)
       .join("\n");
     const hasSurtida = sessionItems.some((it) => it.sku.includes("S"));
+    const surtidaCap = sessionItems.some((it) => it.sku === "C8S") ? 8 : 4;
+    const sessionBreakdown = hasSurtida ? extractFlavorBreakdown(lowerUserChat, surtidaCap) : null;
     const salsasStatus = hasSurtida
-      ? sessionSalsas.length > 0
-        ? `Elegidas: ${sessionSalsas.join(", ")}`
+      ? sessionBreakdown
+        ? `Desglose confirmado: ${sessionBreakdown}`
+        : sessionSalsas.length > 0
+        ? `Salsas mencionadas: ${sessionSalsas.join(", ")} (desglose por sabor pendiente o por defecto)`
         : "Pendientes por elegir"
       : "No aplica (caja tradicional sin salsas)";
 
@@ -1153,7 +1306,7 @@ export async function handleSalesMessage(
 
     let nextStepInstruction = "";
     if (hasSurtida && sessionSalsas.length === 0) {
-      nextStepInstruction = "👉 El cliente ya eligió su caja surtida pero NO ha dicho las salsas. Pregúntale amablemente qué salsas desea (Mora, Arequipe, Bocadillo, Suero Costeño).";
+      nextStepInstruction = "👉 El cliente ya eligió su caja surtida pero NO ha dicho las salsas. Pregúntale amablemente qué salsas desea (Mora, Arequipe, Bocadillo, Suero Costeño) y cuántos buñuelos de cada sabor (ej: 4 de Mora y 4 de Arequipe).";
     } else if (!sessionAddress) {
       nextStepInstruction = `👉 Ya eligió productos (${sessionItems.map((i) => i.name).join(", ")}). Ahora pídele amablemente su dirección de entrega exacta en Neiva para el envío. ¡PROHIBIDO volver a preguntarle qué caja quiere!`;
     } else if (!sessionPayment) {
@@ -1216,6 +1369,8 @@ Desglosa el carrito completo, subtotal, domicilio GRATIS, total exacto, direcci�
 ¡BAJO NINGUNA CIRCUNSTANCIA vuelvas a pedir su nombre, ni dirección, ni caja, ni confirmación adicional!`
     : "";
 
+  const isLidConversation = conversationKey.toLowerCase().includes("lid:") || conversationKey.toLowerCase().includes("@lid");
+
   const systemPrompt = `Eres el asistente virtual y vendedor estrella por WhatsApp de "${settings.name}".
 
   ${nameContext}
@@ -1252,8 +1407,8 @@ ${sessionItems.length > 0
   : `     - Si el cliente menciona que quiere buñuelos o una caja pero no especificó cuál:
        Pregúntale de inmediato: «¡Con gusto! 🤤 ¿Qué caja te gustaría: Tradicional o Surtida, de 4 o de 8 buñuelos?» antes de pasar a la dirección.
      - Si el cliente elige una caja "Tradicional", es sin salsa, pasa al paso 3.
-     - Si el cliente elige una caja "Surtida" (C4S o C8S), ES OBLIGATORIO PREGUNTARLE LAS SALSAS antes de pedir la dirección:
-       «¿Qué salsas prefieres para tu caja surtida? Tenemos Mora, Arequipe, Bocadillo y Suero Costeño 🤤 (puedes combinarlas como prefieras).»`}
+     - Si el cliente elige una caja "Surtida" (C4S o C8S), ES OBLIGATORIO PREGUNTARLE LAS SALSAS Y CUÁNTOS DE CADA SABOR antes de pedir la dirección:
+       «¿Qué salsas prefieres para tu caja surtida y cuántos buñuelos de cada sabor te gustaría? 🤤 Tenemos Mora, Arequipe, Bocadillo y Suero Costeño (ejemplo: 4 de Mora y 4 de Arequipe, o 2 de cada sabor para completar los 8).»`}
   ${upsellDrinks ? `3. VENTA CRUZADA Y CATÁLOGO DE BEBIDAS:
      - Justo después de que el cliente elija su caja (y salsas si aplica), antes de pedir la dirección, pregúntale amigablemente si desea agregar bebidas para acompañar:
        «¿Te gustaría acompañar tus buñuelos con alguna bebida bien fría o caliente? ☕🥤 Tenemos café campesino ($3.500), chocolate caliente ($4.000), gaseosa helada ($4.500), jugo de mora ($6.000) o agua ($3.000).»
@@ -1261,9 +1416,10 @@ ${sessionItems.length > 0
      - Si el cliente acepta alguna bebida, agrégala al pedido; si dice que no, avanza inmediatamente al paso 4 sin insistir.` : `3. BEBIDAS DESACTIVADAS (NO OFRECER BEBIDAS):
      - El interruptor de venta de bebidas está APAGADO. NO ofrezcas bebidas activamente. Pasa DIRECTAMENTE al paso 4 (Recolección de datos de entrega).`}
   4. RECOLECCIÓN DE DATOS DE ENTREGA Y NOMBRE DEL CLIENTE:
-     - ✍️ PEDIR NOMBRE Y DIRECCIÓN:
-       Pide SIEMPRE el nombre de la persona que recibe y la dirección de entrega para registrar su pedido:
-       «¿A nombre de quién dejamos registrado el pedido y cuál es tu dirección de entrega? ✍️📍»
+     - ✍️ PEDIR NOMBRE, DIRECCIÓN ${isLidConversation ? "Y CELULAR DE CONTACTO" : ""}:
+       ${isLidConversation ? `🚨 ATENCIÓN - CUENTA PRIVADA DE WHATSAPP: El número de celular de este cliente está oculto por privacidad de WhatsApp. En este paso solicita OBLIGATORIAMENTE un número de celular de contacto:
+       «¿A nombre de quién dejamos registrado el pedido, cuál es tu dirección de entrega y un número de celular de contacto para el domiciliario? ✍️📍📱»` : `Pide SIEMPRE el nombre de la persona que recibe y la dirección de entrega para registrar su pedido:
+       «¿A nombre de quién dejamos registrado el pedido y cuál es tu dirección de entrega? ✍️📍»`}
      - Si el cliente ya dio su dirección pero aún no ha dicho su nombre:
        Pregúntale amablemente: «¡Listo! ¿A nombre de quién registramos el pedido? 👤»
      - Si el cliente ya dijo su nombre pero falta la dirección:
@@ -1295,10 +1451,10 @@ ${sessionItems.length > 0
   6. RESUMEN PREVIO (PRE-CONFIRMACIÓN):
      🚨 REGLA ESTRICTA DE CONTINUIDAD (¡CERO AMNESIA DE PRODUCTOS!):
      - Revisa SIEMPRE todo el historial de la conversación. Si el cliente ya eligió sus productos o caja de buñuelos en cualquier mensaje previo (texto o nota de voz), JAMÁS vuelvas a preguntarle qué caja desea ni digas "parece que aún no elegiste tus buñuelos".
-     - Una vez tengas los productos (con salsas si aplica), el nombre del cliente, la dirección Y el medio de pago (y si es efectivo, la denominación del billete/cambio), envía DIRECTAMENTE el resumen compacto con opciones en texto plano:
+     - Una vez tengas los productos (con desglose exacto de cuántos de cada sabor si es surtida), el nombre del cliente, la dirección Y el medio de pago (y si es efectivo, la denominación del billete/cambio), envía DIRECTAMENTE el resumen compacto con opciones en texto plano:
 
      📋 *Resumen de tu Pedido:*
-     • [Productos x cantidad y salsas/bebidas]
+     • [Productos x cantidad, detallando cuántos buñuelos de cada sabor si es caja surtida, ej: 1x Caja x8 Surtida (4 de Mora, 4 de Arequipe)]
      📦 *Subtotal productos:* [Subtotal en COP]
      🛵 *Domicilio:* ¡GRATIS!
      💰 *Total a pagar:* [Total en COP]
@@ -1316,7 +1472,7 @@ ${sessionItems.length > 0
      ✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🛵🥟
 
      🛒 *Detalle del Pedido:*
-     [Lista de productos x cantidad, salsas y bebidas si aplica]
+     [Lista de productos x cantidad. REGLA OBLIGATORIA: Para toda caja surtida, desglosa SIEMPRE la cantidad exacta de buñuelos de cada sabor, ej: "• 1x Caja x8 Surtida: 4 de Mora y 4 de Arequipe" o "• 1x Caja x8 Surtida (2 Mora, 2 Arequipe, 2 Bocadillo, 2 Suero Costeño)"]
 
      📦 *Subtotal productos:* [Subtotal exacto en COP]
      🛵 *Costo de domicilio:* ¡GRATIS!
@@ -1625,19 +1781,49 @@ ${sessionItems.length > 0
       reply = `¡Claro que sí! 🥟✏️ Cuéntanos qué dato te gustaría modificar: ¿los productos, la dirección de entrega o el medio de pago?`;
     } else if (!isPreviousPreConfirmation && !isUserConfirming) {
       // PASO 6: RESUMEN PREVIO (Pre-confirmación)
-      const itemsListText = finalItems.map((it) => `• ${it.name} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
+      const itemsListText = finalItems.map((it) => {
+        let nameWithBreakdown = it.name;
+        if (it.sku === "C8S") {
+          const bd = extractFlavorBreakdown(userChatText, 8);
+          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
+        } else if (it.sku === "C4S") {
+          const bd = extractFlavorBreakdown(userChatText, 4);
+          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
+        }
+        return `• ${nameWithBreakdown} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`;
+      }).join("\n");
       reply = `📋 *Resumen de tu Pedido:*\n${itemsListText}\n\n📦 *Subtotal productos:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n💰 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n\n¿Todo está correcto? Elige una opción:\n1️⃣ ✅ Confirmar pedido\n2️⃣ ✏️ Modificar algún dato`;
     } else {
       // PASO 7: CONFIRMACIÓN OFICIAL Y FACTURACIÓN (Solo tras responder 1 o confirmar)
+      const summaryItems = finalItems.map((it) => {
+        if (it.sku === "C8S") {
+          const bd = extractFlavorBreakdown(userChatText, 8);
+          return bd ? `Caja x8 Surtida (${bd})` : `Caja x8 Surtida`;
+        }
+        if (it.sku === "C4S") {
+          const bd = extractFlavorBreakdown(userChatText, 4);
+          return bd ? `Caja x4 Surtida (${bd})` : `Caja x4 Surtida`;
+        }
+        return `${it.sku} x${it.quantity}`;
+      }).join(", ");
+
+      const detectedPhone =
+        extractColombianPhone(userChatText) ||
+        extractColombianPhone(finalAddress) ||
+        (!conversationKey.toLowerCase().includes("lid:") && !conversationKey.toLowerCase().includes("@lid")
+          ? conversationKey.replace(/\D/g, "").slice(-10)
+          : undefined);
+
       const order = await createOrder(
         conversationKey,
         finalItems.map((it) => ({ sku: it.sku, quantity: it.quantity, unitPrice: it.unitPrice })),
         finalTotal,
         {
           customerName: clientName,
+          customerPhone: detectedPhone,
           deliveryAddress: finalAddress,
           paymentMethod: finalPayment,
-          itemsSummary: finalItems.map((it) => `${it.sku} x${it.quantity}`).join(", "),
+          itemsSummary: summaryItems,
           deliveryFee: 0,
         }
       );
@@ -1651,7 +1837,7 @@ ${sessionItems.length > 0
         const invRes = await createInvoiceInContabilidad({
           orderId: order.id,
           customerName: clientName,
-          phone: conversationKey.replace(/^whatsapp:/i, ""),
+          phone: detectedPhone ? `+57${detectedPhone}` : conversationKey.replace(/^whatsapp:/i, ""),
           deliveryAddress: finalAddress,
           paymentMethod: finalPayment,
           items: finalItems.map((it) => ({
@@ -1690,7 +1876,17 @@ ${sessionItems.length > 0
         console.warn("[sales-agent] Error notificando al domiciliario en fallback:", dErr);
       });
 
-      const itemsListText = finalItems.map((it) => `- ${it.name} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`).join("\n");
+      const itemsListText = finalItems.map((it) => {
+        let nameWithBreakdown = it.name;
+        if (it.sku === "C8S") {
+          const bd = extractFlavorBreakdown(userChatText, 8);
+          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
+        } else if (it.sku === "C4S") {
+          const bd = extractFlavorBreakdown(userChatText, 4);
+          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
+        }
+        return `- ${nameWithBreakdown} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`;
+      }).join("\n");
 
       reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*${invoiceNotice}\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
       mode = "order_created";

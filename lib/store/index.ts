@@ -43,6 +43,7 @@ export interface Order {
   id: string;
   conversationId: string;
   customerName?: string;
+  customerPhone?: string;
   deliveryAddress?: string;
   paymentMethod?: string;
   itemsSummary?: string;
@@ -259,6 +260,7 @@ class MemoryStore {
     total: number,
     details?: {
       customerName?: string;
+      customerPhone?: string;
       deliveryAddress?: string;
       paymentMethod?: string;
       itemsSummary?: string;
@@ -275,6 +277,7 @@ class MemoryStore {
       id: randomUUID(),
       conversationId,
       customerName: details?.customerName,
+      customerPhone: details?.customerPhone,
       deliveryAddress: details?.deliveryAddress,
       paymentMethod: details?.paymentMethod,
       itemsSummary: details?.itemsSummary,
@@ -639,6 +642,7 @@ export async function createOrder(
   total: number,
   details?: {
     customerName?: string;
+    customerPhone?: string;
     deliveryAddress?: string;
     paymentMethod?: string;
     itemsSummary?: string;
@@ -657,12 +661,13 @@ export async function createOrder(
       await ensureTursoReady();
       const client = getTursoClient();
       await client.execute({
-        sql: `INSERT INTO orders (id, conversation_id, customer_name, delivery_address, payment_method, items_summary, delivery_fee, change_amount, delivery_notes, status, total, created_at, invoice_number, invoice_id, invoice_url)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        sql: `INSERT INTO orders (id, conversation_id, customer_name, customer_phone, delivery_address, payment_method, items_summary, delivery_fee, change_amount, delivery_notes, status, total, created_at, invoice_number, invoice_id, invoice_url)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           memOrder.id,
           conversationId,
           details?.customerName || null,
+          details?.customerPhone || null,
           details?.deliveryAddress || null,
           details?.paymentMethod || null,
           details?.itemsSummary || null,
@@ -739,6 +744,7 @@ export async function updateOrderStatus(id: string, status: OrderStatus): Promis
           id: String(r.id),
           conversationId: String(r.conversation_id || r.conversationId || ""),
           customerName: r.customer_name ? String(r.customer_name) : undefined,
+          customerPhone: r.customer_phone ? String(r.customer_phone) : undefined,
           deliveryAddress: r.delivery_address ? String(r.delivery_address) : undefined,
           paymentMethod: r.payment_method ? String(r.payment_method) : undefined,
           itemsSummary: r.items_summary ? String(r.items_summary) : undefined,
@@ -829,6 +835,7 @@ export async function getOrders(): Promise<Order[]> {
       id: String(r.id),
       conversationId: String(r.conversation_id || r.conversationId || ""),
       customerName: r.customer_name ? String(r.customer_name) : undefined,
+      customerPhone: r.customer_phone ? String(r.customer_phone) : undefined,
       deliveryAddress: r.delivery_address ? String(r.delivery_address) : undefined,
       paymentMethod: r.payment_method ? String(r.payment_method) : undefined,
       itemsSummary: r.items_summary ? String(r.items_summary) : undefined,

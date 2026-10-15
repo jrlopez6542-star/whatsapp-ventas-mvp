@@ -10,6 +10,108 @@ function formatCop(amount: number): string {
   }).format(amount);
 }
 
+export interface CustomerPhoneInfo {
+  displayPhone: string;
+  waUrl?: string;
+  isLidWithoutPhone: boolean;
+}
+
+export function formatColombianPhone(raw: string): string | null {
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10 && digits.startsWith("3")) {
+    return `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+  }
+  if (digits.length === 12 && digits.startsWith("573")) {
+    const ten = digits.slice(2);
+    return `${ten.slice(0, 3)} ${ten.slice(3, 6)} ${ten.slice(6)}`;
+  }
+  return null;
+}
+
+export function resolveCustomerPhoneForDriver(order: Order): CustomerPhoneInfo {
+  // 1. Número registrado explícitamente en order.customerPhone
+  if (order.customerPhone) {
+    const raw = order.customerPhone.trim();
+    const formatted = formatColombianPhone(raw);
+    if (formatted) {
+      const ten = raw.replace(/\D/g, "").slice(-10);
+      return {
+        displayPhone: formatted,
+        waUrl: `https://wa.me/57${ten}`,
+        isLidWithoutPhone: false,
+      };
+    }
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length >= 7 && digits.length <= 15) {
+      return {
+        displayPhone: `+${digits}`,
+        waUrl: `https://wa.me/${digits}`,
+        isLidWithoutPhone: false,
+      };
+    }
+  }
+
+  // 2. Extraer número de celular colombiano presente en dirección o notas de entrega
+  const textToScan = `${order.deliveryAddress || ""} ${order.deliveryNotes || ""}`;
+  const phoneMatch = textToScan.match(
+    /(?:(?:cel(?:ular)?|tel(?:[eé]fono)?|wpp|whatsapp|contacto|llamar(?:\s+al)?)\s*[:#\-]?\s*)?(?:\+?57[\s.-]?)?(3\d{2}[\s.-]?\d{3}[\s.-]?\d{4})\b/i
+  );
+  if (phoneMatch && phoneMatch[1]) {
+    const ten = phoneMatch[1].replace(/\D/g, "");
+    if (ten.length === 10 && ten.startsWith("3")) {
+      const formatted = `${ten.slice(0, 3)} ${ten.slice(3, 6)} ${ten.slice(6)}`;
+      return {
+        displayPhone: formatted,
+        waUrl: `https://wa.me/57${ten}`,
+        isLidWithoutPhone: false,
+      };
+    }
+  }
+
+  // 3. Evaluar el identificador de la conversación
+  const rawConv = (order.conversationId || "").trim();
+  const isLid = rawConv.toLowerCase().includes("lid:") || rawConv.toLowerCase().includes("@lid");
+
+  if (isLid) {
+    return {
+      displayPhone: "⚠️ No registrado (Cuenta privada)",
+      waUrl: undefined,
+      isLidWithoutPhone: true,
+    };
+  }
+
+  const digits = rawConv.replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("573")) {
+    const ten = digits.slice(2);
+    return {
+      displayPhone: `${ten.slice(0, 3)} ${ten.slice(3, 6)} ${ten.slice(6)}`,
+      waUrl: `https://wa.me/57${ten}`,
+      isLidWithoutPhone: false,
+    };
+  }
+  if (digits.length === 10 && digits.startsWith("3")) {
+    return {
+      displayPhone: `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`,
+      waUrl: `https://wa.me/57${digits}`,
+      isLidWithoutPhone: false,
+    };
+  }
+  if (digits.length >= 7 && digits.length <= 15) {
+    return {
+      displayPhone: `+${digits}`,
+      waUrl: `https://wa.me/${digits}`,
+      isLidWithoutPhone: false,
+    };
+  }
+
+  return {
+    displayPhone: "No disponible",
+    waUrl: undefined,
+    isLidWithoutPhone: false,
+  };
+}
+
 /**
  * Genera la ficha de entrega formateada para el domiciliario por WhatsApp
  */
@@ -18,9 +120,21 @@ export function formatDeliveryDriverMessage(
   settings?: { name?: string }
 ): string {
   const businessName = settings?.name || "BUÑUELANDIA";
-  const rawPhone = order.conversationId || "";
-  const cleanPhone = rawPhone.replace(/\D/g, "");
-  const waLink = cleanPhone ? `https://wa.me/${cleanPhone}` : "No disponible";
+  const phoneInfo = resolveCustomerPhoneForDriver(order);
+
+  let phoneBlock = "";
+  if (phoneInfo.isLidWithoutPhone) {
+    phoneBlock =
+      `📱 *Celular:* ⚠️ No registrado (Cuenta privada de WhatsApp)\n` +
+      `💬 *WhatsApp:* Responder por el chat del panel de ventas\n\n`;
+  } else if (phoneInfo.waUrl) {
+    phoneBlock =
+      `📱 *Celular:* ${phoneInfo.displayPhone}\n` +
+      `💬 *WhatsApp:* ${phoneInfo.waUrl}\n\n`;
+  } else {
+    phoneBlock =
+      `📱 *Celular:* ${phoneInfo.displayPhone}\n\n`;
+  }
 
   const paymentMethod = order.paymentMethod || "Por confirmar";
   const isCash =
@@ -49,7 +163,7 @@ export function formatDeliveryDriverMessage(
     `📋 *Pedido:* #${order.id.slice(0, 8)}\n` +
     invoiceLine +
     `👤 *Cliente:* ${order.customerName || "Cliente"}\n` +
-    `📱 *WhatsApp:* ${waLink} (${cleanPhone || "Chat"})\n\n` +
+    phoneBlock +
     `📍 *Dirección de Entrega:*\n` +
     `👉 ${order.deliveryAddress || "Dirección por confirmar"}\n` +
     notesLine +
