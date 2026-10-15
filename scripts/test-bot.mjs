@@ -109,18 +109,22 @@ async function waitForAssistantReply(afterTimestamp, maxWaitMs = 15000) {
   return null;
 }
 
-async function waitForOrder(afterTimestamp, maxWaitMs = 15000) {
+async function waitForOrder(afterTimestamp, maxWaitMs = 18000) {
   const deadline = Date.now() + maxWaitMs;
+  let lastOrder = null;
   while (Date.now() < deadline) {
     const orders = await querySql(
       `SELECT * FROM orders WHERE conversation_id LIKE '%${TEST_PHONE}%' AND created_at >= ${afterTimestamp - 2000} ORDER BY created_at DESC LIMIT 1`
     );
     if (orders.length > 0) {
-      return orders[0];
+      lastOrder = orders[0];
+      if (lastOrder.invoice_number && lastOrder.invoice_number !== "null") {
+        return lastOrder;
+      }
     }
     await sleep(800);
   }
-  return null;
+  return lastOrder;
 }
 
 async function run() {
