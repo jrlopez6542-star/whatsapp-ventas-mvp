@@ -247,11 +247,19 @@ export default function PanelDashboard() {
   const [replyText, setReplyText] = useState("");
 
   const scrollToBottom = useCallback((smooth = false) => {
-    if (chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    const el = chatContainerRef.current;
+    if (el) {
+      if (smooth && typeof el.scrollTo === "function") {
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+      } else {
+        el.scrollTop = el.scrollHeight;
+      }
     }
-    messagesEndRef.current?.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "end" });
+    }
   }, []);
+
   const handleToggleBot = async (id: string, newStatus: string) => {
     if (!id) return;
     try {
@@ -289,15 +297,18 @@ export default function PanelDashboard() {
   }, [selectedConvId, orders]);
 
   useEffect(() => {
-    if (!messages.length) return;
+    if (!messages || messages.length === 0) return;
     scrollToBottom(false);
-    const t1 = setTimeout(() => scrollToBottom(true), 50);
-    const t2 = setTimeout(() => scrollToBottom(false), 200);
+    const raf = requestAnimationFrame(() => scrollToBottom(false));
+    const t1 = setTimeout(() => scrollToBottom(true), 60);
+    const t2 = setTimeout(() => scrollToBottom(false), 250);
     return () => {
+      cancelAnimationFrame(raf);
       clearTimeout(t1);
       clearTimeout(t2);
     };
-  }, [messages.length, selectedConvId, scrollToBottom]);
+  }, [messages, selectedConvId, scrollToBottom]);
+
 
   // Catalog
   const [products, setProducts] = useState<Product[]>([]);
@@ -639,8 +650,9 @@ export default function PanelDashboard() {
   };
 
   const handleSendReply = async (e?: any) => {
-    if (e && typeof e.preventDefault === "function") {
-      e.preventDefault();
+    if (e) {
+      if (typeof e.preventDefault === "function") e.preventDefault();
+      if (typeof e.stopPropagation === "function") e.stopPropagation();
     }
     if (!selectedConvId || !replyText.trim() || sending) return;
     const textToSend = replyText.trim();
@@ -655,14 +667,20 @@ export default function PanelDashboard() {
       if (res.ok) {
         await loadMessagesForConv(selectedConvId);
         loadConversations();
-        scrollToBottom(true);
+        scrollToBottom(false);
+        setTimeout(() => scrollToBottom(false), 100);
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(`Error al enviar mensaje: ${data.error || res.statusText}`);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("[panel] Error sending reply:", err);
+      alert(`Error de conexión al enviar mensaje: ${err?.message || String(err)}`);
     } finally {
       setSending(false);
     }
   };
+
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1001,7 +1019,7 @@ export default function PanelDashboard() {
                     </div>
                   </header>
 
-                  <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3">
+                  <div ref={chatContainerRef} className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-3 overscroll-contain">
                     {messages.map((m, idx) => {
                       const isBot = m.role === "assistant";
                       const isSystem = m.role === "system";
@@ -1065,18 +1083,31 @@ export default function PanelDashboard() {
                       type="text" 
                       value={replyText}
                       onChange={(e) => setReplyText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSendReply(e);
+                        }
+                      }}
                       placeholder="Escribe un mensaje como asesor..." 
                       className="flex-1 bg-[#202c33] text-[15px] text-white placeholder-slate-400 px-4 py-3 rounded-lg border-none focus:ring-0 transition"
                     />
                     <button 
                       type="submit" 
                       disabled={sending || !replyText.trim()}
-                      className="bg-[#202c33] hover:bg-[#2a3942] disabled:opacity-50 disabled:cursor-not-allowed text-slate-300 hover:text-white p-3 rounded-lg transition flex items-center justify-center shrink-0"
+                      onClick={handleSendReply}
+                      onTouchEnd={(e) => {
+                        if (replyText.trim() && !sending) {
+                          handleSendReply(e);
+                        }
+                      }}
+                      className="bg-[#202c33] hover:bg-[#2a3942] active:bg-[#005c4b] disabled:opacity-50 disabled:cursor-not-allowed text-slate-300 hover:text-white p-3 rounded-lg transition flex items-center justify-center shrink-0"
                       title="Enviar mensaje"
                     >
                       <i className={`ph-fill ${sending ? 'ph-spinner animate-spin' : 'ph-paper-plane-tilt'} text-xl text-[#00a884]`}></i>
                     </button>
                   </form>
+
                 </>
               ) : (
                 <div className="flex-1 flex items-center justify-center text-slate-500">
