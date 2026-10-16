@@ -741,17 +741,17 @@ export default function PanelDashboard() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
-      if (!res.ok) {
-        console.error("[logout] Server error:", res.status);
-      }
-    } catch (err) {
-      console.error("[logout] Network error:", err);
-    } finally {
-      if (typeof document !== "undefined") {
-        document.cookie = "panel_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
-        document.cookie = "crm_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        alert(data.error || "No se pudo cerrar la sesión en el servidor. Intente nuevamente.");
+        setLoggingOut(false);
+        return;
       }
       window.location.href = "/panel/login?logout=1";
+    } catch (err) {
+      console.error("[logout] Network error:", err);
+      alert("Error de conexión al cerrar sesión. Intente nuevamente.");
+      setLoggingOut(false);
     }
   };
 

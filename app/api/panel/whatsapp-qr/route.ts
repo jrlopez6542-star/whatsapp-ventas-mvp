@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { requirePanelAuth } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,6 +20,11 @@ function getEvolutionConfig(instanceParam?: string | null) {
 }
 
 export async function GET(request: NextRequest) {
+  const auth = await requirePanelAuth(request);
+  if (!auth.authorized) {
+    return NextResponse.json({ ok: false, error: auth.error || "No autorizado" }, { status: 401 });
+  }
+
   const instanceParam = request.nextUrl.searchParams.get("instance");
   const { apiUrl, apiKey, instance } = getEvolutionConfig(instanceParam);
 
@@ -117,6 +123,11 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const auth = await requirePanelAuth(request, ["admin"]);
+  if (!auth.authorized) {
+    return NextResponse.json({ ok: false, error: auth.error || "Acceso denegado" }, { status: 401 });
+  }
+
   try {
     const { action, instance: reqInstance } = await request.json();
     const { apiUrl, apiKey, instance } = getEvolutionConfig(reqInstance);

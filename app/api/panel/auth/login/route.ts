@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findUserByEmail, createSession, ensureInitialAdmin, updateUser } from "@/lib/auth/session";
+import { findUserByEmail, createSession, ensureInitialAdmin, listAllUsers } from "@/lib/auth/session";
 import { verifyPassword } from "@/lib/auth/passwords";
 
 export const runtime = "nodejs";
@@ -8,8 +8,8 @@ export const dynamic = "force-dynamic";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json().catch(() => ({}));
-    const rawEmail = String(body.email || "").trim().toLowerCase();
-    const inputPassword = String(body.password || "").trim().replace(/^"|"$/g, "");
+    const rawEmail = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const inputPassword = typeof body.password === "string" ? body.password : "";
 
     if (!inputPassword) {
       return NextResponse.json({ ok: false, error: "La contraseña es requerida" }, { status: 400 });
@@ -18,13 +18,24 @@ export async function POST(request: NextRequest) {
     // Si no se proveyó correo (formulario legado de sólo contraseña), asumir administrador principal
     const effectiveEmail = rawEmail || "admin@bunuelandia.co";
 
-    // 1. Intentar autenticar contra la base de datos de usuarios
+    // 1. Intentar buscar el usuario por correo
     let user = await findUserByEmail(effectiveEmail);
 
-    // Si no existe y el email es el admin por defecto, asegurar bootstrap si PANEL_PASSWORD existe
-    if (!user && effectiveEmail === "admin@bunuelandia.co") {
-      await ensureInitialAdmin();
-      user = await findUserByEmail(effectiveEmail);
+    // Si el usuario existe pero está inactivo/suspendido, rechazar de inmediato con 403
+    if (user && !user.active) {
+      return NextResponse.json(
+        { ok: false, error: "Usuario inactivo o suspendido" },
+        { status: 403 }
+      );
+    }
+
+    // Si no existe ningún usuario en el sistema y es el primer arranque, inicializar bootstrap si corresponde
+    if (!user) {
+      const existingUsers = await listAllUsers();
+      if (existingUsers.length === 0 && effectiveEmail === "admin@bunuelandia.co") {
+        await ensureInitialAdmin();
+        user = await findUserByEmail(effectiveEmail);
+      }
     }
 
     let authenticated = false;
@@ -32,31 +43,28 @@ export async function POST(request: NextRequest) {
 
     if (user && user.active) {
       authenticated = await verifyPassword(inputPassword, user.passwordHash);
-      if (!authenticated && body.password) {
-        authenticated = await verifyPassword(String(body.password).trim(), user.passwordHash);
-      }
     }
 
-    // 2. Fallback de sincronización si PANEL_PASSWORD del entorno coincide con la clave provista
+    // 2. Fallback de compatibilidad con PANEL_PASSWORD del entorno (SIN MUTAR LA BD)
     if (!authenticated) {
-      const envPassword = (process.env.PANEL_PASSWORD || "").trim();
-      const cleanEnv = envPassword.replace(/^"|"$/g, "");
-      const rawBodyPass = String(body.password || "").trim();
-      const matchesEnv =
-        (cleanEnv && (inputPassword === cleanEnv || rawBodyPass === cleanEnv)) ||
-        (envPassword && (inputPassword === envPassword || rawBodyPass === envPassword));
+      const envPassword = (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "");
+      const matchesEnv = Boolean(envPassword && inputPassword === envPassword);
 
       if (matchesEnv) {
         if (user) {
-          await updateUser(user.id, { password: cleanEnv });
-          authenticatedUser = await findUserByEmail(effectiveEmail);
+          // El usuario existe y está activo: se autentica temporalmente sin modificar su contraseña en BD
+          authenticatedUser = user;
           authenticated = true;
         } else {
-          await ensureInitialAdmin();
-          const createdAdmin = await findUserByEmail("admin@bunuelandia.co");
-          if (createdAdmin) {
-            authenticatedUser = createdAdmin;
-            authenticated = true;
+          // Si no existe, sólo se permite bootstrap inicial si el sistema no tiene ningún usuario registrado
+          const currentUsers = await listAllUsers();
+          if (currentUsers.length === 0) {
+            await ensureInitialAdmin();
+            const createdAdmin = await findUserByEmail("admin@bunuelandia.co");
+            if (createdAdmin) {
+              authenticatedUser = createdAdmin;
+              authenticated = true;
+            }
           }
         }
       }

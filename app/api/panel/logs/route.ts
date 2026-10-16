@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSystemLogs, clearSystemLogs } from "@/lib/logger";
+import { requirePanelAuth } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+  const auth = await requirePanelAuth(request, ["admin"]);
+  if (!auth.authorized) {
+    return NextResponse.json({ ok: false, error: auth.error || "Acceso denegado" }, { status: 401 });
+  }
+
   try {
     const { searchParams } = new URL(request.url);
     const limitParam = searchParams.get("limit");
@@ -17,7 +23,12 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function DELETE() {
+export async function DELETE(request: NextRequest) {
+  const auth = await requirePanelAuth(request, ["admin"]);
+  if (!auth.authorized) {
+    return NextResponse.json({ ok: false, error: auth.error || "Acceso denegado" }, { status: 401 });
+  }
+
   try {
     await clearSystemLogs();
     return NextResponse.json({ ok: true, message: "Logs eliminados correctamente" });
@@ -25,3 +36,4 @@ export async function DELETE() {
     return NextResponse.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
   }
 }
+

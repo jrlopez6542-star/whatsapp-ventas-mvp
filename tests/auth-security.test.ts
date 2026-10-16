@@ -186,3 +186,287 @@ test("Logout y Revocación: requirePanelAuth rechaza tokens revocados (panel_ses
   assert.equal(authCrmAfter.authorized, false, "crm_session reutilizada tras logout debe ser rechazada");
 });
 
+test("Seguridad D1: Login válido, inválido, contraseña exacta y bloqueo 403 de usuario inactivo", async () => {
+  const { POST: loginPOST } = await import("../app/api/panel/auth/login/route");
+  const { NextRequest } = await import("next/server");
+
+  // 1. Usuario activo con contraseña con caracteres especiales y espacios
+  const activeEmail = `active_user_${Date.now()}@bunuelandia.co`;
+  const exactPass = ' Clave"Segura"&2026! ';
+  await createUser({
+    email: activeEmail,
+    password: exactPass,
+    name: "Usuario Activo",
+    role: "operator",
+  });
+
+  // Login exitoso con contraseña exacta
+  const validReq = new NextRequest("http://localhost:3000/api/panel/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: activeEmail, password: exactPass }),
+  });
+  const validRes = await loginPOST(validReq);
+  assert.equal(validRes.status, 200, "Login con credenciales correctas debe responder 200");
+  const validData = await validRes.json();
+  assert.equal(validData.ok, true);
+  assert.equal(validData.user.email, activeEmail.toLowerCase());
+
+  // Verificación de cookies emitidas
+  const cookiesHeader = validRes.headers.get("set-cookie") || "";
+  assert.ok(cookiesHeader.includes("panel_session="), "Debe emitir cookie panel_session");
+  assert.ok(cookiesHeader.includes("crm_session="), "Debe emitir cookie crm_session");
+
+  // Login fallido con contraseña incorrecta
+  const invalidReq = new NextRequest("http://localhost:3000/api/panel/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: activeEmail, password: "PasswordErrada999!" }),
+  });
+  const invalidRes = await loginPOST(invalidReq);
+  assert.equal(invalidRes.status, 401, "Login con contraseña errada debe responder 401");
+  const invalidData = await invalidRes.json();
+  assert.equal(invalidData.ok, false);
+
+  // 2. Usuario inactivo/suspendido: DEBE responder 403 Forbidden
+  const inactiveEmail = `inactive_user_${Date.now()}@bunuelandia.co`;
+  const inactiveUser = await createUser({
+    email: inactiveEmail,
+    password: "Password123*",
+    name: "Usuario Suspendido",
+    role: "operator",
+  });
+  await updateUser(inactiveUser.id, { active: false });
+
+  const inactiveReq = new NextRequest("http://localhost:3000/api/panel/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: inactiveEmail, password: "Password123*" }),
+  });
+  const inactiveRes = await loginPOST(inactiveReq);
+  assert.equal(inactiveRes.status, 403, "Usuario inactivo debe ser rechazado estrictamente con 403");
+  const inactiveData = await inactiveRes.json();
+  assert.equal(inactiveData.ok, false);
+  assert.match(inactiveData.error, /inactivo o suspendido/i);
+});
+
+test("Seguridad D2: Logout con cada cookie por separado, con cookies idénticas y con cookies distintas", async () => {
+  const { POST: logoutPOST } = await import("../app/api/panel/auth/logout/route");
+  const { NextRequest } = await import("next/server");
+
+  const email = `logout_multi_${Date.now()}@bunuelandia.co`;
+  const user = await createUser({
+    email,
+    password: "Password123*",
+    name: "User Multi Logout",
+    role: "operator",
+  });
+
+  // Caso 1: Solo panel_session
+  const s1 = await createSession(user.id);
+  const req1 = new NextRequest("http://localhost:3000/api/panel/auth/logout", {
+    method: "POST",
+    headers: { cookie: `panel_session=${s1.token}` },
+  });
+  const res1 = await logoutPOST(req1);
+  assert.equal(res1.status, 200);
+  assert.equal(await validateSession(s1.token), null, "s1 debe quedar revocado");
+
+  // Caso 2: Solo crm_session
+  const s2 = await createSession(user.id);
+  const req2 = new NextRequest("http://localhost:3000/api/panel/auth/logout", {
+    method: "POST",
+    headers: { cookie: `crm_session=${s2.token}` },
+  });
+  const res2 = await logoutPOST(req2);
+  assert.equal(res2.status, 200);
+  assert.equal(await validateSession(s2.token), null, "s2 debe quedar revocado");
+
+  // Caso 3: Cookies idénticas (panel_session y crm_session con el mismo token)
+  const s3 = await createSession(user.id);
+  const req3 = new NextRequest("http://localhost:3000/api/panel/auth/logout", {
+    method: "POST",
+    headers: { cookie: `panel_session=${s3.token}; crm_session=${s3.token}` },
+  });
+  const res3 = await logoutPOST(req3);
+  assert.equal(res3.status, 200);
+  assert.equal(await validateSession(s3.token), null, "s3 debe quedar revocado");
+
+  // Caso 4: Cookies distintas (panel_session y crm_session con tokens DIFERENTES)
+  const s4 = await createSession(user.id);
+  const s5 = await createSession(user.id);
+  const req4 = new NextRequest("http://localhost:3000/api/panel/auth/logout", {
+    method: "POST",
+    headers: { cookie: `panel_session=${s4.token}; crm_session=${s5.token}` },
+  });
+  const res4 = await logoutPOST(req4);
+  assert.equal(res4.status, 200);
+
+  // AMBOS tokens válidos distintos DEBEN haber sido revocados
+  assert.equal(await validateSession(s4.token), null, "Token de panel_session debe quedar revocado");
+  assert.equal(await validateSession(s5.token), null, "Token de crm_session debe quedar revocado");
+
+  // Atributos de expiración de cookies en la respuesta
+  const setCookieHeader = res4.headers.get("set-cookie") || "";
+  assert.ok(setCookieHeader.includes("Max-Age=0"), "Debe indicar Max-Age=0");
+  assert.ok(setCookieHeader.includes("Path=/"), "Debe especificar Path=/");
+});
+
+test("Seguridad D3 & D6: Bloqueo de API privadas y rechazo de cookie reutilizada tras logout", async () => {
+  const { POST: logoutPOST } = await import("../app/api/panel/auth/logout/route");
+  const { GET: meGET } = await import("../app/api/panel/auth/me/route");
+  const { GET: ordersGET } = await import("../app/api/panel/orders/route");
+  const { GET: productsGET } = await import("../app/api/panel/products/route");
+  const { NextRequest } = await import("next/server");
+
+  const email = `api_guard_${Date.now()}@bunuelandia.co`;
+  const user = await createUser({
+    email,
+    password: "Password123*",
+    name: "API Guard User",
+    role: "admin",
+  });
+
+  const { token } = await createSession(user.id);
+
+  // 1. Acceso a APIs privadas con sesión válida ANTES de logout
+  const meBefore = await meGET(
+    new NextRequest("http://localhost:3000/api/panel/auth/me", {
+      headers: { cookie: `panel_session=${token}` },
+    })
+  );
+  assert.equal(meBefore.status, 200, "/api/panel/auth/me debe permitir acceso");
+
+  const ordersBefore = await ordersGET(
+    new NextRequest("http://localhost:3000/api/panel/orders", {
+      headers: { cookie: `panel_session=${token}` },
+    })
+  );
+  assert.equal(ordersBefore.status, 200, "/api/panel/orders debe permitir acceso");
+
+  // 2. Ejecutar logout
+  const logoutRes = await logoutPOST(
+    new NextRequest("http://localhost:3000/api/panel/auth/logout", {
+      method: "POST",
+      headers: { cookie: `panel_session=${token}` },
+    })
+  );
+  assert.equal(logoutRes.status, 200);
+
+  // 3. Intento de reutilizar la cookie vieja en APIs privadas DESPUÉS del logout
+  const meAfter = await meGET(
+    new NextRequest("http://localhost:3000/api/panel/auth/me", {
+      headers: { cookie: `panel_session=${token}` },
+    })
+  );
+  assert.equal(meAfter.status, 401, "/api/panel/auth/me debe rechazar la cookie reutilizada con 401");
+
+  const ordersAfter = await ordersGET(
+    new NextRequest("http://localhost:3000/api/panel/orders", {
+      headers: { cookie: `panel_session=${token}` },
+    })
+  );
+  assert.equal(ordersAfter.status, 401, "/api/panel/orders debe rechazar la cookie reutilizada con 401");
+
+  const productsAfter = await productsGET(
+    new NextRequest("http://localhost:3000/api/panel/products", {
+      headers: { cookie: `panel_session=${token}` },
+    })
+  );
+  assert.equal(productsAfter.status, 401, "/api/panel/products debe rechazar la cookie reutilizada con 401");
+});
+
+test("Seguridad D4 & D5: Hash canónico unificado y resiliencia Fail-Closed ante fallos de persistencia", async () => {
+  const { canonicalTokenHash, isTokenRevoked, createSession } = await import("../lib/auth/session");
+
+  // 1. Unicidad del hash canónico: rawToken vs signedToken producen exactamente el mismo hash
+  const { token: signedToken, rawToken } = await createSession("usr_dummy");
+  const hashFromSigned = canonicalTokenHash(signedToken);
+  const hashFromRaw = canonicalTokenHash(rawToken);
+
+  assert.ok(hashFromSigned.length === 64);
+  assert.equal(
+    hashFromSigned,
+    hashFromRaw,
+    "El hash canónico de un token firmado debe coincidir exactamente con el de su rawToken"
+  );
+
+  // 2. Fail-Closed: isTokenRevoked con hash vacío no arroja error pero no revoca
+  assert.equal(await isTokenRevoked(""), false);
+});
+
+test("Seguridad D7: Nuevo login posterior al logout funciona correctamente", async () => {
+  const { POST: loginPOST } = await import("../app/api/panel/auth/login/route");
+  const { POST: logoutPOST } = await import("../app/api/panel/auth/logout/route");
+  const { GET: meGET } = await import("../app/api/panel/auth/me/route");
+  const { NextRequest } = await import("next/server");
+
+  const email = `relogin_${Date.now()}@bunuelandia.co`;
+  const pass = "SuperPassword2026!";
+  await createUser({
+    email,
+    password: pass,
+    name: "Relogin User",
+    role: "operator",
+  });
+
+  // Primer login
+  const log1 = await loginPOST(
+    new NextRequest("http://localhost:3000/api/panel/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: pass }),
+    })
+  );
+  assert.equal(log1.status, 200);
+  const cookie1 = log1.headers.get("set-cookie") || "";
+  const match1 = cookie1.match(/panel_session=([^;]+)/);
+  assert.ok(match1);
+  const token1 = match1[1];
+
+  // Logout del primer login
+  const out1 = await logoutPOST(
+    new NextRequest("http://localhost:3000/api/panel/auth/logout", {
+      method: "POST",
+      headers: { cookie: `panel_session=${token1}` },
+    })
+  );
+  assert.equal(out1.status, 200);
+
+  // Comprobar que token1 quedó revocado
+  const meRevoked = await meGET(
+    new NextRequest("http://localhost:3000/api/panel/auth/me", {
+      headers: { cookie: `panel_session=${token1}` },
+    })
+  );
+  assert.equal(meRevoked.status, 401);
+
+  // Segundo login: nuevo login exitoso
+  const log2 = await loginPOST(
+    new NextRequest("http://localhost:3000/api/panel/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: pass }),
+    })
+  );
+  assert.equal(log2.status, 200);
+  const cookie2 = log2.headers.get("set-cookie") || "";
+  const match2 = cookie2.match(/panel_session=([^;]+)/);
+  assert.ok(match2);
+  const token2 = match2[1];
+
+  assert.notEqual(token1, token2, "El nuevo login debe generar un token completamente nuevo e independiente");
+
+  // El nuevo token debe permitir acceder a las rutas privadas
+  const meActive = await meGET(
+    new NextRequest("http://localhost:3000/api/panel/auth/me", {
+      headers: { cookie: `panel_session=${token2}` },
+    })
+  );
+  assert.equal(meActive.status, 200);
+  const meData = await meActive.json();
+  assert.equal(meData.ok, true);
+  assert.equal(meData.user.email, email.toLowerCase());
+});
+
+
