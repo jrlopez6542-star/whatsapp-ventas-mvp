@@ -1,26 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 
 function getSigningSecret(): string | null {
-  const secret = (
-    process.env.PANEL_SESSION_SECRET ||
-    process.env.PANEL_PASSWORD ||
-    process.env.CRON_SECRET ||
-    process.env.EVOLUTION_API_KEY ||
-    ""
-  ).trim().replace(/^"|"$/g, "");
+  const secret = (process.env.PANEL_SESSION_SECRET || "").trim().replace(/^"|"$/g, "");
 
-  if (secret) {
+  if (process.env.NODE_ENV === "production") {
+    if (!secret) {
+      console.error("[security] Falta secreto de firma de sesión en producción (PANEL_SESSION_SECRET). Fallando de forma segura.");
+      return null;
+    }
     return secret;
   }
 
-  // En producción, es un fallo crítico no tener un secreto configurado
-  if (process.env.NODE_ENV === "production") {
-    console.error("[security] Falta secreto de firma de sesión en producción. Fallando de forma segura.");
-    return null;
-  }
-
-  // En desarrollo/pruebas locales, usar clave no productiva
-  return "dev-local-secret-panel-signing-key-only-not-for-prod";
+  // En desarrollo/pruebas locales, usar secreto configurado o clave local fija no productiva
+  return secret || "dev-local-secret-panel-signing-key-only-not-for-prod";
 }
 
 async function verifyHmacSessionToken(token: string, secret: string | null): Promise<boolean> {

@@ -601,6 +601,28 @@ test("Seguridad E3: Ausencia de secreto de firma en producción falla de forma s
       /no está permitido en entornos de producción/i,
       "setSessionExpiryForTesting debe rechazar su uso en producción para impedir manipulación de sesiones"
     );
+
+    // 7. En producción, PANEL_PASSWORD, CRON_SECRET o EVOLUTION_API_KEY NO son aceptados como alternativas
+    process.env.PANEL_PASSWORD = "SomePassword123*";
+    process.env.CRON_SECRET = "SomeCronSecret123*";
+    process.env.EVOLUTION_API_KEY = "SomeApiKey123*";
+    delete process.env.PANEL_SESSION_SECRET;
+
+    assert.throws(
+      () => {
+        getSessionSigningSecret();
+      },
+      /secreto de firma de sesión en producción \(PANEL_SESSION_SECRET\)/i,
+      "En producción es estrictamente obligatorio PANEL_SESSION_SECRET, sin aceptar secretos alternativos"
+    );
+
+    const midAltRes = await middleware(testReq);
+    assert.equal(midAltRes.status, 401, "Middleware no debe aceptar alternativas a PANEL_SESSION_SECRET en producción");
+
+    // 8. Al configurar PANEL_SESSION_SECRET en producción, es aceptado sin problemas
+    const prodSecret = "ValidProdSecret64BytesLengthHexOrHighEntropy!";
+    process.env.PANEL_SESSION_SECRET = prodSecret;
+    assert.equal(getSessionSigningSecret(), prodSecret, "Debe retornar PANEL_SESSION_SECRET en producción");
   } finally {
     process.env = originalEnv;
   }

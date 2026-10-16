@@ -13,6 +13,8 @@ Se completó la auditoría y corrección integral del sistema de autenticación,
 
 Se verificaron de manera estricta los 47 tests del proyecto, corrigiendo y ampliando las suites de seguridad `Seguridad E1` a `Seguridad E7` sin alterar el audio, la transcripción, la cobertura de domicilios ni los datos reales en producción.
 
+Adicionalmente, se auditó y corrigió la obtención del secreto de firma en producción: se eliminó cualquier alternativa secundaria (`PANEL_PASSWORD`, `CRON_SECRET`, `EVOLUTION_API_KEY`), haciendo `PANEL_SESSION_SECRET` estricta y exclusivamente obligatorio en `lib/auth/session.ts` y `middleware.ts`.
+
 ---
 
 ## 2. Arquitectura de Autenticación y Corrección de Logout
@@ -40,6 +42,13 @@ Se verificaron de manera estricta los 47 tests del proyecto, corrigiendo y ampli
    - Comprueba persistencia en base de datos: estado de revocación en `revoked_tokens`, expiración de la sesión en `user_sessions`, y vigencia del usuario (`user.active === 1`).
    - El panel se extrajo al componente cliente `PanelDashboard.tsx` preservando el 100% de las funciones: pedidos en tiempo real, chat en vivo, catálogo, configuración de negocio, sincronización QR de WhatsApp y logs.
 
+### 2.3 Obligatoriedad Exclusiva de `PANEL_SESSION_SECRET`
+- Tanto en `lib/auth/session.ts` (`getSessionSigningSecret`) como en `middleware.ts` (`getSigningSecret`), se eliminó cualquier fallback a secretos ajenos (`PANEL_PASSWORD`, `CRON_SECRET`, `EVOLUTION_API_KEY`).
+- En producción (`process.env.NODE_ENV === "production"`), la ausencia de `PANEL_SESSION_SECRET` provoca un fallo Fail-Closed inmediato:
+  - En Node.js: excepción de configuración impidiendo firmar o validar sesiones.
+  - En Edge Middleware: retorno `null` provocando HTTP 401 en APIs y HTTP 307 hacia `/panel/login` en páginas privadas.
+- En entornos locales o de test, se utiliza `PANEL_SESSION_SECRET` si existe, o una clave fija de desarrollo no productiva.
+
 ---
 
 ## 3. Cobertura y Verificación de Tests de Seguridad
@@ -52,13 +61,15 @@ Se verificaron de manera estricta los 47 tests del proyecto, corrigiendo y ampli
 - Rechazo determinista ante tokens con HMAC alterado o tokens crudos manipulados.
 - Bloqueo 401 inmediato en Edge Middleware.
 
-### Seguridad E3: Ausencia de Secreto en Producción y Fail-Closed
-- Se verifica que si `NODE_ENV === "production"` y no existe secreto:
-  - `getSessionSigningSecret()` y `signToken()` lanzan excepciones de configuración.
+### Seguridad E3: Ausencia de Secreto en Producción, Sin Alternativas y Blindaje de Pruebas
+- Se verifica que si `NODE_ENV === "production"`:
+  - Si falta `PANEL_SESSION_SECRET`, `getSessionSigningSecret()` y `signToken()` lanzan excepciones de configuración.
   - `verifySignedToken()` retorna `null`.
-  - `requirePanelAuth()` deniega acceso de forma segura.
+  - `requirePanelAuth()` deniega acceso de forma segura (`authorized: false`).
   - `middleware()` retorna 401 en APIs y 307 en páginas privadas.
-  - `setSessionExpiryForTesting()` lanza excepción bloqueando cualquier intento de manipulación en entornos productivos.
+  - La presencia de `PANEL_PASSWORD`, `CRON_SECRET` o `EVOLUTION_API_KEY` **no se acepta como alternativa** en producción.
+  - `setSessionExpiryForTesting()` lanza excepción bloqueando cualquier intento de manipulación en producción.
+  - Al configurar `PANEL_SESSION_SECRET` en producción, el secreto es aceptado correctamente.
 
 ### Seguridad E4: Rechazo de Tokens Derivados de `PANEL_PASSWORD`
 - Aislamiento completo con `try ... finally` y contraseña de prueba controlada.
@@ -122,6 +133,6 @@ Se verificó el rechazo de solicitudes no autenticadas (código previsto 401, o 
 ## 5. Riesgos Pendientes y Recomendaciones Operativas
 
 1. **Configuración de Secreto en Vercel (`PANEL_SESSION_SECRET`):**
-   - En producción, el sistema opera en modo Fail-Closed. Es indispensable que `PANEL_SESSION_SECRET` esté configurada en el panel de Vercel antes de desplegar.
+   - En producción, el sistema opera en modo Fail-Closed y ya no acepta claves alternativas. Es indispensable que `PANEL_SESSION_SECRET` esté configurada en las variables de entorno de producción de Vercel antes de desplegar.
 2. **Despliegue a Producción:**
    - Mantener los cambios en la rama `fix/panel-auth-logout-security`. No realizar push a `main` ni despliegues directos sin validación final del operador humano.

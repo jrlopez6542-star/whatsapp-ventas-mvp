@@ -59,27 +59,19 @@ function getMemoryAuthStore(): MemoryAuthStore {
 }
 
 export function getSessionSigningSecret(): string {
-  const secret = (
-    process.env.PANEL_SESSION_SECRET ||
-    process.env.PANEL_PASSWORD ||
-    process.env.CRON_SECRET ||
-    process.env.EVOLUTION_API_KEY ||
-    ""
-  ).trim().replace(/^"|"$/g, "");
+  const secret = (process.env.PANEL_SESSION_SECRET || "").trim().replace(/^"|"$/g, "");
 
-  if (secret) {
+  if (process.env.NODE_ENV === "production") {
+    if (!secret) {
+      throw new Error(
+        "[security] Falta secreto de firma de sesión en producción (PANEL_SESSION_SECRET). Configure una clave secreta segura."
+      );
+    }
     return secret;
   }
 
-  // En producción, es un fallo crítico no tener un secreto configurado
-  if (process.env.NODE_ENV === "production") {
-    throw new Error(
-      "[security] Falta secreto de firma de sesión en producción (PANEL_SESSION_SECRET). Configure una clave secreta segura."
-    );
-  }
-
-  // En desarrollo/pruebas locales, usar clave no productiva
-  return "dev-local-secret-panel-signing-key-only-not-for-prod";
+  // En desarrollo/pruebas locales, usar secreto configurado o clave local fija no productiva
+  return secret || "dev-local-secret-panel-signing-key-only-not-for-prod";
 }
 
 export function signToken(rawToken: string): string {
