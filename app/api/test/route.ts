@@ -1,6 +1,7 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getTursoClient, isTursoConfigured } from "@/lib/store/db";
 import { handleSalesMessage } from "@/lib/agent/sales-agent";
+import { validateSession } from "@/lib/auth/session";
 import {
   getMessages,
   appendMessage,
@@ -14,7 +15,18 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const token = request.cookies.get("panel_session")?.value;
+  const isDev = process.env.NODE_ENV !== "production";
+  const user = token ? await validateSession(token) : null;
+
+  if (!isDev && !user) {
+    return NextResponse.json(
+      { ok: false, error: "No autorizado. Inicie sesión en el panel para ejecutar pruebas." },
+      { status: 401 }
+    );
+  }
+
   const report: Record<string, any> = {
     timestamp: new Date().toISOString(),
     tests: {},
@@ -95,9 +107,9 @@ export async function GET() {
     conversationTurns.push({ turn: 2, user: "Mora y arequipe", bot: t2.reply.slice(0, 150) });
 
     // Turn 3: Enviar nombre y dirección colombiana
-    await appendMessage(testPhone, "user", "A nombre de Felipe en Calle 10 # 5-20 Neiva");
-    const t3 = await handleSalesMessage(testPhone, "A nombre de Felipe en Calle 10 # 5-20 Neiva", "Felipe Test");
-    conversationTurns.push({ turn: 3, user: "A nombre de Felipe en Calle 10 # 5-20 Neiva", bot: t3.reply.slice(0, 150) });
+    await appendMessage(testPhone, "user", "A nombre de Felipe en Carrera 7 # 10-25 Tocancipá");
+    const t3 = await handleSalesMessage(testPhone, "A nombre de Felipe en Carrera 7 # 10-25 Tocancipá", "Felipe Test");
+    conversationTurns.push({ turn: 3, user: "A nombre de Felipe en Carrera 7 # 10-25 Tocancipá", bot: t3.reply.slice(0, 150) });
 
     // Turn 4: Elegir pago en efectivo
     await appendMessage(testPhone, "user", "Efectivo");

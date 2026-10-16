@@ -64,6 +64,8 @@ export interface OrgSettings {
   name: string;
   tone: string;
   welcomeMessage: string;
+  businessCity?: string;
+  coverageArea?: string;
   businessHoursEnabled?: string;
   businessHoursStart?: string;
   businessHoursEnd?: string;
@@ -87,14 +89,16 @@ export interface OrgSettings {
 const DEFAULT_SETTINGS: OrgSettings = {
   name: "BUÑUELANDIA",
   tone: "amable, alegre, antojador y vendedor",
+  businessCity: "Tocancipá, Cundinamarca",
+  coverageArea: "Tocancipá y alrededores",
   businessHoursEnabled: "false",
   businessHoursStart: "08:00",
   businessHoursEnd: "20:00",
   outOfHoursMessage: "¡Hola! En este momento nos encontramos cerrados. 🌙 Te atenderemos con gusto en nuestro horario de atención. 🥟",
   extraPrompt: "",
-  botObjective: "Vender la mayor cantidad de cajas de buñuelos posibles y recolectar dirección y método de pago.",
-  welcomeMessage: "¡Hola! 🤤 Bienvenido a *BUÑUELANDIA*. Los mejores buñuelos frescos, crujientes y calienticos recién hechos. ¿Te gustaría ver nuestro menú de buñuelos y cajas?",
-  rules: "Ofrece el catálogo oficial de BUÑUELANDIA. Para pedidos confirma: productos y cantidades, nombre completo del cliente, dirección exacta de entrega y medio de pago (Nequi, Bre-B o Efectivo contra entrega). Si solicitan hablar con una persona, escala a humano.",
+  botObjective: "Vender la mayor cantidad de cajas de buñuelos posibles y recolectar dirección y método de pago en Tocancipá y alrededores.",
+  welcomeMessage: "¡Hola! 🤤 Bienvenido a *BUÑUELANDIA*. Los mejores buñuelos frescos, crujientes y calienticos recién hechos en Tocancipá. ¿Te gustaría ver nuestro menú de buñuelos y cajas?",
+  rules: "Ofrece el catálogo oficial de BUÑUELANDIA. El negocio despacha sus pedidos desde Tocancipá, Cundinamarca, prestando servicio en Tocancipá y sus alrededores. Para pedidos confirma: productos y cantidades, nombre completo del cliente, dirección exacta de entrega y medio de pago (Nequi, Bre-B o Efectivo contra entrega). Si solicitan entrega en otra ciudad o fuera de cobertura, informa amablemente la cobertura en Tocancipá y deriva a un asesor humano. Si solicitan hablar con una persona, escala a humano.",
   transferQrImage: "",
   nequiNumber: "3228964947",
   brebKey: "3228964947",
@@ -351,7 +355,7 @@ export function parseTimestamp(raw: unknown): number {
 
 export function decodeWhatsappIdentifier(val: string): string {
   if (!val) return "";
-  let s = String(val).trim();
+  const s = String(val).trim();
   if (/^[A-Za-z0-9+/=]{20,}$/.test(s) && (s.startsWith("d2hh") || s.length % 4 === 0)) {
     try {
       const decoded = Buffer.from(s, "base64").toString("utf8");
@@ -716,15 +720,12 @@ export async function createOrder(
           details?.invoiceUrl || null,
         ],
       });
-      try {
-        for (const it of items) {
-          await client.execute({
-            sql: "INSERT INTO order_items (id, order_id, sku, quantity, unit_price) VALUES (?, ?, ?, ?, ?)",
-            args: [randomUUID(), memOrder.id, it.sku, it.quantity, it.unitPrice],
-          });
-        }
-      } catch (itemErr) {
-        console.warn("[store] order_items insert warning:", itemErr);
+      if (items.length > 0) {
+        const itemBatch = items.map((it) => ({
+          sql: "INSERT INTO order_items (id, order_id, sku, quantity, unit_price) VALUES (?, ?, ?, ?, ?)",
+          args: [randomUUID(), memOrder.id, it.sku, it.quantity, it.unitPrice],
+        }));
+        await client.batch(itemBatch, "write");
       }
 
       if (details?.customerName && !details.customerName.toLowerCase().startsWith("cliente whatsapp")) {
@@ -795,6 +796,7 @@ export async function updateOrderStatus(id: string, status: OrderStatus): Promis
       }
     } catch (err) {
       console.error("[store] updateOrderStatus error:", err);
+      throw err;
     }
   }
 
@@ -915,6 +917,8 @@ export async function getOrgSettings(): Promise<OrgSettings> {
       brebKey: r.breb_key != null ? String(r.breb_key) : DEFAULT_SETTINGS.brebKey,
       deliveryFee: r.delivery_fee != null ? String(r.delivery_fee) : DEFAULT_SETTINGS.deliveryFee,
       freeDeliveryThreshold: r.free_delivery_threshold != null ? String(r.free_delivery_threshold) : DEFAULT_SETTINGS.freeDeliveryThreshold,
+      businessCity: r.business_city != null ? String(r.business_city) : (DEFAULT_SETTINGS.businessCity || "Tocancipá, Cundinamarca"),
+      coverageArea: r.coverage_area != null ? String(r.coverage_area) : (DEFAULT_SETTINGS.coverageArea || "Tocancipá y alrededores"),
       estimatedDeliveryTime: r.estimated_delivery_time != null ? String(r.estimated_delivery_time) : DEFAULT_SETTINGS.estimatedDeliveryTime,
       botEnabled: r.bot_enabled != null ? String(r.bot_enabled) : DEFAULT_SETTINGS.botEnabled,
       upsellDrinksEnabled: r.upsell_drinks_enabled != null ? String(r.upsell_drinks_enabled) : DEFAULT_SETTINGS.upsellDrinksEnabled,
@@ -953,6 +957,8 @@ export async function updateOrgSettings(patch: Partial<OrgSettings>): Promise<Or
       if (patch.name !== undefined) { sets.push("business_name = ?"); args.push(patch.name); }
       if (patch.tone !== undefined) { sets.push("tone = ?"); args.push(patch.tone); }
       if (patch.welcomeMessage !== undefined) { sets.push("welcome_message = ?"); args.push(patch.welcomeMessage); }
+      if (patch.businessCity !== undefined) { sets.push("business_city = ?"); args.push(patch.businessCity); }
+      if (patch.coverageArea !== undefined) { sets.push("coverage_area = ?"); args.push(patch.coverageArea); }
       if (patch.rules !== undefined) { sets.push("rules = ?"); args.push(patch.rules); }
       if (patch.businessHoursEnabled !== undefined) { sets.push("business_hours_enabled = ?"); args.push(patch.businessHoursEnabled); }
       if (patch.businessHoursStart !== undefined) { sets.push("business_hours_start = ?"); args.push(patch.businessHoursStart); }

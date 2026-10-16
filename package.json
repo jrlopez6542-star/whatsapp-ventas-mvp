@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test lib/outbound-queue.test.ts",
+    "test": "tsx --test lib/outbound-queue.test.ts lib/whatsapp-fixes.test.ts tests/*.test.ts",
     "test:bot": "node scripts/test-bot.mjs"
   },
   "dependencies": {

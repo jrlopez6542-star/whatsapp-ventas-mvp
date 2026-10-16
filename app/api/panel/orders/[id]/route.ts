@@ -1,13 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { deleteOrder, updateOrderStatus, appendMessage, type OrderStatus } from "@/lib/store";
 import { sendOutboundWhatsApp } from "@/lib/whatsapp-send";
+import { requirePanelAuth } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requirePanelAuth(request, ["admin"]);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { ok: false, error: "Acceso denegado. Solo administradores pueden eliminar pedidos." },
+      { status: 403 }
+    );
+  }
+
   const { id } = await params;
   await deleteOrder(id);
   return NextResponse.json({ ok: true });
@@ -17,6 +26,14 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requirePanelAuth(request);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { ok: false, error: auth.error || "No autorizado" },
+      { status: 401 }
+    );
+  }
+
   const { id } = await params;
   try {
     const body = await request.json();

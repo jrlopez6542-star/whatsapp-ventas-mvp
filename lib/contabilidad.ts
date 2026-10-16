@@ -37,7 +37,8 @@ const CONTABILIDAD_API_URL =
   "https://contabilidad-app-fawn.vercel.app/api/invoices/create-from-order";
 
 const BOT_INVOICE_SECRET =
-  process.env.BOT_INVOICE_SECRET || "bunuelandia-secret-bot-key-2026";
+  process.env.BOT_INVOICE_SECRET?.trim() ||
+  (process.env.NODE_ENV !== "production" ? "bunuelandia-secret-bot-key-2026" : "");
 
 /**
  * Llama a la API de Contabilidad para generar la factura legal/oficial automáticamente

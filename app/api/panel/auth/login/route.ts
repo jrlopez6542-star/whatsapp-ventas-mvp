@@ -1,37 +1,87 @@
 import { NextRequest, NextResponse } from "next/server";
+import { findUserByEmail, createSession, ensureInitialAdmin } from "@/lib/auth/session";
+import { verifyPassword } from "@/lib/auth/passwords";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-async function sha256Hex(text: string): Promise<string> {
-  const data = new TextEncoder().encode(text);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
 export async function POST(request: NextRequest) {
   try {
-    const { password } = await request.json();
-    const envPassword = (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "");
-    const inputPassword = String(password || "").trim().replace(/^"|"$/g, "");
+    const body = await request.json().catch(() => ({}));
+    const rawEmail = String(body.email || "").trim().toLowerCase();
+    const inputPassword = String(body.password || "").trim().replace(/^"|"$/g, "");
 
-    if (!envPassword || inputPassword === envPassword) {
-      const token = await sha256Hex(`whatsapp-ventas-panel:${envPassword}`);
-      const response = NextResponse.json({ ok: true });
-      response.cookies.set("panel_session", token, {
-        httpOnly: true,
-        path: "/",
-        sameSite: "lax",
-        maxAge: 60 * 60 * 24 * 7, // 7 días
-      });
-      return response;
+    if (!inputPassword) {
+      return NextResponse.json({ ok: false, error: "La contraseña es requerida" }, { status: 400 });
     }
 
-    return NextResponse.json({ ok: false, error: "Contraseña incorrecta" }, { status: 401 });
-  } catch {
-    return NextResponse.json({ ok: false, error: "Petición inválida" }, { status: 400 });
+    // Si no se proveyó correo (formulario legado de sólo contraseña), asumir administrador principal
+    const effectiveEmail = rawEmail || "admin@bunuelandia.co";
+
+    // 1. Intentar autenticar contra la base de datos de usuarios
+    let user = await findUserByEmail(effectiveEmail);
+
+    // Si no existe y el email es el admin por defecto, asegurar bootstrap si PANEL_PASSWORD existe
+    if (!user && effectiveEmail === "admin@bunuelandia.co") {
+      await ensureInitialAdmin();
+      user = await findUserByEmail(effectiveEmail);
+    }
+
+    let authenticated = false;
+    let authenticatedUser = user;
+
+    if (user && user.active) {
+      authenticated = await verifyPassword(inputPassword, user.passwordHash);
+    }
+
+    // 2. Fallback de transición si aún no se inicializó el usuario en Turso
+    if (!authenticated) {
+      const envPassword = (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "");
+      if (envPassword && inputPassword === envPassword) {
+        await ensureInitialAdmin();
+        const createdAdmin = await findUserByEmail("admin@bunuelandia.co");
+        if (createdAdmin) {
+          authenticatedUser = createdAdmin;
+          authenticated = true;
+        }
+      }
+    }
+
+    if (!authenticated || !authenticatedUser) {
+      return NextResponse.json(
+        { ok: false, error: "Correo o contraseña incorrectos" },
+        { status: 401 }
+      );
+    }
+
+    // 3. Crear sesión revocable en base de datos
+    const userAgent = request.headers.get("user-agent") || undefined;
+    const forwardedFor = request.headers.get("x-forwarded-for");
+    const ipAddress = forwardedFor ? forwardedFor.split(",")[0].trim() : undefined;
+
+    const { token } = await createSession(authenticatedUser.id, userAgent, ipAddress);
+
+    const response = NextResponse.json({
+      ok: true,
+      user: {
+        id: authenticatedUser.id,
+        email: authenticatedUser.email,
+        name: authenticatedUser.name,
+        role: authenticatedUser.role,
+      },
+    });
+
+    response.cookies.set("panel_session", token, {
+      httpOnly: true,
+      path: "/",
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 60 * 60 * 24 * 7, // 7 días
+    });
+
+    return response;
+  } catch (error) {
+    console.error("[auth login error]", error);
+    return NextResponse.json({ ok: false, error: "Error interno al procesar el inicio de sesión" }, { status: 500 });
   }
 }
-

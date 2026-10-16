@@ -185,9 +185,15 @@ export function verifyEvolutionWebhookSecret(
   headerValue: string | null
 ): boolean {
   const secret = process.env.EVOLUTION_WEBHOOK_SECRET?.trim();
-  if (!secret) return true; // optional
+  if (!secret) return true; // optional if not configured in environment
   if (!headerValue) return false;
-  return headerValue === secret;
+
+  const bufA = Buffer.from(headerValue);
+  const bufB = Buffer.from(secret);
+  if (bufA.length !== bufB.length) return false;
+
+  const { timingSafeEqual } = require("crypto");
+  return timingSafeEqual(bufA, bufB);
 }
 
 function extractTextFromMessage(message: UnknownRecord | null): string {
@@ -211,9 +217,9 @@ function extractTextFromMessage(message: UnknownRecord | null): string {
     const lng = loc.degreesLongitude ?? loc.longitude;
     const name = strField(loc.name);
     const address = strField(loc.address);
-    const label = name || address || (lat && lng ? `${lat}, ${lng}` : "");
-    const mapUrl = lat && lng ? ` - https://maps.google.com/?q=${lat},${lng}` : "";
-    return `📍 [Ubicación GPS compartida: ${label || "Punto en el mapa"}${mapUrl}]`;
+    const label = name || address || "";
+    const mapUrl = lat && lng ? `https://maps.google.com/?q=${lat},${lng}` : "";
+    return `📍 [Ubicación GPS compartida: ${label ? label + " - " : ""}${mapUrl}]`;
   }
   return "";
 }

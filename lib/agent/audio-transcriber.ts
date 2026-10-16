@@ -4,7 +4,7 @@ import { logSystemEvent } from "@/lib/logger";
 const WHISPER_PROMPT =
   "Buñuelandia: Buñuelos de queso tradicionales, buñuelos rellenos de arequipe, bocadillo, nutella, mora. " +
   "Cajas surtidas de 4 (C4S) y 8 buñuelos (C8S), salsas, gaseosas Postobón, Colombiana, Manzana, Pepsi, Coca Cola, " +
-  "Bre-B, Nequi, efectivo, domicilio en Neiva Huila, direcciones, conjuntos residenciales, torres, apartamentos, veredas, fincas.";
+  "Bre-B, Nequi, efectivo, domicilio en Tocancipá Cundinamarca, direcciones, conjuntos residenciales, torres, apartamentos, veredas, fincas.";
 
 /**
  * Transcribe un archivo o nota de voz de WhatsApp enviado en Base64.

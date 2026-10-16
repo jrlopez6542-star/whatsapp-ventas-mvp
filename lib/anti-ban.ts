@@ -64,15 +64,11 @@ export function calculateHumanDelays(
   }
 
   // Cálculo humano orgánico:
-  // Lectura humana: 300ms base + aleatorio hasta 650ms
-  const readingDelayMs = 300 + Math.floor(Math.random() * 350);
+  // Lectura humana: 1.2s a 2.2s (1200ms a 2200ms)
+  const readingDelayMs = 1200 + Math.floor(Math.random() * 1000);
 
-  // Tipeo humano: 18ms por carácter + jitter (-200ms a +400ms), acotado entre 1.0s y 3.2s
-  // (mantiene las respuestas ágiles para el cliente pero humanas para Meta)
-  const baseTyping = textLength * 18;
-  const jitter = Math.floor(Math.random() * 600) - 200;
-  const rawTyping = baseTyping + jitter;
-  const typingDelayMs = Math.max(1000, Math.min(3200, Math.round(rawTyping)));
+  // Tipeo humano: presencia 'composing' proporcional a la longitud del texto
+  const typingDelayMs = Math.min(6000, Math.max(1800, textLength * 32));
 
   return {
     readingDelayMs,

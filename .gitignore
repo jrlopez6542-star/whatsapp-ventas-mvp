@@ -8,4 +8,8 @@ build
 .vercel
 proyecto_completo.txt
 unpack.mjs
-.env*
+*.pem
+*.key
+*.id_rsa
+*.pk8
+credentials.json

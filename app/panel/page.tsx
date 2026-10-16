@@ -1,7 +1,6 @@
 "use client";
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { QrModal } from "./QrModal";
-import Script from 'next/script';
 import Link from "next/link";
 import { DashboardView } from "./DashboardView";
 import { SettingsView } from "./SettingsView";
@@ -759,9 +758,6 @@ export default function PanelDashboard() {
 
     return (
     <>
-      <Script src="https://cdn.tailwindcss.com" strategy="beforeInteractive" />
-      <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
-      <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css" />
       <style>{`
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }

@@ -157,7 +157,7 @@ export function formatDeliveryDriverMessage(
     if (isVerified) {
       paymentNotice = "✅ *TRANSFERENCIA VERIFICADA:* Pago confirmado exitosamente. No cobrar al cliente.";
     } else {
-      paymentNotice = "⚠️ *ATENCIÓN - TRANSFERENCIA PENDIENTE:* No se ha verificado el comprobante de pago. Verificar con administración antes de entregar 📲";
+      paymentNotice = "⏳ *PAGO POR TRANSFERENCIA (PENDIENTE VERIFICAR COMPROBANTE):* Confirmar validación de pago antes de entregar.";
     }
   }
 
@@ -173,6 +173,10 @@ export function formatDeliveryDriverMessage(
     ? `💵 *Paga con:* ${order.changeAmount}\n`
     : "";
 
+  const address = order.deliveryAddress || "Dirección por confirmar";
+  const mapsMatch = address.match(/(https?:\/\/(?:maps\.google\.com|maps\.app\.goo\.gl|goo\.gl\/maps)[^\s\]]+)/i);
+  const gpsLine = mapsMatch ? `\n🗺️ *Ruta GPS:* ${mapsMatch[1]}` : "";
+
   return (
     `🛵 *¡NUEVO DOMICILIO ASIGNADO! - ${businessName}* 🥟🔥\n\n` +
     `📋 *Pedido:* #${order.id.slice(0, 8)}\n` +
@@ -180,7 +184,7 @@ export function formatDeliveryDriverMessage(
     `👤 *Cliente:* ${order.customerName || "Cliente"}\n` +
     phoneBlock +
     `📍 *Dirección de Entrega:*\n` +
-    `👉 ${order.deliveryAddress || "Dirección por confirmar"}\n` +
+    `👉 ${address}${gpsLine}\n` +
     notesLine +
     `\n🛒 *Detalle del Pedido:*\n` +
     `${order.itemsSummary || "Productos ordenados"}\n\n` +
@@ -197,13 +201,14 @@ export function formatDeliveryDriverMessage(
  * Notifica automáticamente al domiciliario asignado si tiene teléfono configurado
  */
 export async function notifyDeliveryDriver(
-  order: Order
+  order: Order,
+  customMessage?: string
 ): Promise<{ ok: boolean; error?: string; sentTo?: string; message: string }> {
   const settings = await getOrgSettings().catch(() => null);
   const driverPhone = settings?.deliveryDriverPhone?.trim();
   const notifyEnabled = settings?.deliveryDriverNotifyEnabled !== "false";
 
-  const message = formatDeliveryDriverMessage(order, settings || undefined);
+  const message = customMessage || formatDeliveryDriverMessage(order, settings || undefined);
 
   if (!driverPhone) {
     return {

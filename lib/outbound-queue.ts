@@ -67,7 +67,7 @@ declare global {
 }
 
 let lastGlobalOutboundTimestamp = 0;
-const GLOBAL_MIN_PACING_MS = 1200;
+const GLOBAL_MIN_PACING_MS = 1500;
 
 async function waitForGlobalPacing(): Promise<void> {
   const now = Date.now();

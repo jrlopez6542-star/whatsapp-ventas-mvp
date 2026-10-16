@@ -99,6 +99,34 @@ export async function ensureTursoReady(): Promise<void> {
           details TEXT,
           created_at INTEGER NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          email TEXT NOT NULL UNIQUE,
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'operator',
+          name TEXT NOT NULL,
+          phone TEXT,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS user_sessions (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at INTEGER NOT NULL,
+          user_agent TEXT,
+          ip_address TEXT,
+          created_at INTEGER NOT NULL
+        )`,
+        `CREATE TABLE IF NOT EXISTS password_resets (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at INTEGER NOT NULL,
+          used_at INTEGER,
+          created_at INTEGER NOT NULL
+        )`,
       ],
       "write"
     );
@@ -177,6 +205,8 @@ export async function ensureTursoReady(): Promise<void> {
       "delivery_driver_phone TEXT",
       "delivery_driver_notify_enabled TEXT DEFAULT 'true'",
       "auto_pause_on_mobile_reply TEXT DEFAULT 'true'",
+      "business_city TEXT DEFAULT 'Tocancipá, Cundinamarca'",
+      "coverage_area TEXT DEFAULT 'Tocancipá y alrededores'",
     ];
     for (const col of alterOrgSettings) {
       try {
@@ -206,13 +236,11 @@ export async function ensureTursoReady(): Promise<void> {
     }
 
     try {
-      const cRows = (await client.execute("PRAGMA table_info(conversations);")).rows;
-      const mRows = (await client.execute("PRAGMA table_info(messages);")).rows;
-      const oRows = (await client.execute("PRAGMA table_info(orders);")).rows;
-      console.log("[db schema conversations]", JSON.stringify(cRows));
-      console.log("[db schema messages]", JSON.stringify(mRows));
-      console.log("[db schema orders]", JSON.stringify(oRows));
-    } catch {}
+      const { ensureInitialAdmin } = await import("@/lib/auth/session");
+      await ensureInitialAdmin();
+    } catch (adminErr) {
+      console.warn("[db ensureInitialAdmin notice]", adminErr);
+    }
   })().catch((err: unknown) => {
     initializedPromise = null;
     throw err;

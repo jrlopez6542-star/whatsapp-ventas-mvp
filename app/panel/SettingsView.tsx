@@ -6,6 +6,8 @@ export function SettingsView() {
     name: "",
     tone: "",
     welcomeMessage: "",
+    businessCity: "",
+    coverageArea: "",
     rules: "",
     transferQrImage: "",
     nequiNumber: "",
@@ -102,6 +104,8 @@ export function SettingsView() {
             name: d.settings.name || "",
             tone: d.settings.tone || "",
             welcomeMessage: d.settings.welcomeMessage || "",
+            businessCity: d.settings.businessCity || "",
+            coverageArea: d.settings.coverageArea || "",
             rules: d.settings.rules || "",
             transferQrImage: d.settings.transferQrImage || "",
             nequiNumber: d.settings.nequiNumber || "",
@@ -228,6 +232,35 @@ export function SettingsView() {
                 className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-4 py-2.5 transition outline-none"
                 placeholder="Ej. Amable, cercano y conciso"
               />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1.5">
+                  <i className="ph ph-map-pin text-emerald-400 mr-1.5"></i>
+                  Ciudad Sede Oficial
+                </label>
+                <input
+                  type="text"
+                  value={settings.businessCity}
+                  onChange={(e) => setSettings({ ...settings, businessCity: e.target.value })}
+                  className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-4 py-2.5 transition outline-none"
+                  placeholder="Ej. Tocancipá, Cundinamarca"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-400 mb-1.5">
+                  <i className="ph ph-truck text-emerald-400 mr-1.5"></i>
+                  Zona de Cobertura
+                </label>
+                <input
+                  type="text"
+                  value={settings.coverageArea}
+                  onChange={(e) => setSettings({ ...settings, coverageArea: e.target.value })}
+                  className="w-full bg-[#0b141a] border border-[#2a3942] focus:border-[#007aff] focus:ring-1 focus:ring-[#007aff] text-white rounded-lg px-4 py-2.5 transition outline-none"
+                  placeholder="Ej. Tocancipá y alrededores"
+                />
+              </div>
             </div>
 
             <div>

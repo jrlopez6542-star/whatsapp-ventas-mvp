@@ -18,6 +18,14 @@ import { createInvoiceInContabilidad } from "@/lib/contabilidad";
 import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { logSystemEvent } from "@/lib/logger";
 import { pickRandomVariation } from "@/lib/anti-ban";
+import {
+  shouldInterceptMissingSauces,
+  MISSING_SAUCES_INTERCEPT_MESSAGE,
+  recalculateOrderTotal,
+  hasValidSauceSelection,
+  checkCoverageLocation,
+  getOutOfCoverageMessage,
+} from "@/lib/agent/order-validator";
 
 export interface SalesMessageResult {
   reply: string;
@@ -74,6 +82,15 @@ function cleanAddressCandidate(cand: string): string | null {
 // Extrae direcciones colombianas con soporte integral urbano, rural, veredas y conjuntos residenciales
 function extractAddress(text: string): string | null {
   if (!text) return null;
+
+  // 0. Ubicación GPS compartida de WhatsApp o enlace directo de Google Maps
+  const cleanGps = text.trim();
+  const gpsMatch = cleanGps.match(
+    /(?:📍\s*)?\[?Ubicaci[oó]n GPS compartida:[^\]\r\n]+\]?|https?:\/\/(?:maps\.google\.com|maps\.app\.goo\.gl|goo\.gl\/maps)\S+/i
+  );
+  if (gpsMatch) {
+    return gpsMatch[0].replace(/^\[|\]$/g, "").trim();
+  }
 
   // Normalizar saltos de línea y limpiar caracteres de formato WhatsApp (*, _, ~, `)
   const cleanText = text.replace(/[*_~`]/g, " ").trim();
@@ -613,28 +630,45 @@ async function tryExtractAndRegisterOrder(
   if (!hasConfirmationKeyword) return null;
 
   const combined = (userText + " " + assistantReply).toLowerCase();
-  const { items: extractedItems, total: extractedTotal } = extractProductsFromText(combined, products);
+  const { items: extractedItems } = extractProductsFromText(combined, products);
 
-  const orderItems: Array<{ sku: string; quantity: number; unitPrice: number }> = [];
-  let detectedTotal = extractedTotal;
+  const rawItems: Array<{ sku: string; quantity: number; unitPrice: number; name?: string }> = [];
 
   if (extractedItems.length > 0) {
     for (const it of extractedItems) {
-      orderItems.push({
+      rawItems.push({
         sku: it.sku,
+        name: it.name,
         quantity: it.quantity,
         unitPrice: it.unitPrice,
       });
     }
   } else if (products.length > 0) {
     const defaultProduct = products.find((p) => p.sku === "C8S") || products[0];
-    orderItems.push({
+    rawItems.push({
       sku: defaultProduct.sku,
+      name: defaultProduct.name,
       quantity: 1,
       unitPrice: defaultProduct.price,
     });
-    detectedTotal = defaultProduct.price;
   }
+
+  // Candado Matemático: Recalcular siempre multiplicando qty * unitPrice contra catálogo oficial
+  const mathCalc = recalculateOrderTotal(
+    rawItems,
+    products.map((p) => ({
+      sku: p.sku,
+      name: p.name,
+      price: p.price,
+      category: ((p as { category?: string }).category as "boxes" | "singles" | "drinks") || "boxes",
+    }))
+  );
+  const orderItems: Array<{ sku: string; quantity: number; unitPrice: number }> = mathCalc.items.map((it) => ({
+    sku: it.sku,
+    quantity: it.quantity,
+    unitPrice: it.unitPrice,
+  }));
+  let detectedTotal = mathCalc.total;
 
   // 1. Extraer dirección de entrega: primero de la confirmación estructurada del asistente
   let address: string | null = null;
@@ -740,19 +774,23 @@ async function tryExtractAndRegisterOrder(
     paymentMethod = extractPaymentMethod(userText) || extractPaymentMethod(combined) || "Efectivo contra entrega";
   }
 
-  // 4. Extraer total de la confirmación si está explícito
-  const totalAssistantMatch = assistantReply.match(
-    /(?:💰|\*?Total a pagar:\*?)[^\d]*?([\d.,]+)/i
-  );
-  if (totalAssistantMatch && totalAssistantMatch[1]) {
-    const parsedTotal = parseInt(totalAssistantMatch[1].replace(/[.,]/g, ""), 10);
-    if (!isNaN(parsedTotal) && parsedTotal > 0) {
-      detectedTotal = parsedTotal;
-    }
-  } else if (detectedTotal === 0) {
-    const totalMatch = combined.match(/total[^\d]*?(\d[\d.,]*)/i);
-    if (totalMatch) {
-      detectedTotal = parseInt(totalMatch[1].replace(/[.,]/g, ""), 10);
+  // 4. Candado Matemático: Si se calcularon productos del catálogo, el recálculo matemático sobrescribe cualquier suma errónea generada por el LLM
+  if (mathCalc.total > 0) {
+    detectedTotal = mathCalc.total;
+  } else {
+    const totalAssistantMatch = assistantReply.match(
+      /(?:💰|\*?Total a pagar:\*?)[^\d]*?([\d.,]+)/i
+    );
+    if (totalAssistantMatch && totalAssistantMatch[1]) {
+      const parsedTotal = parseInt(totalAssistantMatch[1].replace(/[.,]/g, ""), 10);
+      if (!isNaN(parsedTotal) && parsedTotal > 0) {
+        detectedTotal = parsedTotal;
+      }
+    } else if (detectedTotal === 0) {
+      const totalMatch = combined.match(/total[^\d]*?(\d[\d.,]*)/i);
+      if (totalMatch) {
+        detectedTotal = parseInt(totalMatch[1].replace(/[.,]/g, ""), 10);
+      }
     }
   }
 
@@ -973,6 +1011,19 @@ export async function handleSalesMessage(
     return { reply, mode: "human_escalated" };
   }
 
+  // 1b. Detección inmediata de ubicación fuera de cobertura (escalamiento a asesor humano)
+  const coverageCheck = checkCoverageLocation(text);
+  if (coverageCheck.isOutOfCoverage && coverageCheck.detectedLocation) {
+    await setConversationStatus(conversationKey, "human");
+    const reply = getOutOfCoverageMessage(
+      coverageCheck.detectedLocation,
+      settings.businessCity || "Tocancipá, Cundinamarca",
+      settings.coverageArea || "Tocancipá y alrededores"
+    );
+    await appendMessage(conversationKey, "assistant", reply);
+    return { reply, mode: "human_escalated" };
+  }
+
   const upsellDrinks = settings.upsellDrinksEnabled !== "false";
 
   // --- INTENCIÓN DE NUEVO PEDIDO / REINICIAR PEDIDO ---
@@ -1152,7 +1203,7 @@ export async function handleSalesMessage(
     }
   }
 
-  if (hasActiveOrder && !isOrderingNewItems && !isModifyingOrPayingActiveOrder) {
+  if (hasActiveOrder && (isAskingStatus || (!isOrderingNewItems && !isModifyingOrPayingActiveOrder))) {
     const statusText =
       latestOrder.status === "delivering"
         ? "en camino con el domiciliario 🛵"
@@ -1358,6 +1409,31 @@ export async function handleSalesMessage(
     sessionAddress = extractAddress(text);
   }
 
+  // Verificar si la dirección indicada está fuera de cobertura
+  if (sessionAddress) {
+    const addrCoverage = checkCoverageLocation(sessionAddress);
+    if (addrCoverage.isOutOfCoverage && addrCoverage.detectedLocation) {
+      await setConversationStatus(conversationKey, "human");
+      const reply = getOutOfCoverageMessage(
+        addrCoverage.detectedLocation,
+        settings.businessCity || "Tocancipá, Cundinamarca",
+        settings.coverageArea || "Tocancipá y alrededores"
+      );
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "human_escalated" };
+    }
+  }
+
+  // Si el bot pidió la dirección en el turno anterior y la respuesta es ambigua (ej: "ok", "si", o caracteres sin dirección)
+  const lastBotMsgObj = [...previous].reverse().find((m) => m.role === "assistant");
+  const lastBotAskedAddr = lastBotMsgObj && (lastBotMsgObj.content.toLowerCase().includes("direcci") || lastBotMsgObj.content.toLowerCase().includes("dirección"));
+  if (lastBotAskedAddr && !sessionAddress && coverageCheck.isAmbiguous && sessionItems.length > 0) {
+    const cityNameShort = (settings.businessCity || "Tocancipá").split(",")[0].trim();
+    const reply = `Para poder llevarte tus buñuelos calienticos recién horneados, ¿nos confirmas tu dirección exacta en ${cityNameShort} o alrededores? 📍🥟 (Por ejemplo: barrio, conjunto, calle o vereda).`;
+    await appendMessage(conversationKey, "assistant", reply);
+    return { reply, mode: "keyword" };
+  }
+
   // Si aún no tenemos teléfono, revisar en mensajes anteriores
   if (!knownCustomerPhone) {
     for (const m of [...allUserAndVoiceMsgs].reverse()) {
@@ -1403,11 +1479,12 @@ export async function handleSalesMessage(
     const nameStatus = knownCustomerName ? `Registrado: "${knownCustomerName}"` : "Aún no suministrado";
     const paymentStatus = sessionPayment ? `Seleccionado: "${sessionPayment}"` : "Aún no seleccionado";
 
+    const cityNameShort = (settings.businessCity || "Tocancipá, Cundinamarca").split(",")[0].trim();
     let nextStepInstruction = "";
     if (hasSurtida && sessionSalsas.length === 0) {
       nextStepInstruction = "👉 El cliente ya eligió su caja surtida pero NO ha dicho las salsas. Pregúntale amablemente qué salsas desea (Mora, Arequipe, Bocadillo, Suero Costeño) y cuántos buñuelos de cada sabor (ej: 4 de Mora y 4 de Arequipe).";
     } else if (!sessionAddress) {
-      nextStepInstruction = `👉 Ya eligió productos (${sessionItems.map((i) => i.name).join(", ")}). Ahora pídele amablemente su dirección de entrega exacta en Neiva para el envío. ¡PROHIBIDO volver a preguntarle qué caja quiere!`;
+      nextStepInstruction = `👉 Ya eligió productos (${sessionItems.map((i) => i.name).join(", ")}). Ahora pídele amablemente su dirección de entrega exacta en ${cityNameShort} o alrededores para el envío. ¡PROHIBIDO volver a preguntarle qué caja quiere!`;
     } else if (!sessionPayment) {
       nextStepInstruction = `👉 Ya tenemos productos (${sessionItems.map((i) => i.name).join(", ")}), salsas y dirección ("${sessionAddress}"). AHORA PASA DIRECTAMENTE AL MEDIO DE PAGO: Ofrécele Nequi, Bre-B o Efectivo contra entrega (recordándole que el domicilio es ¡GRATIS!). ¡PROHIBIDO volver a pedir la dirección de entrega porque ya la tienes anotada ("${sessionAddress}")!`;
     } else {
@@ -1488,6 +1565,12 @@ Desglosa el carrito completo, subtotal, domicilio GRATIS, total exacto, direcci�
 
   Reglas del negocio: ${settings.rules}
 
+  🏢 UBICACIÓN OFICIAL DEL NEGOCIO Y COBERTURA:
+  - BUÑUELANDIA hornea y despacha sus productos exclusivamente desde: ${settings.businessCity || "Tocancipá, Cundinamarca"}, Colombia.
+  - Zona de cobertura autorizada de domicilios: ${settings.coverageArea || "Tocancipá y alrededores"}.
+  - 📍 DIRECCIÓN DEL CLIENTE: La dirección o enlaces de Google Maps/coordenadas GPS suministrados por el cliente son única y exclusivamente su destino de entrega particular. NUNCA alteres ni confundas la ubicación del negocio con la dirección del cliente.
+  - 🚫 SOLICITUDES FUERA DE COBERTURA: Si el cliente solicita entrega en otra ciudad o departamento lejano (ej: Neiva, Cali, Medellín, etc.), infórmale con amabilidad que despachamos desde ${settings.businessCity || "Tocancipá"} y sus alrededores, y transfiérelo a un asesor humano sin generar orden.
+
   🛵 DOMICILIO 100% GRATIS:
   - El costo de envío es SIEMPRE $0 (¡GRATIS!) para todos los pedidos, sin umbrales ni cobros adicionales.
 
@@ -1523,7 +1606,7 @@ ${sessionItems.length > 0
      - Si el cliente ya dio su dirección pero aún no ha dicho su nombre:
        Pregúntale amablemente: «¡Listo! ¿A nombre de quién registramos el pedido? 👤»
      - Si el cliente ya dijo su nombre pero falta la dirección:
-       Pregúntale: «¡Perfecto! ¿Cuál es tu dirección de entrega en Neiva? 📍»
+       Pregúntale: «¡Perfecto! ¿Cuál es tu dirección de entrega en ${(settings.businessCity || "Tocancipá").split(',')[0].trim()} o alrededores? 📍»
      - RECONOCIMIENTO AMPLIO DE DIRECCIONES COLOMBIANAS:
        Acepta y reconoce de inmediato CUALQUIER variedad de dirección:
        * Conjuntos residenciales, edificios, condominios, urbanizaciones, ciudadelas (ej: "Conjunto Puertas del Sol Casa 4", "Condominio Campestre El Peñón", "Edificio Mirador Apto 502", "Urbanización Los Sauces", "Reserva de la Sierra").
@@ -1674,6 +1757,13 @@ ${sessionItems.length > 0
 
           let reply = response.text?.trim() || settings.welcomeMessage;
 
+          // Candado de Salsas en Caja Surtida
+          const hasSurtidaCart = sessionItems.some((it) => it.sku.includes("S") || it.name.toLowerCase().includes("surtid")) ||
+            /surtid/i.test(allUserChatText);
+          if (shouldInterceptMissingSauces(hasSurtidaCart, allUserChatText, reply)) {
+            reply = MISSING_SAUCES_INTERCEPT_MESSAGE;
+          }
+
           const maybeOrder = await tryExtractAndRegisterOrder(
             conversationKey,
             text,
@@ -1739,6 +1829,13 @@ ${sessionItems.length > 0
       });
 
       let reply = res.choices[0]?.message?.content?.trim() || settings.welcomeMessage;
+
+      // Candado de Salsas en Caja Surtida
+      const hasSurtidaCart = sessionItems.some((it) => it.sku.includes("S") || it.name.toLowerCase().includes("surtid")) ||
+        /surtid/i.test(allUserChatText);
+      if (shouldInterceptMissingSauces(hasSurtidaCart, allUserChatText, reply)) {
+        reply = MISSING_SAUCES_INTERCEPT_MESSAGE;
+      }
 
       const maybeOrder = await tryExtractAndRegisterOrder(
         conversationKey,
@@ -2016,20 +2113,11 @@ ${sessionItems.length > 0
     const totalEst = extractedTotal > 0 ? extractedTotal : chosenProduct.unitPrice;
 
     // VALIDACIÓN OBLIGATORIA DE SALSAS PARA CAJAS SURTIDAS (C4S / C8S)
-    const hasSurtida = extractedItems.some((it) => it.sku === "C4S" || it.sku === "C8S");
-    const mentionsSauces =
-      lower.includes("mora") ||
-      lower.includes("arequipe") ||
-      lower.includes("bocadillo") ||
-      lower.includes("suero") ||
-      lower.includes("queso") ||
-      userChatText.toLowerCase().includes("mora") ||
-      userChatText.toLowerCase().includes("arequipe") ||
-      userChatText.toLowerCase().includes("bocadillo") ||
-      userChatText.toLowerCase().includes("suero");
+    const hasSurtida = extractedItems.some((it) => it.sku === "C4S" || it.sku === "C8S") || /surtid/i.test(lower);
+    const mentionsSauces = hasValidSauceSelection(userChatText + " " + lower);
 
     if (hasSurtida && !mentionsSauces) {
-      reply = `¡Excelente elección con tu caja surtida! 🤤 ¿Qué salsas prefieres para acompañar tus buñuelos? Tenemos Mora, Arequipe, Bocadillo y Suero Costeño (puedes combinarlas como prefieras).`;
+      reply = MISSING_SAUCES_INTERCEPT_MESSAGE;
     } else {
       // Verificar si ya tiene bebida o ya se le ofreció
       const hasDrinkInCart = extractedItems.some((it) => it.sku.startsWith("BEB"));
@@ -2053,7 +2141,11 @@ ${sessionItems.length > 0
       }
     }
   } else if (foundAddress && !foundPayment) {
-    reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\n¿Qué buñuelos o bebidas deseas agregar a tu pedido? (Escribe *catálogo* para ver las opciones).`;
+    if (sessionItems.length > 0) {
+      reply = `¡Excelente! Ya tenemos tu dirección: *${foundAddress}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
+    } else {
+      reply = `¡Perfecto! Ya tenemos tu dirección: *${foundAddress}* 📍\n\n¿Qué buñuelos o bebidas deseas agregar a tu pedido? (Escribe *catálogo* para ver las opciones).`;
+    }
   } else if (previous.length > 1) {
     reply = `¡Con gusto! Para tomar tu pedido en BUÑUELANDIA, indícanos qué productos deseas (ej: *1 Caja x8 Surtida*), o escribe *catálogo* si deseas ver todas las opciones.`;
   } else {

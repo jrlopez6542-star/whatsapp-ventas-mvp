@@ -6,6 +6,15 @@ function getPassword(): string {
   return (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "");
 }
 
+function getSigningSecret(): string {
+  return (
+    getPassword() ||
+    (process.env.CRON_SECRET || "").trim().replace(/^"|"$/g, "") ||
+    (process.env.EVOLUTION_API_KEY || "").trim().replace(/^"|"$/g, "") ||
+    "bunuelandia-secret-panel-signing-key-default-2026"
+  );
+}
+
 async function sha256Hex(text: string): Promise<string> {
   const data = new TextEncoder().encode(text);
   const hash = await crypto.subtle.digest("SHA-256", data);
@@ -27,14 +36,40 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return out === 0;
 }
 
+async function verifyHmacSessionToken(token: string, secret: string): Promise<boolean> {
+  if (!token || !token.includes(".")) return false;
+  const parts = token.split(".");
+  if (parts.length !== 2) return false;
+  const [rawToken, sigHex] = parts;
+  if (!rawToken || !sigHex || rawToken.length !== 64 || sigHex.length !== 64) return false;
+
+  try {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      enc.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+
+    const sigBytes = new Uint8Array(
+      sigHex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []
+    );
+
+    return await crypto.subtle.verify(
+      "HMAC",
+      key,
+      sigBytes,
+      enc.encode(rawToken)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const password = getPassword();
-
-  // Sin password: panel abierto (preview warning se muestra en UI)
-  if (!password) {
-    return NextResponse.next();
-  }
 
   const isLoginPage = pathname === "/panel/login";
   const isLoginApi = pathname === "/api/panel/auth/login";
@@ -44,18 +79,36 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const token = request.cookies.get(PANEL_COOKIE)?.value;
-  const expected = await sessionToken(password);
-  const ok = Boolean(token && timingSafeEqualStr(token, expected));
+  const token = request.cookies.get(PANEL_COOKIE)?.value?.trim();
+  const password = getPassword();
+
+  // Verificación estricta del token de sesión:
+  // 1. Token legado derivado de PANEL_PASSWORD (tiempo constante)
+  // 2. Token firmado criptográficamente con HMAC-SHA256 (previene tokens inventados)
+  let hasValidToken = false;
+  if (token && token.length >= 32) {
+    if (password) {
+      const expectedLegacy = await sessionToken(password);
+      if (timingSafeEqualStr(token, expectedLegacy)) {
+        hasValidToken = true;
+      }
+    }
+    if (!hasValidToken && token.includes(".")) {
+      const secret = getSigningSecret();
+      if (await verifyHmacSessionToken(token, secret)) {
+        hasValidToken = true;
+      }
+    }
+  }
 
   if (pathname.startsWith("/panel")) {
     if (isLoginPage) {
-      if (ok) {
+      if (hasValidToken) {
         return NextResponse.redirect(new URL("/panel", request.url));
       }
       return NextResponse.next();
     }
-    if (!ok) {
+    if (!hasValidToken) {
       const login = new URL("/panel/login", request.url);
       login.searchParams.set("next", pathname);
       return NextResponse.redirect(login);
@@ -64,8 +117,11 @@ export async function middleware(request: NextRequest) {
   }
 
   if (pathname.startsWith("/api/panel")) {
-    if (!ok) {
-      return NextResponse.json({ error: "No autorizado" }, { status: 401 });
+    if (!hasValidToken) {
+      return NextResponse.json(
+        { ok: false, error: "No autorizado. Inicie sesión en el panel." },
+        { status: 401 }
+      );
     }
   }
 
