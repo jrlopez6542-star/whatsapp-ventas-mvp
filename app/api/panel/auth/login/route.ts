@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { findUserByEmail, createSession, ensureInitialAdmin } from "@/lib/auth/session";
+import { findUserByEmail, createSession, ensureInitialAdmin, updateUser } from "@/lib/auth/session";
 import { verifyPassword } from "@/lib/auth/passwords";
 
 export const runtime = "nodejs";
@@ -32,17 +32,32 @@ export async function POST(request: NextRequest) {
 
     if (user && user.active) {
       authenticated = await verifyPassword(inputPassword, user.passwordHash);
+      if (!authenticated && body.password) {
+        authenticated = await verifyPassword(String(body.password).trim(), user.passwordHash);
+      }
     }
 
-    // 2. Fallback de transición si aún no se inicializó el usuario en Turso
+    // 2. Fallback de sincronización si PANEL_PASSWORD del entorno coincide con la clave provista
     if (!authenticated) {
-      const envPassword = (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "");
-      if (envPassword && inputPassword === envPassword) {
-        await ensureInitialAdmin();
-        const createdAdmin = await findUserByEmail("admin@bunuelandia.co");
-        if (createdAdmin) {
-          authenticatedUser = createdAdmin;
+      const envPassword = (process.env.PANEL_PASSWORD || "").trim();
+      const cleanEnv = envPassword.replace(/^"|"$/g, "");
+      const rawBodyPass = String(body.password || "").trim();
+      const matchesEnv =
+        (cleanEnv && (inputPassword === cleanEnv || rawBodyPass === cleanEnv)) ||
+        (envPassword && (inputPassword === envPassword || rawBodyPass === envPassword));
+
+      if (matchesEnv) {
+        if (user) {
+          await updateUser(user.id, { password: cleanEnv });
+          authenticatedUser = await findUserByEmail(effectiveEmail);
           authenticated = true;
+        } else {
+          await ensureInitialAdmin();
+          const createdAdmin = await findUserByEmail("admin@bunuelandia.co");
+          if (createdAdmin) {
+            authenticatedUser = createdAdmin;
+            authenticated = true;
+          }
         }
       }
     }
