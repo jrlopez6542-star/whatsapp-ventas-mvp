@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOrders, getOrgSettings } from "@/lib/store";
-import { formatDeliveryDriverMessage } from "@/lib/delivery-driver";
-import { sendOutboundWhatsApp } from "@/lib/whatsapp-send";
+import { formatDeliveryDriverMessage, notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { requirePanelAuth } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
@@ -48,7 +47,7 @@ export async function POST(
       });
     }
 
-    const sendRes = await sendOutboundWhatsApp(driverPhone, message);
+    const sendRes = await notifyDeliveryDriver(order, message, { force: true });
     if (!sendRes.ok) {
       return NextResponse.json({
         ok: false,

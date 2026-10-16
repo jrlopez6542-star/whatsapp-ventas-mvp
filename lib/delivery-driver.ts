@@ -1,4 +1,9 @@
-import { getOrgSettings, type Order } from "@/lib/store";
+import {
+  getOrgSettings,
+  claimOrderDriverNotification,
+  releaseOrderDriverNotification,
+  type Order,
+} from "@/lib/store";
 import { sendOutboundWhatsApp } from "@/lib/whatsapp-send";
 import { logSystemEvent } from "@/lib/logger";
 
@@ -190,6 +195,7 @@ export function formatDeliveryDriverMessage(
     `${order.itemsSummary || "Productos ordenados"}\n\n` +
     `💰 *TOTAL A COBRAR / PAGADO:*\n` +
     `💵 *${formatCop(order.total || 0)}*\n` +
+    `🛵 *Domicilio:* ¡GRATIS! ($0)\n` +
     `💳 *Medio de Pago:* ${paymentMethod}\n` +
     changeLine +
     `\n${paymentNotice}\n\n` +
@@ -197,13 +203,18 @@ export function formatDeliveryDriverMessage(
   );
 }
 
+// Deduplication cache: key = `${order.id}:${kind}` -> timestamp
+const notifiedDriversCache = new Map<string, number>();
+const NOTIFY_DEDUPE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
 /**
  * Notifica automáticamente al domiciliario asignado si tiene teléfono configurado
  */
 export async function notifyDeliveryDriver(
   order: Order,
-  customMessage?: string
-): Promise<{ ok: boolean; error?: string; sentTo?: string; message: string }> {
+  customMessage?: string,
+  options?: { force?: boolean }
+): Promise<{ ok: boolean; error?: string; sentTo?: string; message: string; skipped?: string }> {
   const settings = await getOrgSettings().catch(() => null);
   const driverPhone = settings?.deliveryDriverPhone?.trim();
   const notifyEnabled = settings?.deliveryDriverNotifyEnabled !== "false";
@@ -227,23 +238,76 @@ export async function notifyDeliveryDriver(
     };
   }
 
+  const kind = customMessage && customMessage.includes("PAGO VERIFICADO") ? "verified" : "initial";
+  const dedupeKey = `${order.id}:${kind}`;
+  const now = Date.now();
+
+  // 1. Reclamo condicional atómico en base de datos y memoria
+  if (!options?.force) {
+    const lastSent = notifiedDriversCache.get(dedupeKey);
+    if (lastSent && now - lastSent < NOTIFY_DEDUPE_TTL_MS) {
+      console.log(`[delivery-driver] Notificación (${kind}) en caché local de deduplicación, omitiendo pedido #${order.id.slice(0, 8)}.`);
+      return {
+        ok: true,
+        sentTo: driverPhone,
+        message,
+        skipped: "duplicate",
+      };
+    }
+
+    const claimed = await claimOrderDriverNotification(order.id, kind, false, order);
+    if (!claimed) {
+      console.log(`[delivery-driver] Notificación (${kind}) ya reclamada o enviada previamente en BD para pedido #${order.id.slice(0, 8)}, omitiendo duplicado.`);
+      return {
+        ok: true,
+        sentTo: driverPhone,
+        message,
+        skipped: "duplicate",
+      };
+    }
+  } else {
+    await claimOrderDriverNotification(order.id, kind, true, order);
+  }
+
   try {
     const res = await sendOutboundWhatsApp(driverPhone, message);
     if (!res.ok) {
+      // Revertir el reclamo en base de datos para permitir reintentos posteriores
+      await releaseOrderDriverNotification(order.id, kind, false, order);
+      notifiedDriversCache.delete(dedupeKey);
+
       console.warn("[delivery-driver] Error enviando WhatsApp al domiciliario:", res.error);
-      logSystemEvent("warn", "driver", `Error enviando WhatsApp al domiciliario (${driverPhone}): ${res.error}`);
+      logSystemEvent("warn", "driver", `Error enviando WhatsApp al domiciliario para pedido #${order.id.slice(0, 8)}: ${res.error}`, {
+        orderId: order.id,
+        error: res.error,
+        kind,
+      });
       return { ok: false, error: res.error, sentTo: driverPhone, message };
     }
+
+    // Confirmar reclamo exitoso en base de datos y memoria
+    await releaseOrderDriverNotification(order.id, kind, true, order);
+    notifiedDriversCache.set(dedupeKey, Date.now());
+
     console.log("[delivery-driver] Ficha enviada exitosamente al domiciliario:", driverPhone);
-    logSystemEvent("success", "driver", `Ficha de pedido #${order.id.slice(0, 8)} enviada al domiciliario (${driverPhone})`, {
+    logSystemEvent("success", "driver", `Ficha de pedido #${order.id.slice(0, 8)} (${kind}) enviada al domiciliario`, {
       orderId: order.id,
       total: order.total,
       address: order.deliveryAddress,
+      kind,
     });
     return { ok: true, sentTo: driverPhone, message };
   } catch (err) {
+    // Revertir el reclamo en base de datos ante excepción
+    await releaseOrderDriverNotification(order.id, kind, false, order);
+    notifiedDriversCache.delete(dedupeKey);
+
     console.error("[delivery-driver] Excepción al notificar al domiciliario:", err);
-    logSystemEvent("error", "driver", `Excepción al notificar al domiciliario: ${String(err)}`);
+    logSystemEvent("error", "driver", `Excepción al notificar al domiciliario para pedido #${order.id.slice(0, 8)}: ${String(err)}`, {
+      orderId: order.id,
+      error: String(err),
+      kind,
+    });
     return { ok: false, error: String(err), sentTo: driverPhone, message };
   }
 }

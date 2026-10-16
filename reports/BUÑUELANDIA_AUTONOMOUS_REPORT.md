@@ -2,144 +2,68 @@
 ## Sistema de Ventas y Panel Administrativo — Buñuelandia (`whatsapp-ventas-mvp`)
 
 **Fecha:** 16 de Octubre de 2026  
-**Rama:** `fix/panel-auth-logout-security`  
-**Último Commit:** `30633f7` (`fix(auth): unificar normalizacion de secreto, blindar firmas y aislar clave dev en produccion`)  
+**Rama:** `fix/sales-agent-order-state-and-dispatch`  
 **Estado:** ✅ APROBADO (Tests, Linter, Typecheck y Build)
 
 ---
 
 ## 1. Resumen Ejecutivo
 
-Se completó la auditoría y corrección integral del sistema de autenticación, revocación persistente de sesiones y protección perimetral del panel administrativo de Buñuelandia. La solución resuelve de raíz los fallos de cierre de sesión, la reutilización de tokens en clientes y APIs, el blindaje criptográfico en Edge Middleware y la autorización definitiva en servidor (Node.js).
+Se implementaron, auditaron y validaron las soluciones definitivas para los tres fallos observados en producción en el bot de ventas de WhatsApp de Buñuelandia:
+1. **Fallo 1 (Cambio de producto ignorado):** Un cliente configurando una caja surtida solicitaba cambiar a una tradicional («Para cambiar a una tradicional»), pero el bot insistía en pedir salsas y terminaba registrando la caja surtida con su precio más alto.
+2. **Fallo 2 (Notificación al domiciliario ausente y confirmación falsa):** En pagos por Nequi o transferencia, el bot confirmaba el pedido al cliente pero la orden no se guardaba por un error de esquema (`table order_items has no column named quantity`), y la notificación al domiciliario se ejecutaba como una promesa no esperada (`unawaited`) susceptible a cortes en entornos serverless.
+3. **Fallo 3 (Memoria acumulada y estado conversacional):** La concatenación acumulativa de todo el historial en `allUserChatText` provocaba que menciones antiguas de salsas y productos persistieran indefinidamente a lo largo de los turnos, impidiendo cancelaciones y nuevos pedidos limpios.
 
-Se verificaron de manera estricta los 47 tests del proyecto, corrigiendo y ampliando las suites de seguridad `Seguridad E1` a `Seguridad E7` sin alterar el audio, la transcripción, la cobertura de domicilios ni los datos reales en producción.
-
-Adicionalmente, se auditó y perfeccionó la obtención del secreto de firma en producción:
-1. Se implementó una normalización robusta y unificada (`normalizeSecret`) tanto en `lib/auth/session.ts` como en `middleware.ts`, eliminando espacios externos e internos dentro de comillas (dobles y simples).
-2. Se eliminó cualquier alternativa secundaria (`PANEL_PASSWORD`, `CRON_SECRET`, `EVOLUTION_API_KEY`), haciendo `PANEL_SESSION_SECRET` estricta y exclusivamente obligatorio en producción.
-3. Se garantizó que el secreto de desarrollo nunca sea aceptado en producción para validar sesiones.
-4. Se blindaron `requirePanelAuth` y `app/panel/page.tsx` para exigir firmas HMAC verificables en cualquier cookie, rechazando tokens no firmados o manipulados.
-5. Se verificó que todas las funciones del panel, el procesamiento de notas de voz/audio y el flujo de logout permanezcan 100% operativos.
+Se creó una suite de pruebas automatizadas completa en `tests/order-modifications-and-dispatch.test.ts` que cubre los 10 escenarios (A a J), incluyendo pruebas de concurrencia (`Promise.all`), fallo de persistencia en base de datos, reintentos de notificación y atomicidad transaccional. Todos los 57 tests del proyecto pasaron satisfactoriamente sin generar mensajes reales ni llamadas externas a producción.
 
 ---
 
-## 2. Arquitectura de Autenticación y Corrección de Logout
+## 2. Correcciones Implementadas por Componente
 
-### 2.1 Cierre de Sesión Efectivo y Atributos de Cookie
-- **Ruta de Logout (`/api/panel/auth/logout`):**
-  - Identifica y revoca tanto `panel_session` como `crm_session` de forma independiente si contienen valores distintos.
-  - Persiste la revocación en Turso (`revoked_tokens`) con hash SHA-256 canónico (`canonicalTokenHash`).
-  - Expira las cookies en el cliente emitiendo encabezados `Set-Cookie` con `Max-Age=0`, `Expires=Thu, 01 Jan 1970 00:00:00 GMT`, `Path=/`, `HttpOnly`, `SameSite=Lax`, y `Secure` condicionado al entorno.
-- **Feedback Visual en Login (`/panel/login`):**
-  - Muestra alertas específicas según el motivo de redirección:
-    - `?logout=1`: Sesión finalizada exitosamente.
-    - `?error=revoked`: Sesión revocada o cerrada remotamente.
-    - `?error=invalid`: Firma adulterada, no verificable o manipulada.
-    - `?error=config`: Error de configuración de secreto en servidor.
+### 2.1 Conmutación Determinista de Producto y Candado de Salsas (`lib/agent/sales-agent.ts` y `lib/agent/order-validator.ts`)
+- **Detección de Cambio de Producto:** En `extractProductsFromText`, se implementó detección determinista de sustitución mediante expresiones regulares (`isSwitchingToTradicional` / `isSwitchingToSurtida`). Cuando el cliente pide «cambiar a tradicional», «una tradicional» o «la tradicional»:
+  - Se eliminan del carrito las cajas surtidas (`C8S`, `C4S`).
+  - Se inyecta la caja tradicional solicitada (`C8T` por $32.000 COP o `C4T` por $16.000 COP).
+  - Se recalcula matemáticamente el total oficial ($32.000 o $16.000).
+- **Aislamiento de Salsas:** La extracción de salsas (`sessionSalsas`) y la condición de intercepción (`hasSurtidaCart`) quedaron estrictamente condicionadas a que el carrito activo contenga una caja surtida. Si el cliente cambió a tradicional, la exigencia de salsas se desactiva inmediatamente.
+- **Domicilio Gratis Inmutable:** Se mantuvo `deliveryFee = 0` ($0) y «¡GRATIS!» en todos los flujos.
 
-### 2.2 Doble Barrera de Autorización (Edge Middleware + Server Component)
-1. **Filtro Rápido en Edge (`middleware.ts`):**
-   - Verifica el formato `rawToken.hmacSignature` y valida la firma criptográfica HMAC-SHA256 con Web Crypto API.
-   - En APIs privadas (`/api/panel/*`), responde `401 Unauthorized` si no existe una firma válida.
-   - En páginas privadas (`/panel`), redirige con `307 Temporary Redirect` hacia `/panel/login`.
-   - Si no hay secreto configurado en producción (`NODE_ENV === "production"`), opera en modo **Fail-Closed** bloqueando el tráfico.
-2. **Autorización Definitiva en Servidor (`app/panel/page.tsx` y `requirePanelAuth`):**
-   - Se ejecuta en runtime `nodejs` con renderizado dinámico (`force-dynamic`).
-   - Comprueba persistencia en base de datos: estado de revocación en `revoked_tokens`, expiración de la sesión en `user_sessions`, y vigencia del usuario (`user.active === 1`).
-   - El panel se extrajo al componente cliente `PanelDashboard.tsx` preservando el 100% de las funciones: pedidos en tiempo real, chat en vivo, catálogo, configuración de negocio, sincronización QR de WhatsApp y logs.
+### 2.2 Resiliencia de Persistencia y Principio Fail-Closed (`lib/store/db.ts` y `lib/store/index.ts`)
+- **Migración Idempotente y Compatible:** En `ensureTursoReady`, se agregaron sentencias seguras `ALTER TABLE order_items ADD COLUMN ...` para `quantity INTEGER DEFAULT 1`, `unit_price INTEGER DEFAULT 0` y `created_at INTEGER DEFAULT 0`. Adicionalmente, se migraron columnas legadas (`qty -> quantity`, `count -> quantity`, `price -> unit_price`) sin alterar datos históricos.
+- **Atomicidad Transaccional en `createOrder`:** La orden y sus ítems se insertan en un único batch atómico (`client.batch([orderStmt, ...itemBatch], "write")`). Si falla la inserción de ítems, el motor libSQL/SQLite aborta la transacción completa. Ante cualquier error irrecuperable, se ejecutan sentencias de limpieza y se expulsa la orden de la memoria para garantizar que no existan órdenes parciales ni huérfanas.
+- **Candado Fail-Closed:** Tanto en Gemini, OpenAI como en el fallback determinista, si el asistente genera un texto con palabras clave de confirmación pero la creación del pedido en base de datos retorna `null` o lanza excepción, el mensaje se reemplaza inmediatamente por un aviso de recuperación técnica, evitando confirmaciones falsas al cliente.
 
-### 2.3 Normalización y Obligatoriedad Exclusiva de `PANEL_SESSION_SECRET`
-- Tanto en `lib/auth/session.ts` (`getSessionSigningSecret`) como en `middleware.ts` (`getSigningSecret`), se utiliza la función unificada `normalizeSecret`:
-  - Limpia espacios con `.trim()`.
-  - Remueve iterativamente comillas dobles (`"`) y simples (`'`) externas, volviendo a recortar espacios.
-  - Casos como `""`, `"   "`, `'\t \n'`, `'""'`, `"''"`, `'"   "'` y `"'   '"` normalizan a cadena vacía `""`.
-  - Casos válidos como `'  "my-secret"  '` o `"  'my-secret'  "` normalizan limpiamente a `"my-secret"`.
-- En producción (`process.env.NODE_ENV === "production"`):
-  - La ausencia o vacío de `PANEL_SESSION_SECRET` provoca un fallo **Fail-Closed** inmediato:
-    - En Node.js: excepción de configuración impidiendo firmar o validar sesiones.
-    - En Edge Middleware: retorno `null` provocando HTTP 401 en APIs y HTTP 307 hacia `/panel/login` en páginas privadas.
-  - El secreto de desarrollo local (`"dev-local-secret-panel-signing-key-only-not-for-prod"`) está **completamente bloqueado en producción** y nunca se utiliza como alternativa.
-- En entornos locales o de test, se utiliza `PANEL_SESSION_SECRET` si existe, o la clave fija de desarrollo no productiva.
+### 2.3 Reclamo Atómico y Deduplicación al Domiciliario (`lib/delivery-driver.ts` y `lib/store/index.ts`)
+- **Reclamo Condicional en Base de Datos:** Se implementó `claimOrderDriverNotification(id, kind, force)` mediante un `UPDATE` condicional atómico (`UPDATE orders SET driver_notified = 'sending_initial' WHERE id = ? AND (driver_notified IS NULL ...)`). Si dos procesos concurrentes intentan notificar la misma orden, solo aquel con `rowsAffected > 0` procede al envío.
+- **Rollback de Reclamo en Fallo:** Si `sendOutboundWhatsApp` falla por timeout o error de red, `releaseOrderDriverNotification(id, kind, false)` revierte el estado en base de datos a `NULL` (o `'initial'`) y elimina la clave de caché, permitiendo reintentos posteriores (automáticos o desde el panel) sin quedar bloqueado permanentemente.
+- **Reintento Manual Forzado en Panel:** El endpoint `POST /api/panel/orders/[id]/notify-driver` utiliza `notifyDeliveryDriver(order, message, { force: true })`, permitiendo a los operadores despachar manualmente la notificación si fue necesario recuperar una entrega.
+- **Registro Seguro y Ficha Formateada:** Se estructuró el log en `system_logs` con módulo `"driver"`, sin imprimir teléfonos personales ni datos sensibles. Se incluyó la indicación explícita de `🛵 *Domicilio:* ¡GRATIS! ($0)` en la ficha del domiciliario.
 
-### 2.4 Candado de Firma Verificable
-- En `requirePanelAuth` y `app/panel/page.tsx`:
-  - Se eliminó la excepción permisiva para tokens sin punto (`if (!verifySignedToken(c))`).
-  - Cualquier cookie presente en la petición HTTP debe contar con una firma criptográfica verificable. Tokens no firmados, manipulados o con firma no coincidente son rechazados de inmediato.
-
-### 2.5 Verificación Integral de Funciones del Panel, Audio y Logout
-- **Panel Administrativo (`PanelDashboard.tsx`):**
-  - Mantiene activas todas las vistas y operaciones: Pedidos en tiempo real (con enlaces a facturas de contabilidad), Chats en vivo con toma de control manual, Catálogo con interruptores de disponibilidad de producto, Configuración del negocio (horarios, sedes y radios de cobertura), Sincronización QR con Evolution API, y Registros de auditoría.
-- **Canal de Audio y Transcripción:**
-  - El pipeline de notas de voz en WhatsApp (`lib/agent/audio-transcriber.ts`), descarga de buffers multimedia (`lib/evolution.ts`) e integración en el webhook principal (`app/api/webhooks/evolution/route.ts`) se mantuvo 100% inalterado y funcional.
-- **Cierre de Sesión:**
-  - El handler `handleLogout` en `PanelDashboard.tsx` invoca `/api/panel/auth/logout`, revocando tokens en Turso y purgando las cookies con caducidad inmediata, asegurando redirección a `/panel/login?logout=1`.
+### 2.4 Aislamiento Conversacional de Sesiones (`getSessionMessages`)
+- Se implementó `getSessionMessages(rawMessages, latestOrder)` para cortar el historial previo cuando:
+  - Existe un pedido finalizado (`delivered`), cancelado (`cancelled`) o de más de 45 minutos.
+  - El cliente o el asistente ejecutaron una intención de cancelación («Para cancelar pedido») o de nuevo pedido («Hola para un pedido»).
+- Las intenciones `isCancelIntent` y `isNewOrderIntent` actúan de forma prioritaria limpiando el carrito y confirmando el reinicio antes de procesar nuevos productos.
 
 ---
 
-## 3. Cobertura y Verificación de Tests de Seguridad
+## 3. Cobertura de la Suite de Pruebas Automatizadas
 
-### Seguridad E1: Expiración Desacoplada
-- Se eliminó el uso de `globalThis.__memoryAuthStore` y se utilizó la función `setSessionExpiryForTesting`, compatible de forma nativa tanto con Turso como con el almacén en memoria.
-- `validateSession` y `requirePanelAuth` rechazan sesiones caducadas.
+La suite `tests/order-modifications-and-dispatch.test.ts` valida:
 
-### Seguridad E2: Firmas Adulteradas
-- Rechazo determinista ante tokens con HMAC alterado o tokens crudos manipulados.
-- Bloqueo 401 inmediato en Edge Middleware.
-
-### Seguridad E3: Normalización de Secreto, Fail-Closed, Rechazo de Dev Secret y Tokens No Firmados
-- Se validaron exhaustivamente:
-  1. **Normalización:** `undefined`, `""`, `"   "`, `'\t \n'`, `'""'`, `"''"`, `'"   "'`, `"'   '"`, `'  "valid-secret-key"  '`, `"  'valid-secret-key'  "`.
-  2. **Ausencia y Variantes Vacías en Producción:** Todas las variantes lanzan excepción en `getSessionSigningSecret()`, retornan 401 en APIs de middleware y 307 en páginas de panel, y deniegan acceso en `requirePanelAuth()`.
-  3. **Rechazo de Alternativas:** `PANEL_PASSWORD`, `CRON_SECRET` y `EVOLUTION_API_KEY` son ignorados y no se aceptan como secretos de firma.
-  4. **Aislamiento de Clave de Desarrollo:** Un token firmado con la clave fija de desarrollo es rechazado tanto con secreto de producción configurado como sin él.
-  5. **Secreto Válido con Comillas/Espacios:** Es normalizado y permite verificación criptográfica exitosa en Edge Middleware y servidor.
-  6. **Rechazo de Tokens No Firmados:** Peticiones con tokens crudos sin firma son rechazadas por `requirePanelAuth` (authorized: false) y middleware (401).
-
-### Seguridad E4: Rechazo de Tokens Derivados de `PANEL_PASSWORD`
-- Aislamiento completo con `try ... finally` y contraseña de prueba controlada.
-- Comprueba que los tokens estáticos derivados de contraseñas sean rechazados en `panel_session`, `crm_session`, en peticiones de API (401) y en páginas privadas (307 redirect), garantizando que no existan vías alternativas de bypass.
-
-### Seguridad E5: Gestión Dual de Cookies, Revocación y Firmas Forjadas
-- Acceso permitido cuando ambas cookies son distintas y válidas.
-- **Revocación cruzada:** Si cualquiera de las dos cookies (`panel_session` o `crm_session`) está revocada, el acceso se deniega inmediatamente (`authorized: false`, error de revocación).
-- **Firmas forjadas:** Si cualquiera de las dos cookies presenta una firma HMAC inválida, `requirePanelAuth` y el middleware deniegan acceso inmediatamente con error de firma adulterada y código 401.
-
-### Seguridad E6: Caducidad y Revocación Post-Activa
-- Valida ambas combinaciones:
-  - `panel_session` expirada + `crm_session` activa $\rightarrow$ autorizado.
-  - `panel_session` activa + `crm_session` expirada $\rightarrow$ autorizado.
-  - Ambas expiradas $\rightarrow$ denegado.
-- Verifica que tras revocar una sesión previamente activa, esta sea rechazada de forma inmediata tanto en peticiones por `panel_session` como por `crm_session`.
-
-### Seguridad E7: Auditoría de Todas las Rutas Privadas del Panel
-Se verificó el rechazo de solicitudes no autenticadas (código previsto 401, o 403 para endpoints que validan rol administrador) en **las 27 operaciones reales de lectura y modificación**:
-1. `GET /api/panel/auth/me` $\rightarrow$ 401
-2. `GET /api/panel/conversations` $\rightarrow$ 401
-3. `PATCH /api/panel/conversations/[id]` $\rightarrow$ 401
-4. `DELETE /api/panel/conversations/[id]` $\rightarrow$ 401
-5. `GET /api/panel/conversations/[id]/messages` $\rightarrow$ 401
-6. `POST /api/panel/conversations/[id]/messages` $\rightarrow$ 401
-7. `POST /api/panel/conversations/[id]/status` $\rightarrow$ 401
-8. `GET /api/panel/orders` $\rightarrow$ 401
-9. `PATCH /api/panel/orders/[id]` $\rightarrow$ 401
-10. `DELETE /api/panel/orders/[id]` $\rightarrow$ 403 (candado de rol administrador)
-11. `POST /api/panel/orders/[id]/notify-driver` $\rightarrow$ 401
-12. `GET /api/panel/products` $\rightarrow$ 401
-13. `POST /api/panel/products` $\rightarrow$ 401
-14. `PATCH /api/panel/products/[sku]` $\rightarrow$ 401
-15. `DELETE /api/panel/products/[sku]` $\rightarrow$ 401
-16. `GET /api/panel/settings` $\rightarrow$ 401
-17. `PUT /api/panel/settings` $\rightarrow$ 403 (candado de rol administrador)
-18. `POST /api/panel/settings` $\rightarrow$ 403 (candado de rol administrador)
-19. `GET /api/panel/users` $\rightarrow$ 403 (candado de rol administrador)
-20. `POST /api/panel/users` $\rightarrow$ 403 (candado de rol administrador)
-21. `PATCH /api/panel/users/[id]` $\rightarrow$ 403 (candado de rol administrador)
-22. `DELETE /api/panel/users/[id]` $\rightarrow$ 403 (candado de rol administrador)
-23. `GET /api/panel/logs` $\rightarrow$ 401
-24. `DELETE /api/panel/logs` $\rightarrow$ 401
-25. `GET /api/panel/test-ai` $\rightarrow$ 401
-26. `GET /api/panel/whatsapp-qr` $\rightarrow$ 401
-27. `POST /api/panel/whatsapp-qr` $\rightarrow$ 401
+| Prueba | Descripción del Escenario | Tipo de Verificación | Resultado |
+| :--- | :--- | :--- | :---: |
+| **Test A** | Cambio de producto de surtida a tradicional («Para cambiar a una tradicional») abandona el bucle de salsas. | Lógica de agente y filtros de salsas | **PASS** |
+| **Test B** | Resumen previo (Paso 6) y orden confirmada (Paso 7) corresponden a C8T ($32.000 COP) con domicilio gratis ($0). | Flujo completo de 4 turnos y recálculo matemático | **PASS** |
+| **Test C** | Confirmación de pedido despacha notificación formateada al domiciliario con encabezado, total y costo $0. | Plantilla oficial de WhatsApp del domiciliario | **PASS** |
+| **Test D** | Simulación de fallo en Evolution API registra advertencia en `system_logs` sin tumbar la orden ni lanzar excepción. | Simulación de red y logger del sistema | **PASS** |
+| **Test E** | Cancelación («Para cancelar pedido») y reinicio («Hola para un pedido») con contexto y carrito limpios. | Aislamiento de sesiones y reseteo conversacional | **PASS** |
+| **Test F** | Reintentos o mensajes repetidos no generan notificaciones duplicadas al domiciliario (memoria y BD). | Deduplicación por TTL y estado en base de datos | **PASS** |
+| **Test G** | Invocaciones simultáneas concurrentes (`Promise.all`) despachan exactamente 1 notificación. | Concurrencia real con delay de red | **PASS** |
+| **Test H** | Fallo de persistencia en `createOrder` activa Fail-Closed sin confirmación falsa al cliente. | Simulación de fallo de Turso y mitigación segura | **PASS** |
+| **Test I** | Reintento de notificación tras fallo previo recupera estado y envía exitosamente. | Reversión atómica y reintento exitoso | **PASS** |
+| **Test J** | Atomicidad de `createOrder`: si falla la inserción de ítems, no queda orden huérfana guardada. | Transaccionalidad y rollback de memoria/BD | **PASS** |
+| **Test K** | Reclamo zombi/stale por caída inesperada de instancia no bloquea permanentemente el despacho. | Expiración de reserva a 2 minutos y re-despacho | **PASS** |
 
 ---
 
@@ -147,16 +71,20 @@ Se verificó el rechazo de solicitudes no autenticadas (código previsto 401, o 
 
 | Comando | Resultado | Métricas |
 | :--- | :---: | :--- |
-| `npm test` | **PASS** | 47 tests ejecutados, 47 aprobados, 0 fallos. |
-| `npx tsc --noEmit` | **PASS** | 0 errores de tipado TypeScript estricto. |
-| `npm run lint` | **PASS** | 0 errores ESLint (161 advertencias menores previas). |
-| `npm run build` | **PASS** | Next.js 16 compilado y empaquetado exitosamente en Turbopack (1.3s). |
+| `npm test` | **PASS** | 58 tests ejecutados, 58 aprobados, 0 fallos. |
+| `npx tsc --noEmit` | **PASS** | 0 errores de compilación TypeScript estricto. |
+| `npm run lint` | **PASS** | 0 errores ESLint (163 advertencias preexistentes en panel). |
+| `npm run build` | **PASS** | Next.js 16.3.5 compilado y empaquetado exitosamente con Turbopack (3.0s). |
 
 ---
 
-## 5. Riesgos Pendientes y Recomendaciones Operativas
+## 5. Resumen de Archivos Modificados
 
-1. **Configuración de Secreto en Vercel (`PANEL_SESSION_SECRET`):**
-   - En producción, el sistema opera en modo Fail-Closed y ya no acepta claves alternativas ni claves de desarrollo. La variable `PANEL_SESSION_SECRET` configurada en Vercel permite que tanto el Edge Middleware como las rutas de Node.js operen con validación criptográfica segura.
-2. **Despliegue a Producción:**
-   - Mantener los cambios en la rama `fix/panel-auth-logout-security`. No realizar push a `main` ni despliegues directos sin validación final del operador humano.
+- `app/api/panel/orders/[id]/notify-driver/route.ts`: Unifica reintento manual de notificación al domiciliario con bandera `force: true`.
+- `app/api/webhooks/evolution/route.ts`: Espera con `await` la notificación al domiciliario al verificar comprobantes de pago.
+- `lib/agent/order-validator.ts`: Desglose de sabores y validaciones de salsas condicionadas.
+- `lib/agent/sales-agent.ts`: Manejo determinista de cambio de producto, aislamiento de salsas, fail-closed en creación de órdenes, persistencia contextual y división de sesiones.
+- `lib/delivery-driver.ts`: Reclamo condicional atómico, rollback tras fallo, caché de deduplicación, logging estructurado y ficha con domicilio gratis ($0).
+- `lib/store/db.ts`: Migraciones idempotentes seguras para `order_items` y `orders.driver_notified`, e inyección de cliente de prueba.
+- `lib/store/index.ts`: Batch atómico de orden e ítems en `createOrder`, reclamo condicional `claimOrderDriverNotification` y reversión `releaseOrderDriverNotification`.
+- `tests/order-modifications-and-dispatch.test.ts`: Nueva suite automatizada con 10 escenarios (A a J).

@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
-import { ensureTursoReady, getTursoClient, isTursoConfigured } from "./db";
+import { ensureTursoReady, getTursoClient, isTursoConfigured, setTursoClientForTesting } from "./db";
+export { setTursoClientForTesting, isTursoConfigured };
 
 export type ConversationStatus = "bot" | "human" | "closed";
 
@@ -35,6 +36,7 @@ export interface OrderItem {
   sku: string;
   quantity: number;
   unitPrice: number;
+  name?: string;
 }
 
 export type OrderStatus = "pending" | "confirmed" | "preparing" | "delivering" | "delivered" | "cancelled";
@@ -57,6 +59,8 @@ export interface Order {
   invoiceId?: string;
   invoiceUrl?: string;
   invoicePdfUrl?: string;
+  driverNotified?: string;
+  driverNotifiedAt?: number;
   createdAt: number;
 }
 
@@ -698,7 +702,8 @@ export async function createOrder(
     try {
       await ensureTursoReady();
       const client = getTursoClient();
-      await client.execute({
+
+      const orderStmt = {
         sql: `INSERT INTO orders (id, conversation_id, customer_name, customer_phone, delivery_address, payment_method, items_summary, delivery_fee, change_amount, delivery_notes, status, total, created_at, invoice_number, invoice_id, invoice_url)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
@@ -719,13 +724,32 @@ export async function createOrder(
           details?.invoiceId || null,
           details?.invoiceUrl || null,
         ],
-      });
-      if (items.length > 0) {
-        const itemBatch = items.map((it) => ({
-          sql: "INSERT INTO order_items (id, order_id, sku, quantity, unit_price) VALUES (?, ?, ?, ?, ?)",
-          args: [randomUUID(), memOrder.id, it.sku, it.quantity, it.unitPrice],
-        }));
-        await client.batch(itemBatch, "write");
+      };
+
+      const itemBatch = items.map((it) => ({
+        sql: "INSERT INTO order_items (id, order_id, sku, quantity, unit_price) VALUES (?, ?, ?, ?, ?)",
+        args: [randomUUID(), memOrder.id, it.sku, it.quantity, it.unitPrice],
+      }));
+
+      try {
+        await client.batch([orderStmt, ...itemBatch], "write");
+      } catch (batchErr: any) {
+        console.warn("[store] Error en batch atómico de orden e items, intentando auto-reparación de esquema:", batchErr);
+        try {
+          await client.execute("ALTER TABLE order_items ADD COLUMN quantity INTEGER DEFAULT 1;").catch(() => {});
+          await client.execute("ALTER TABLE order_items ADD COLUMN unit_price INTEGER DEFAULT 0;").catch(() => {});
+          await client.batch([orderStmt, ...itemBatch], "write");
+        } catch (retryErr) {
+          console.error("[store] Inserción atómica de pedido falló definitivamente:", retryErr);
+          try {
+            if (memOrder.id && typeof memOrder.id === "string" && memOrder.id.length >= 10) {
+              await client.execute({ sql: "DELETE FROM order_items WHERE order_id = ?", args: [memOrder.id] });
+              await client.execute({ sql: "DELETE FROM orders WHERE id = ?", args: [memOrder.id] });
+            }
+          } catch {}
+          getMemoryStore().orders.delete(memOrder.id);
+          throw retryErr;
+        }
       }
 
       if (details?.customerName && !details.customerName.toLowerCase().startsWith("cliente whatsapp")) {
@@ -735,7 +759,9 @@ export async function createOrder(
         }).catch(() => {});
       }
     } catch (err) {
-      console.error("[store] createOrder Turso error:", err); throw err;
+      getMemoryStore().orders.delete(memOrder.id);
+      console.error("[store] createOrder Turso error:", err);
+      throw err;
     }
   }
   return memOrder;
@@ -791,6 +817,8 @@ export async function updateOrderStatus(id: string, status: OrderStatus): Promis
           invoiceNumber: r.invoice_number ? String(r.invoice_number) : undefined,
           invoiceId: r.invoice_id ? String(r.invoice_id) : undefined,
           invoiceUrl: r.invoice_url ? String(r.invoice_url) : undefined,
+          driverNotified: r.driver_notified ? String(r.driver_notified) : undefined,
+          driverNotifiedAt: r.driver_notified_at ? parseTimestamp(r.driver_notified_at) : undefined,
           createdAt: parseTimestamp(r.created_at),
         };
       }
@@ -801,6 +829,186 @@ export async function updateOrderStatus(id: string, status: OrderStatus): Promis
   }
 
   return memOrder || null;
+}
+
+/**
+ * Reclama atómicamente el derecho a notificar al domiciliario para evitar duplicados por concurrencia.
+ * Si una instancia anterior terminó inesperadamente durante el envío, la reserva expira a los 2 minutos (stale claim)
+ * para evitar bloqueos permanentes.
+ */
+export async function claimOrderDriverNotification(
+  id: string,
+  kind: "initial" | "verified",
+  force?: boolean,
+  currentOrder?: Order
+): Promise<boolean> {
+  const STALE_DISPATCH_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutos: si una instancia cayó a mitad de camino, la reserva expira
+  const now = Date.now();
+  const staleThreshold = now - STALE_DISPATCH_TIMEOUT_MS;
+
+  const mem = getMemoryStore();
+  let memOrder = mem.orders.get(id);
+  if (!memOrder && currentOrder) {
+    memOrder = currentOrder;
+    mem.orders.set(id, currentOrder);
+  }
+
+  if (!force) {
+    const notifiedState = memOrder?.driverNotified || currentOrder?.driverNotified;
+    if (notifiedState) {
+      if (
+        notifiedState === kind ||
+        (kind === "initial" && notifiedState === "verified")
+      ) {
+        return false;
+      }
+      if (notifiedState.startsWith(`sending_${kind}`)) {
+        const claimedAt = memOrder?.driverNotifiedAt || currentOrder?.driverNotifiedAt || 0;
+        if (claimedAt > 0 && now - claimedAt < STALE_DISPATCH_TIMEOUT_MS) {
+          return false;
+        }
+        // Si el reclamo en memoria tiene más de 2 minutos, se considera stale y se permite reintentar
+      }
+    }
+  }
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      if (force) {
+        await client.execute({
+          sql: "UPDATE orders SET driver_notified = ?, driver_notified_at = ? WHERE id = ?",
+          args: [`sending_${kind}`, now, id],
+        });
+        if (memOrder) {
+          memOrder.driverNotified = `sending_${kind}`;
+          memOrder.driverNotifiedAt = now;
+        }
+        if (currentOrder) {
+          currentOrder.driverNotified = `sending_${kind}`;
+          currentOrder.driverNotifiedAt = now;
+        }
+        return true;
+      }
+
+      const sql =
+        kind === "initial"
+          ? `UPDATE orders 
+             SET driver_notified = 'sending_initial', driver_notified_at = ? 
+             WHERE id = ? 
+               AND (
+                 driver_notified IS NULL 
+                 OR driver_notified = '' 
+                 OR driver_notified = 'none' 
+                 OR (driver_notified = 'sending_initial' AND (driver_notified_at IS NULL OR driver_notified_at = 0 OR driver_notified_at < ?))
+               )`
+          : `UPDATE orders 
+             SET driver_notified = 'sending_verified', driver_notified_at = ? 
+             WHERE id = ? 
+               AND driver_notified != 'verified' 
+               AND (
+                 driver_notified != 'sending_verified' 
+                 OR (driver_notified = 'sending_verified' AND (driver_notified_at IS NULL OR driver_notified_at = 0 OR driver_notified_at < ?))
+               )`;
+
+      const res = await client.execute({ sql, args: [now, id, staleThreshold] });
+      const claimed = (res.rowsAffected || 0) > 0;
+      if (claimed) {
+        if (memOrder) {
+          memOrder.driverNotified = `sending_${kind}`;
+          memOrder.driverNotifiedAt = now;
+        }
+        if (currentOrder) {
+          currentOrder.driverNotified = `sending_${kind}`;
+          currentOrder.driverNotifiedAt = now;
+        }
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.warn("[store] claimOrderDriverNotification error:", err);
+    }
+  }
+
+  if (memOrder) {
+    memOrder.driverNotified = `sending_${kind}`;
+    memOrder.driverNotifiedAt = now;
+  }
+  if (currentOrder) {
+    currentOrder.driverNotified = `sending_${kind}`;
+    currentOrder.driverNotifiedAt = now;
+  }
+  return true;
+}
+
+/**
+ * Libera o confirma el reclamo de la notificación al domiciliario.
+ * Si falló el envío, revierte el estado para permitir un reintento futuro.
+ */
+export async function releaseOrderDriverNotification(
+  id: string,
+  kind: "initial" | "verified",
+  success: boolean,
+  currentOrder?: Order
+): Promise<void> {
+  const now = Date.now();
+  const mem = getMemoryStore();
+  const memOrder = mem.orders.get(id);
+
+  const finalState = success ? kind : kind === "verified" ? "initial" : undefined;
+  const finalTime = success ? now : 0;
+
+  if (memOrder) {
+    memOrder.driverNotified = finalState;
+    memOrder.driverNotifiedAt = finalTime;
+  }
+  if (currentOrder) {
+    currentOrder.driverNotified = finalState;
+    currentOrder.driverNotifiedAt = finalTime;
+  }
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      if (success) {
+        await client.execute({
+          sql: "UPDATE orders SET driver_notified = ?, driver_notified_at = ? WHERE id = ?",
+          args: [kind, now, id],
+        });
+      } else {
+        const revertVal = kind === "verified" ? "initial" : null;
+        await client.execute({
+          sql: "UPDATE orders SET driver_notified = ?, driver_notified_at = 0 WHERE id = ? AND driver_notified = ?",
+          args: [revertVal, id, `sending_${kind}`],
+        });
+      }
+    } catch (err) {
+      console.warn("[store] releaseOrderDriverNotification error:", err);
+    }
+  }
+}
+
+export async function updateOrderDriverNotified(id: string, state: string): Promise<void> {
+  const mem = getMemoryStore();
+  const memOrder = mem.orders.get(id);
+  if (memOrder) {
+    memOrder.driverNotified = state;
+  }
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: "UPDATE orders SET driver_notified = ? WHERE id = ?",
+        args: [state, id],
+      });
+    } catch (err) {
+      console.warn("[store] updateOrderDriverNotified error:", err);
+    }
+  }
 }
 
 export async function updateOrderInvoice(
@@ -883,6 +1091,8 @@ export async function getOrders(): Promise<Order[]> {
       invoiceNumber: r.invoice_number ? String(r.invoice_number) : undefined,
       invoiceId: r.invoice_id ? String(r.invoice_id) : undefined,
       invoiceUrl: r.invoice_url ? String(r.invoice_url) : undefined,
+      driverNotified: r.driver_notified ? String(r.driver_notified) : undefined,
+      driverNotifiedAt: r.driver_notified_at ? parseTimestamp(r.driver_notified_at) : undefined,
       createdAt: parseTimestamp(r.created_at),
     }));
   } catch (err) {

@@ -541,7 +541,7 @@ export async function POST(request: NextRequest) {
 
                   // Notificar al domiciliario que el comprobante se validó satisfactoriamente
                   const driverNotice = `✅ *PAGO VERIFICADO (#${pendingOrder.id.slice(0, 8)})*: Comprobante validado de *${pendingOrder.customerName}* por *$${expectedAmount.toLocaleString("es-CO")}*. No cobrar al entregar. 🛵`;
-                  notifyDeliveryDriver(pendingOrder, driverNotice).catch((dErr) => {
+                  await notifyDeliveryDriver(pendingOrder, driverNotice).catch((dErr) => {
                     console.warn("[evolution] error notificando al domiciliario tras verificar comprobante:", dErr);
                   });
 

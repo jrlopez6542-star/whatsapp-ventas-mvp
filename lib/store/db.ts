@@ -29,6 +29,10 @@ export function getTursoClient(): any {
   return cachedClient;
 }
 
+export function setTursoClientForTesting(client: any): void {
+  cachedClient = client;
+}
+
 export async function ensureTursoReady(): Promise<void> {
   if (!isTursoConfigured()) return;
   if (initializedPromise) return initializedPromise;
@@ -85,7 +89,8 @@ export async function ensureTursoReady(): Promise<void> {
           order_id TEXT NOT NULL,
           sku TEXT NOT NULL,
           quantity INTEGER NOT NULL,
-          unit_price INTEGER NOT NULL
+          unit_price INTEGER NOT NULL,
+          created_at INTEGER DEFAULT 0
         )`,
         `CREATE TABLE IF NOT EXISTS org_settings (
           key TEXT PRIMARY KEY,
@@ -152,6 +157,8 @@ export async function ensureTursoReady(): Promise<void> {
       "invoice_id TEXT",
       "invoice_url TEXT",
       "customer_phone TEXT",
+      "driver_notified TEXT",
+      "driver_notified_at INTEGER DEFAULT 0",
     ];
     for (const col of alterOrders) {
       try {
@@ -159,6 +166,54 @@ export async function ensureTursoReady(): Promise<void> {
       } catch {
         // Ignored if column already exists
       }
+    }
+
+    const alterOrderItems = [
+      "order_id TEXT",
+      "sku TEXT",
+      "quantity INTEGER DEFAULT 1",
+      "unit_price INTEGER DEFAULT 0",
+      "created_at INTEGER DEFAULT 0",
+    ];
+    for (const col of alterOrderItems) {
+      try {
+        await client.execute(`ALTER TABLE order_items ADD COLUMN ${col};`);
+      } catch {
+        // Ignored if column already exists
+      }
+    }
+    // Safely migrate any legacy column names if present by detecting them via PRAGMA
+    try {
+      const tableInfo = await client.execute("PRAGMA table_info(order_items);");
+      const existingCols = new Set(
+        (tableInfo.rows || []).map((r: any) => String(r.name || r[1] || "").toLowerCase())
+      );
+      if (existingCols.has("qty")) {
+        await client.execute(
+          "UPDATE order_items SET quantity = qty WHERE (quantity IS NULL OR quantity = 1) AND qty IS NOT NULL;"
+        );
+      }
+      if (existingCols.has("count")) {
+        await client.execute(
+          "UPDATE order_items SET quantity = count WHERE (quantity IS NULL OR quantity = 1) AND count IS NOT NULL;"
+        );
+      }
+      if (existingCols.has("price")) {
+        await client.execute(
+          "UPDATE order_items SET unit_price = price WHERE (unit_price IS NULL OR unit_price = 0) AND price IS NOT NULL;"
+        );
+      }
+    } catch {
+      // Fallback seguro si PRAGMA no está disponible
+      try {
+        await client.execute("UPDATE order_items SET quantity = qty WHERE (quantity IS NULL OR quantity = 1) AND qty IS NOT NULL;");
+      } catch {}
+      try {
+        await client.execute("UPDATE order_items SET quantity = count WHERE (quantity IS NULL OR quantity = 1) AND count IS NOT NULL;");
+      } catch {}
+      try {
+        await client.execute("UPDATE order_items SET unit_price = price WHERE (unit_price IS NULL OR unit_price = 0) AND price IS NOT NULL;");
+      } catch {}
     }
 
     const alterConversations = [

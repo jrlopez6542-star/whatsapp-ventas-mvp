@@ -11,8 +11,10 @@ import {
   setConversationPhone,
   updateOrderInvoice,
   updateOrderAddress,
+  updateOrderStatus,
   type Message,
   type Product,
+  type Order,
 } from "@/lib/store";
 import { createInvoiceInContabilidad } from "@/lib/contabilidad";
 import { notifyDeliveryDriver } from "@/lib/delivery-driver";
@@ -409,13 +411,44 @@ function extractProductsFromText(
 
     // Coincidencias por nombre / tipo
     if (!matched) {
-      if (prod.sku === "C8S" && (lower.includes("caja x8 surtida") || lower.includes("caja 8 surtida") || lower.includes("caja de surtidos") || lower.includes("caja surtida de 8") || lower.includes("caja surtida") || lower.includes("surtidos por 8") || lower.includes("surtidos por 10") || lower.includes("caja de 8"))) {
+      if (prod.sku === "C8S" && (
+        lower.includes("caja x8 surtida") ||
+        lower.includes("caja 8 surtida") ||
+        lower.includes("caja de surtidos") ||
+        lower.includes("caja surtida de 8") ||
+        lower.includes("caja surtida") ||
+        lower.includes("surtidos por 8") ||
+        lower.includes("surtidos por 10") ||
+        (/\bcaja\s+(?:de\s+)?8\b/i.test(lower) && !lower.includes("tradicional")) ||
+        (/\b(?:una\s+|la\s+)?surtida\b/i.test(lower) && !/\b(?:de\s*4|x4)\b/i.test(lower))
+      )) {
         matched = true;
-      } else if (prod.sku === "C4S" && (lower.includes("caja x4 surtida") || lower.includes("caja 4 surtida") || lower.includes("caja de 4 surtida") || lower.includes("caja de 4"))) {
+      } else if (prod.sku === "C4S" && (
+        lower.includes("caja x4 surtida") ||
+        lower.includes("caja 4 surtida") ||
+        lower.includes("caja de 4 surtida") ||
+        (/\bcaja\s+(?:de\s+)?4\b/i.test(lower) && !lower.includes("tradicional") && (lower.includes("surtid") || !lower.includes("caja x4"))) ||
+        (/\b(?:una\s+|la\s+)?surtida\b/i.test(lower) && /\b(?:de\s*4|x4)\b/i.test(lower))
+      )) {
         matched = true;
-      } else if (prod.sku === "C8T" && (lower.includes("caja x8 tradicional") || lower.includes("caja 8 tradicional") || lower.includes("caja tradicional de 8"))) {
+      } else if (prod.sku === "C8T" && (
+        lower.includes("caja x8 tradicional") ||
+        lower.includes("caja 8 tradicional") ||
+        lower.includes("caja tradicional de 8") ||
+        lower.includes("caja de 8 tradicional") ||
+        lower.includes("caja tradicional x8") ||
+        /\b(?:caja\s+tradicional|una\s+tradicional|la\s+tradicional|cambiar\s+a\s+(?:una\s+)?tradicional)\b/i.test(lower) ||
+        (/\btradicional(?:es)?\b/i.test(lower) && !/\b(?:coste[ñn]o|de\s*4|x4)\b/i.test(lower))
+      )) {
         matched = true;
-      } else if (prod.sku === "C4T" && (lower.includes("caja x4 tradicional") || lower.includes("caja 4 tradicional") || lower.includes("caja tradicional de 4"))) {
+      } else if (prod.sku === "C4T" && (
+        lower.includes("caja x4 tradicional") ||
+        lower.includes("caja 4 tradicional") ||
+        lower.includes("caja tradicional de 4") ||
+        lower.includes("caja de 4 tradicional") ||
+        lower.includes("caja tradicional x4") ||
+        (/\btradicional\b/i.test(lower) && /\b(?:de\s*4|x4|4\s*unidades)\b/i.test(lower))
+      )) {
         matched = true;
       } else if (prod.sku === "BM" && (lower.includes("buñuelo mora") || lower.includes("buñuelos de mora") || lower.includes("de mora") || lower.includes("relleno de mora"))) {
         matched = true;
@@ -452,6 +485,51 @@ function extractProductsFromText(
       });
       total += prod.price * qty;
     }
+  }
+
+  // Manejo determinista de cambio de producto / reemplazo de caja
+  const isSwitchingToTradicional =
+    /\b(?:para\s+)?(?:cambiar|cambio|cambiala|cambielo|p[aá]salo|mejor|en\s+vez\s+de)\s*(?:a|por)?\s*(?:una\s+|la\s+|caja\s*)?tradicional\b/i.test(lower) ||
+    (/\b(?:cambiar|cambio)\b/i.test(lower) && /\btradicional\b/i.test(lower));
+
+  const isSwitchingToSurtida =
+    /\b(?:para\s+)?(?:cambiar|cambio|cambiala|cambielo|p[aá]salo|mejor|en\s+vez\s+de)\s*(?:a|por)?\s*(?:una\s+|la\s+|caja\s*)?surtida\b/i.test(lower) ||
+    (/\b(?:cambiar|cambio)\b/i.test(lower) && /\bsurtid[ao]\b/i.test(lower));
+
+  if (isSwitchingToTradicional) {
+    const has4 = /\b(?:de\s*4|x4|4\s*unidades)\b/i.test(lower);
+    const targetSku = has4 ? "C4T" : "C8T";
+    const filtered = items.filter((it) => it.sku !== "C8S" && it.sku !== "C4S" && it.sku !== "C8T" && it.sku !== "C4T");
+    const tradProd = catalog.find((p) => p.sku === targetSku) || {
+      sku: targetSku,
+      name: targetSku === "C8T" ? "Caja x8 Buñuelos Tradicionales" : "Caja x4 Buñuelos Tradicionales",
+      price: targetSku === "C8T" ? 32000 : 16000,
+    };
+    filtered.unshift({
+      sku: tradProd.sku,
+      name: tradProd.name,
+      quantity: 1,
+      unitPrice: tradProd.price,
+    });
+    total = filtered.reduce((acc, it) => acc + it.unitPrice * it.quantity, 0);
+    return { items: filtered, total };
+  } else if (isSwitchingToSurtida) {
+    const has4 = /\b(?:de\s*4|x4|4\s*unidades)\b/i.test(lower);
+    const targetSku = has4 ? "C4S" : "C8S";
+    const filtered = items.filter((it) => it.sku !== "C8S" && it.sku !== "C4S" && it.sku !== "C8T" && it.sku !== "C4T");
+    const surtProd = catalog.find((p) => p.sku === targetSku) || {
+      sku: targetSku,
+      name: targetSku === "C8S" ? "Caja x8 Buñuelos Surtidos" : "Caja x4 Buñuelos Surtidos",
+      price: targetSku === "C8S" ? 36000 : 18000,
+    };
+    filtered.unshift({
+      sku: surtProd.sku,
+      name: surtProd.name,
+      quantity: 1,
+      unitPrice: surtProd.price,
+    });
+    total = filtered.reduce((acc, it) => acc + it.unitPrice * it.quantity, 0);
+    return { items: filtered, total };
   }
 
   return { items, total };
@@ -895,16 +973,27 @@ async function tryExtractAndRegisterOrder(
     await setConversationPhone(conversationKey, customerPhone).catch(() => {});
   }
 
-  const order = await createOrder(conversationKey, orderItems, detectedTotal, {
-    customerName,
-    customerPhone,
-    deliveryAddress: address,
-    paymentMethod,
-    itemsSummary: summary,
-    deliveryFee: detectedFee,
-    changeAmount: detectedChange,
-    deliveryNotes: detectedNotes,
-  });
+  let order: Order | null = null;
+  try {
+    order = await createOrder(conversationKey, orderItems, detectedTotal, {
+      customerName,
+      customerPhone,
+      deliveryAddress: address,
+      paymentMethod,
+      itemsSummary: summary,
+      deliveryFee: detectedFee,
+      changeAmount: detectedChange,
+      deliveryNotes: detectedNotes,
+    });
+  } catch (createErr) {
+    console.error("[sales-agent] Error persistiendo pedido en base de datos:", createErr);
+    logSystemEvent("error", "agent", `Error crítico al crear pedido en BD: ${String(createErr)}`, {
+      conversationKey,
+      items: orderItems,
+      total: detectedTotal,
+    });
+    return null;
+  }
 
   if (customerName && !customerName.toLowerCase().startsWith("cliente whatsapp")) {
     await setConversationCustomerName(conversationKey, customerName).catch(() => {});
@@ -951,11 +1040,66 @@ async function tryExtractAndRegisterOrder(
   }
 
   // Notificar automáticamente al domiciliario asignado por WhatsApp
-  notifyDeliveryDriver(order).catch((dErr) => {
+  try {
+    const driverRes = await notifyDeliveryDriver(order);
+    if (!driverRes.ok) {
+      console.warn(`[sales-agent] Notificación al domiciliario no enviada para pedido #${order.id.slice(0, 8)}:`, driverRes.error);
+    }
+  } catch (dErr) {
     console.warn("[sales-agent] Error notificando al domiciliario:", dErr);
-  });
+  }
 
   return order;
+}
+
+/**
+ * Aísla la sesión conversacional activa cortando los mensajes anteriores a un pedido finalizado/cancelado
+ * o a un mensaje de reinicio/cancelación explícito del cliente o asistente.
+ */
+function getSessionMessages(rawMessages: Message[], latestOrder?: Order | null): Message[] {
+  let msgs = [...rawMessages];
+  if (latestOrder?.createdAt) {
+    const orderTime = latestOrder.createdAt;
+    const sinceOrder = msgs.filter((m) => m.createdAt > orderTime);
+    if (
+      sinceOrder.length > 0 &&
+      (Date.now() - orderTime > 45 * 60 * 1000 ||
+        latestOrder.status === "delivered" ||
+        latestOrder.status === "cancelled")
+    ) {
+      msgs = sinceOrder;
+    }
+  }
+
+  // Detectar punto de reinicio por cancelación o nuevo pedido dentro del historial
+  let resetIndex = -1;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    const c = (m.content || "").toLowerCase();
+    if (m.role === "assistant") {
+      if (
+        c.includes("hemos cancelado tu solicitud de pedido") ||
+        c.includes("ha sido cancelado con éxito") ||
+        c.includes("con muchísimo gusto te tomamos un nuevo pedido") ||
+        c.includes("con muchisimo gusto te tomamos un nuevo pedido")
+      ) {
+        resetIndex = i;
+      }
+    } else if (m.role === "user") {
+      if (
+        /\b(?:para\s+)?cancelar\s+(?:el\s+|mi\s+)?(?:pedido|orden)\b/i.test(c) ||
+        /\b(?:nuevo\s+pedido|otro\s+pedido|pedir\s+de\s+nuevo|otra\s+orden|nueva\s+orden|hola\s+para\s+un\s+pedido|para\s+un\s+pedido)\b/i.test(c)
+      ) {
+        resetIndex = i;
+      }
+    }
+  }
+
+  if (resetIndex >= 0 && resetIndex < msgs.length - 1) {
+    return msgs.slice(resetIndex + 1);
+  }
+
+  return msgs;
 }
 
 export async function handleSalesMessage(
@@ -965,6 +1109,22 @@ export async function handleSalesMessage(
 ): Promise<SalesMessageResult> {
   const text = (userText || "").trim();
   const lower = text.toLowerCase();
+
+  // Asegurar persistencia del mensaje del usuario si no fue guardado previamente (llamadas directas o tests)
+  const rawPrevInit = await getMessages(conversationKey).catch(() => []);
+  const lastMsgInit = rawPrevInit[rawPrevInit.length - 1];
+  const lastContent = (lastMsgInit?.content || "")
+    .replace(/^🎤\s*\[Nota de voz(?: transcrita)?\]:\s*"?/i, "")
+    .replace(/"?\s*$/i, "")
+    .trim();
+  const isAlreadyLast =
+    Boolean(lastMsgInit) &&
+    (lastMsgInit.role === "user" || lastMsgInit.role === "system") &&
+    lastContent === text;
+
+  if (!isAlreadyLast && text) {
+    await appendMessage(conversationKey, "user", text).catch(() => {});
+  }
 
   const settings = await getOrgSettings();
   const products = await getProducts(true);
@@ -1026,6 +1186,51 @@ export async function handleSalesMessage(
 
   const upsellDrinks = settings.upsellDrinksEnabled !== "false";
 
+  // --- VERIFICACIÓN DE PEDIDO PREVIO DEL CLIENTE ---
+  const allOrders = await getOrders().catch(() => []);
+  const customerDigits = conversationKey.replace(/\D/g, "").slice(-10);
+  const userOrders = allOrders.filter((o) => {
+    if (o.conversationId === conversationKey) return true;
+    if (customerDigits && o.conversationId.replace(/\D/g, "").includes(customerDigits)) return true;
+    return false;
+  });
+  const latestOrder = userOrders[0]; // La orden más reciente del cliente
+
+  // --- INTENCIÓN DE CANCELAR PEDIDO O BORRADOR ---
+  const isCancelIntent =
+    /\b(?:para\s+)?cancelar\s+(?:el\s+|mi\s+)?(?:pedido|orden)\b/i.test(lower) ||
+    lower === "cancelar pedido" ||
+    lower === "cancelar la orden" ||
+    lower === "cancelar orden" ||
+    lower === "cancelar" ||
+    lower === "deseo cancelar mi pedido" ||
+    lower === "deseo cancelar el pedido" ||
+    lower === "ya no quiero pedir";
+
+  if (isCancelIntent) {
+    if (latestOrder && (latestOrder.status === "pending" || latestOrder.status === "confirmed")) {
+      await updateOrderStatus(latestOrder.id, "cancelled");
+      logSystemEvent("info", "agent", `Pedido #${latestOrder.id.slice(0, 8)} cancelado a solicitud del cliente`, {
+        orderId: latestOrder.id,
+        conversationKey,
+      });
+      const reply = `Tu pedido *#${latestOrder.id.slice(0, 8)}* ha sido cancelado con éxito ✅. Si deseas realizar un nuevo pedido más adelante, con muchísimo gusto estaremos atentos. ¡Esperamos atenderte pronto en BUÑUELANDIA! 🥟`;
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "keyword" };
+    } else if (latestOrder && (latestOrder.status === "preparing" || latestOrder.status === "delivering")) {
+      await setConversationStatus(conversationKey, "human");
+      const statusDesc = latestOrder.status === "delivering" ? "en camino con el domiciliario 🛵" : "en preparación en cocina 👨‍🍳🔥";
+      const reply = `Tu pedido *#${latestOrder.id.slice(0, 8)}* ya se encuentra ${statusDesc}. He notificado de inmediato a un asesor humano para evaluar la cancelación de tu pedido. En breve se comunicarán contigo por aquí.`;
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "human_escalated" };
+    } else {
+      // Cancelar borrador en curso en la conversación
+      const reply = `¡Entendido! Hemos cancelado tu solicitud de pedido. Tu carrito ha sido reiniciado. Si más adelante se te antojan unos buñuelos calienticos y crujientes, ¡aquí estaremos listos para atenderte en BUÑUELANDIA! 🥟✨`;
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "keyword" };
+    }
+  }
+
   // --- INTENCIÓN DE NUEVO PEDIDO / REINICIAR PEDIDO ---
   const isNewOrderIntent =
     lower.includes("nuevo pedido") ||
@@ -1036,7 +1241,10 @@ export async function handleSalesMessage(
     lower.includes("quiero pedir de nuevo") ||
     lower.includes("hacer otro pedido") ||
     lower.includes("quiero hacer un nuevo pedido") ||
-    lower.includes("hacer un nuevo pedido");
+    lower.includes("hacer un nuevo pedido") ||
+    lower.includes("hola para un pedido") ||
+    lower.includes("para un pedido") ||
+    lower.includes("quiero hacer un pedido");
 
   if (isNewOrderIntent) {
     const drinksMention = upsellDrinks
@@ -1047,15 +1255,7 @@ export async function handleSalesMessage(
     return { reply, mode: "keyword" };
   }
 
-  // --- VERIFICACIÓN DE PEDIDO PREVIO Y CORTESÍA / AGRADECIMIENTO ---
-  const allOrders = await getOrders().catch(() => []);
-  const customerDigits = conversationKey.replace(/\D/g, "").slice(-10);
-  const userOrders = allOrders.filter((o) => {
-    if (o.conversationId === conversationKey) return true;
-    if (customerDigits && o.conversationId.replace(/\D/g, "").includes(customerDigits)) return true;
-    return false;
-  });
-  const latestOrder = userOrders[0]; // La orden más reciente del cliente
+  // --- VERIFICACIÓN DE CORTESÍA / AGRADECIMIENTO ---
 
   const isGratitudeOrClosing =
     /^(?:muchas\s+)?gracias(?:[!\s.]*)$/i.test(text) ||
@@ -1218,24 +1418,10 @@ export async function handleSalesMessage(
     return { reply, mode: "keyword" };
   }
 
-  // Filtrar el historial si ya existe un pedido previo del cliente,
-  // para que NINGÚN producto o dirección de pedidos anteriores se mezcle con el nuevo chat
+  // Filtrar el historial si ya existe un pedido previo del cliente o hubo cancelación/reinicio,
+  // para que NINGÚN producto o selección anterior se mezcle con la sesión actual
   const rawPrevious = await getMessages(conversationKey);
-  let previous = rawPrevious;
-  if (latestOrder) {
-    const orderTime = latestOrder.createdAt || 0;
-    const sinceOrder = rawPrevious.filter((m) => m.createdAt > orderTime);
-    // Solo aislar mensajes si hay mensajes nuevos posteriores Y el pedido anterior
-    // ya fue completado/entregado/cancelado o tiene más de 45 minutos de antigüedad
-    if (
-      sinceOrder.length > 0 &&
-      (Date.now() - orderTime > 45 * 60 * 1000 ||
-        latestOrder.status === "delivered" ||
-        latestOrder.status === "cancelled")
-    ) {
-      previous = sinceOrder;
-    }
-  }
+  const previous = getSessionMessages(rawPrevious, latestOrder);
   const catalogText = products
     .map((p) => `- ${p.name}: ${formatCop(p.price)} (${p.description || "Deliciosos y frescos"})`)
     .join("\n");
@@ -1377,19 +1563,24 @@ export async function handleSalesMessage(
 
   const { items: sessionItems } = extractProductsFromText(allUserChatText, products);
 
-  // Extraer salsas mencionadas si eligió caja surtida
+  // Extraer salsas mencionadas si eligió caja surtida (solo si el carrito actual contiene caja surtida)
   const lowerUserChat = allUserChatText.toLowerCase();
   const sessionSalsas: string[] = [];
-  if (lowerUserChat.includes("mora")) sessionSalsas.push("Mora");
-  if (lowerUserChat.includes("arequipe")) sessionSalsas.push("Arequipe");
-  if (lowerUserChat.includes("bocadillo")) sessionSalsas.push("Bocadillo");
-  if (
-    lowerUserChat.includes("suero") ||
-    lowerUserChat.includes("queso") ||
-    lowerUserChat.includes("costeño") ||
-    lowerUserChat.includes("costeno")
-  ) {
-    sessionSalsas.push("Suero Costeño");
+  const hasSurtidaInCart = sessionItems.some(
+    (it) => it.sku === "C8S" || it.sku === "C4S" || (it.sku.includes("S") && !it.sku.startsWith("BEB"))
+  );
+  if (hasSurtidaInCart) {
+    if (lowerUserChat.includes("mora")) sessionSalsas.push("Mora");
+    if (lowerUserChat.includes("arequipe")) sessionSalsas.push("Arequipe");
+    if (lowerUserChat.includes("bocadillo")) sessionSalsas.push("Bocadillo");
+    if (
+      lowerUserChat.includes("suero") ||
+      lowerUserChat.includes("queso") ||
+      lowerUserChat.includes("costeño") ||
+      lowerUserChat.includes("costeno")
+    ) {
+      sessionSalsas.push("Suero Costeño");
+    }
   }
 
   // Extraer dirección ya mencionada (incluyendo transcripciones de voz)
@@ -1757,9 +1948,10 @@ ${sessionItems.length > 0
 
           let reply = response.text?.trim() || settings.welcomeMessage;
 
-          // Candado de Salsas en Caja Surtida
-          const hasSurtidaCart = sessionItems.some((it) => it.sku.includes("S") || it.name.toLowerCase().includes("surtid")) ||
-            /surtid/i.test(allUserChatText);
+          // Candado de Salsas en Caja Surtida: depende estrictamente del carrito actual
+          const hasSurtidaCart = sessionItems.some(
+            (it) => it.sku === "C8S" || it.sku === "C4S" || (it.sku.includes("S") && !it.sku.startsWith("BEB"))
+          );
           if (shouldInterceptMissingSauces(hasSurtidaCart, allUserChatText, reply)) {
             reply = MISSING_SAUCES_INTERCEPT_MESSAGE;
           }
@@ -1771,6 +1963,18 @@ ${sessionItems.length > 0
             products,
             pushName
           );
+
+          // Fail-Closed: Si el asistente generó un mensaje de confirmación pero la orden no se pudo crear,
+          // no dar falso positivo al cliente.
+          const replyHasConfirmation =
+            reply.toLowerCase().includes("pedido confirmado") ||
+            reply.toLowerCase().includes("pedido registrado") ||
+            reply.toLowerCase().includes("hemos registrado tu pedido");
+
+          if (replyHasConfirmation && !maybeOrder) {
+            console.error("[sales-agent] Fail-Closed: Confirmación generada pero persistencia de pedido falló en Gemini.");
+            reply = "Tuvimos un inconveniente técnico momentáneo al registrar tu pedido ⚠️. Por favor responde con el número 1️⃣ para intentar confirmarlo nuevamente o escribe *asesor* si deseas que una persona te atienda.";
+          }
 
           if (maybeOrder?.invoiceNumber) {
             const publicUrl = maybeOrder.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${maybeOrder.invoiceId || ""}`;
@@ -1830,9 +2034,10 @@ ${sessionItems.length > 0
 
       let reply = res.choices[0]?.message?.content?.trim() || settings.welcomeMessage;
 
-      // Candado de Salsas en Caja Surtida
-      const hasSurtidaCart = sessionItems.some((it) => it.sku.includes("S") || it.name.toLowerCase().includes("surtid")) ||
-        /surtid/i.test(allUserChatText);
+      // Candado de Salsas en Caja Surtida: depende estrictamente del carrito actual
+      const hasSurtidaCart = sessionItems.some(
+        (it) => it.sku === "C8S" || it.sku === "C4S" || (it.sku.includes("S") && !it.sku.startsWith("BEB"))
+      );
       if (shouldInterceptMissingSauces(hasSurtidaCart, allUserChatText, reply)) {
         reply = MISSING_SAUCES_INTERCEPT_MESSAGE;
       }
@@ -1844,6 +2049,18 @@ ${sessionItems.length > 0
         products,
         pushName
       );
+
+      // Fail-Closed: Si el asistente generó un mensaje de confirmación pero la orden no se pudo crear,
+      // no dar falso positivo al cliente.
+      const replyHasConfirmation =
+        reply.toLowerCase().includes("pedido confirmado") ||
+        reply.toLowerCase().includes("pedido registrado") ||
+        reply.toLowerCase().includes("hemos registrado tu pedido");
+
+      if (replyHasConfirmation && !maybeOrder) {
+        console.error("[sales-agent] Fail-Closed: Confirmación generada pero persistencia de pedido falló en OpenAI.");
+        reply = "Tuvimos un inconveniente técnico momentáneo al registrar tu pedido ⚠️. Por favor responde con el número 1️⃣ para intentar confirmarlo nuevamente o escribe *asesor* si deseas que una persona te atienda.";
+      }
 
       if (maybeOrder?.invoiceNumber) {
         const publicUrl = maybeOrder.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${maybeOrder.invoiceId || ""}`;
@@ -2031,89 +2248,108 @@ ${sessionItems.length > 0
           ? conversationKey.replace(/\D/g, "").slice(-10)
           : undefined);
 
-      const order = await createOrder(
-        conversationKey,
-        finalItems.map((it) => ({ sku: it.sku, quantity: it.quantity, unitPrice: it.unitPrice })),
-        finalTotal,
-        {
-          customerName: clientName,
-          customerPhone: detectedPhone,
-          deliveryAddress: finalAddress,
-          paymentMethod: finalPayment,
-          itemsSummary: summaryItems,
-          deliveryFee: 0,
-        }
-      );
-
-      if (clientName && !clientName.toLowerCase().startsWith("cliente whatsapp")) {
-        await setConversationCustomerName(conversationKey, clientName).catch(() => {});
-      }
-
-      let invoiceNotice = "";
+      let order: Order | null = null;
       try {
-        const invRes = await createInvoiceInContabilidad({
-          orderId: order.id,
-          customerName: clientName,
-          phone: detectedPhone ? `+57${detectedPhone}` : conversationKey.replace(/^whatsapp:/i, ""),
-          deliveryAddress: finalAddress,
-          paymentMethod: finalPayment,
-          items: finalItems.map((it) => ({
-            sku: it.sku,
-            name: it.name,
-            quantity: it.quantity,
-            unitPrice: it.unitPrice,
-          })),
-          deliveryFee: 0,
+        order = await createOrder(
+          conversationKey,
+          finalItems.map((it) => ({ sku: it.sku, quantity: it.quantity, unitPrice: it.unitPrice })),
+          finalTotal,
+          {
+            customerName: clientName,
+            customerPhone: detectedPhone,
+            deliveryAddress: finalAddress,
+            paymentMethod: finalPayment,
+            itemsSummary: summaryItems,
+            deliveryFee: 0,
+          }
+        );
+      } catch (createErr) {
+        console.error("[sales-agent] Error persistiendo pedido en fallback:", createErr);
+        logSystemEvent("error", "agent", `Error crítico al crear pedido en fallback: ${String(createErr)}`, {
+          conversationKey,
           total: finalTotal,
         });
-        if (invRes.ok && invRes.invoiceNumber) {
-          await updateOrderInvoice(
-            order.id,
-            invRes.invoiceNumber,
-            invRes.invoiceId,
-            invRes.invoiceUrl,
-            invRes.invoicePdfUrl
-          );
-          order.invoiceNumber = invRes.invoiceNumber;
-          order.invoiceId = invRes.invoiceId;
-          order.invoiceUrl = invRes.invoiceUrl;
-          order.invoicePdfUrl = invRes.invoicePdfUrl;
-          createdInvoiceNumber = invRes.invoiceNumber;
-          createdInvoiceUrl = invRes.invoiceUrl;
-          createdInvoicePdfUrl = invRes.invoicePdfUrl;
-          const publicUrl = invRes.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${invRes.invoiceId || ""}`;
-          invoiceNotice = `\n🧾 *Factura Oficial Registrada:* #${invRes.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
-        }
-      } catch (invErr) {
-        console.warn("[sales-agent] Error generando factura en fallback:", invErr);
       }
 
-      // Notificar automáticamente al domiciliario asignado por WhatsApp
-      notifyDeliveryDriver(order).catch((dErr) => {
-        console.warn("[sales-agent] Error notificando al domiciliario en fallback:", dErr);
-      });
-
-      const itemsListText = finalItems.map((it) => {
-        let nameWithBreakdown = it.name;
-        if (it.sku === "C8S") {
-          const bd = extractFlavorBreakdown(userChatText, 8);
-          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
-        } else if (it.sku === "C4S") {
-          const bd = extractFlavorBreakdown(userChatText, 4);
-          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
+      if (!order) {
+        reply = "Tuvimos un inconveniente técnico momentáneo al registrar tu pedido ⚠️. Por favor responde con el número 1️⃣ para intentar confirmarlo nuevamente o escribe *asesor* si deseas que una persona te atienda.";
+        mode = "keyword";
+      } else {
+        if (clientName && !clientName.toLowerCase().startsWith("cliente whatsapp")) {
+          await setConversationCustomerName(conversationKey, clientName).catch(() => {});
         }
-        return `- ${nameWithBreakdown} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`;
-      }).join("\n");
 
-      reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*${invoiceNotice}\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
-      mode = "order_created";
+        let invoiceNotice = "";
+        try {
+          const invRes = await createInvoiceInContabilidad({
+            orderId: order.id,
+            customerName: clientName,
+            phone: detectedPhone ? `+57${detectedPhone}` : conversationKey.replace(/^whatsapp:/i, ""),
+            deliveryAddress: finalAddress,
+            paymentMethod: finalPayment,
+            items: finalItems.map((it) => ({
+              sku: it.sku,
+              name: it.name,
+              quantity: it.quantity,
+              unitPrice: it.unitPrice,
+            })),
+            deliveryFee: 0,
+            total: finalTotal,
+          });
+          if (invRes.ok && invRes.invoiceNumber) {
+            await updateOrderInvoice(
+              order.id,
+              invRes.invoiceNumber,
+              invRes.invoiceId,
+              invRes.invoiceUrl,
+              invRes.invoicePdfUrl
+            );
+            order.invoiceNumber = invRes.invoiceNumber;
+            order.invoiceId = invRes.invoiceId;
+            order.invoiceUrl = invRes.invoiceUrl;
+            order.invoicePdfUrl = invRes.invoicePdfUrl;
+            createdInvoiceNumber = invRes.invoiceNumber;
+            createdInvoiceUrl = invRes.invoiceUrl;
+            createdInvoicePdfUrl = invRes.invoicePdfUrl;
+            const publicUrl = invRes.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${invRes.invoiceId || ""}`;
+            invoiceNotice = `\n🧾 *Factura Oficial Registrada:* #${invRes.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
+          }
+        } catch (invErr) {
+          console.warn("[sales-agent] Error generando factura en fallback:", invErr);
+        }
+
+        // Notificar automáticamente al domiciliario asignado por WhatsApp
+        try {
+          const driverRes = await notifyDeliveryDriver(order);
+          if (!driverRes.ok) {
+            console.warn(`[sales-agent] Notificación al domiciliario no enviada en fallback para pedido #${order.id.slice(0, 8)}:`, driverRes.error);
+          }
+        } catch (dErr) {
+          console.warn("[sales-agent] Error notificando al domiciliario en fallback:", dErr);
+        }
+
+        const itemsListText = finalItems.map((it) => {
+          let nameWithBreakdown = it.name;
+          if (it.sku === "C8S") {
+            const bd = extractFlavorBreakdown(userChatText, 8);
+            if (bd) nameWithBreakdown = `${it.name} (${bd})`;
+          } else if (it.sku === "C4S") {
+            const bd = extractFlavorBreakdown(userChatText, 4);
+            if (bd) nameWithBreakdown = `${it.name} (${bd})`;
+          }
+          return `- ${nameWithBreakdown} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`;
+        }).join("\n");
+
+        reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*${invoiceNotice}\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
+        mode = "order_created";
+      }
     }
   } else if (extractedItems.length > 0) {
     const chosenProduct = extractedItems[0];
     const totalEst = extractedTotal > 0 ? extractedTotal : chosenProduct.unitPrice;
 
     // VALIDACIÓN OBLIGATORIA DE SALSAS PARA CAJAS SURTIDAS (C4S / C8S)
-    const hasSurtida = extractedItems.some((it) => it.sku === "C4S" || it.sku === "C8S") || /surtid/i.test(lower);
+    const hasSurtida = extractedItems.some((it) => it.sku === "C4S" || it.sku === "C8S");
     const mentionsSauces = hasValidSauceSelection(userChatText + " " + lower);
 
     if (hasSurtida && !mentionsSauces) {

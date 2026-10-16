@@ -11,7 +11,7 @@ export const OFFICIAL_PRICES: CatalogPriceItem[] = [
   { sku: "C8S", name: "Caja x8 Buñuelos Surtidos", price: 34000, category: "boxes" },
   { sku: "C8T", name: "Caja x8 Buñuelos Tradicionales", price: 32000, category: "boxes" },
   { sku: "C4S", name: "Caja x4 Buñuelos Surtidos", price: 18000, category: "boxes" },
-  { sku: "C4T", name: "Caja x4 Buñuelos Tradicionales", price: 17000, category: "boxes" },
+  { sku: "C4T", name: "Caja x4 Buñuelos Tradicionales", price: 16000, category: "boxes" },
   { sku: "BM", name: "Buñuelo Relleno Mora", price: 4500, category: "singles" },
   { sku: "BA", name: "Buñuelo Relleno Arequipe", price: 4500, category: "singles" },
   { sku: "BQ", name: "Buñuelo Relleno Queso", price: 4500, category: "singles" },
