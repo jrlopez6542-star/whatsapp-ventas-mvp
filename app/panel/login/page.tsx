@@ -63,6 +63,82 @@ function LoginForm() {
       </div>
 
       <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "1.1rem" }}>
+        {searchParams.get("error") === "revoked" && !error && (
+          <div
+            style={{
+              padding: "0.75rem 1rem",
+              background: "rgba(245, 158, 11, 0.15)",
+              border: "1px solid rgba(245, 158, 11, 0.3)",
+              color: "#fcd34d",
+              borderRadius: 8,
+              fontSize: "0.85rem",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+            }}
+          >
+            <span>🔒</span>
+            <span>Su sesión fue cerrada o revocada. Inicie sesión nuevamente.</span>
+          </div>
+        )}
+
+        {searchParams.get("logout") === "1" && !error && searchParams.get("error") !== "revoked" && (
+          <div
+            style={{
+              padding: "0.75rem 1rem",
+              background: "rgba(34, 197, 94, 0.15)",
+              border: "1px solid rgba(34, 197, 94, 0.3)",
+              color: "#86efac",
+              borderRadius: 8,
+              fontSize: "0.85rem",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+            }}
+          >
+            <span>✅</span>
+            <span>Sesión finalizada exitosamente.</span>
+          </div>
+        )}
+
+        {searchParams.get("error") === "invalid" && !error && (
+          <div
+            style={{
+              padding: "0.75rem 1rem",
+              background: "rgba(239, 68, 68, 0.15)",
+              border: "1px solid rgba(239, 68, 68, 0.3)",
+              color: "#fca5a5",
+              borderRadius: 8,
+              fontSize: "0.85rem",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+            }}
+          >
+            <span>⚠️</span>
+            <span>Firma de sesión inválida o adulterada. Inicie sesión nuevamente.</span>
+          </div>
+        )}
+
+        {searchParams.get("error") === "config" && !error && (
+          <div
+            style={{
+              padding: "0.75rem 1rem",
+              background: "rgba(239, 68, 68, 0.15)",
+              border: "1px solid rgba(239, 68, 68, 0.3)",
+              color: "#fca5a5",
+              borderRadius: 8,
+              fontSize: "0.85rem",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+            }}
+          >
+            <span>⚠️</span>
+            <span>Error de configuración de seguridad. Contacte al administrador.</span>
+          </div>
+        )}
+
         {error && (
           <div
             style={{

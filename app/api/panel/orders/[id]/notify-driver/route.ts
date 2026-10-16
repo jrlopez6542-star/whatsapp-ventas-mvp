@@ -2,13 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 import { getOrders, getOrgSettings } from "@/lib/store";
 import { formatDeliveryDriverMessage } from "@/lib/delivery-driver";
 import { sendOutboundWhatsApp } from "@/lib/whatsapp-send";
+import { requirePanelAuth } from "@/lib/auth/session";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requirePanelAuth(request);
+  if (!auth.authorized) {
+    return NextResponse.json(
+      { ok: false, error: auth.error || "No autorizado" },
+      { status: 401 }
+    );
+  }
+
   const { id } = await params;
   try {
     const orders = await getOrders();

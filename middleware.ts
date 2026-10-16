@@ -1,42 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const PANEL_COOKIE = "panel_session";
+function getSigningSecret(): string | null {
+  const secret = (
+    process.env.PANEL_SESSION_SECRET ||
+    process.env.PANEL_PASSWORD ||
+    process.env.CRON_SECRET ||
+    process.env.EVOLUTION_API_KEY ||
+    ""
+  ).trim().replace(/^"|"$/g, "");
 
-function getPassword(): string {
-  return (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "");
-}
-
-function getSigningSecret(): string {
-  return (
-    getPassword() ||
-    (process.env.CRON_SECRET || "").trim().replace(/^"|"$/g, "") ||
-    (process.env.EVOLUTION_API_KEY || "").trim().replace(/^"|"$/g, "") ||
-    "bunuelandia-secret-panel-signing-key-default-2026"
-  );
-}
-
-async function sha256Hex(text: string): Promise<string> {
-  const data = new TextEncoder().encode(text);
-  const hash = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(hash))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function sessionToken(password: string): Promise<string> {
-  return sha256Hex(`whatsapp-ventas-panel:${password}`);
-}
-
-function timingSafeEqualStr(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let out = 0;
-  for (let i = 0; i < a.length; i++) {
-    out |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  if (secret) {
+    return secret;
   }
-  return out === 0;
+
+  // En producción, es un fallo crítico no tener un secreto configurado
+  if (process.env.NODE_ENV === "production") {
+    console.error("[security] Falta secreto de firma de sesión en producción. Fallando de forma segura.");
+    return null;
+  }
+
+  // En desarrollo/pruebas locales, usar clave no productiva
+  return "dev-local-secret-panel-signing-key-only-not-for-prod";
 }
 
-async function verifyHmacSessionToken(token: string, secret: string): Promise<boolean> {
+async function verifyHmacSessionToken(token: string, secret: string | null): Promise<boolean> {
+  if (!secret) return false;
   if (!token || !token.includes(".")) return false;
   const parts = token.split(".");
   if (parts.length !== 2) return false;
@@ -79,27 +67,23 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const token =
-    request.cookies.get("panel_session")?.value?.trim() ||
-    request.cookies.get("crm_session")?.value?.trim();
-  const password = getPassword();
+  const panelCookie = request.cookies.get("panel_session")?.value?.trim();
+  const crmCookie = request.cookies.get("crm_session")?.value?.trim();
 
-  // Verificación estricta del token de sesión:
-  // 1. Token legado derivado de PANEL_PASSWORD (tiempo constante)
-  // 2. Token firmado criptográficamente con HMAC-SHA256 (previene tokens inventados)
-  let hasValidToken = false;
-  if (token && token.length >= 32) {
-    if (password) {
-      const expectedLegacy = await sessionToken(password);
-      if (timingSafeEqualStr(token, expectedLegacy)) {
-        hasValidToken = true;
-      }
-    }
-    if (!hasValidToken && token.includes(".")) {
-      const secret = getSigningSecret();
-      if (await verifyHmacSessionToken(token, secret)) {
-        hasValidToken = true;
-      }
+  // Verificación de primer nivel en Edge: formato y firma criptográfica HMAC-SHA256
+  // La autorización definitiva (expiración, usuario activo y revocación en Turso) se realiza en el servidor
+  const secret = getSigningSecret();
+  let hasValidFormat = false;
+
+  if (secret) {
+    if (panelCookie && crmCookie) {
+      const validPanel = await verifyHmacSessionToken(panelCookie, secret);
+      const validCrm = await verifyHmacSessionToken(crmCookie, secret);
+      hasValidFormat = validPanel && validCrm;
+    } else if (panelCookie) {
+      hasValidFormat = await verifyHmacSessionToken(panelCookie, secret);
+    } else if (crmCookie) {
+      hasValidFormat = await verifyHmacSessionToken(crmCookie, secret);
     }
   }
 
@@ -107,12 +91,12 @@ export async function middleware(request: NextRequest) {
     if (isLoginPage) {
       // Si el usuario acaba de solicitar logout explícito, no auto-redirigir a /panel
       const isExplicitLogout = request.nextUrl.searchParams.has("logout");
-      if (hasValidToken && !isExplicitLogout) {
+      if (hasValidFormat && !isExplicitLogout) {
         return NextResponse.redirect(new URL("/panel", request.url));
       }
       return NextResponse.next();
     }
-    if (!hasValidToken) {
+    if (!hasValidFormat) {
       const login = new URL("/panel/login", request.url);
       login.searchParams.set("next", pathname);
       return NextResponse.redirect(login);
@@ -121,7 +105,7 @@ export async function middleware(request: NextRequest) {
   }
 
   if (pathname.startsWith("/api/panel")) {
-    if (!hasValidToken) {
+    if (!hasValidFormat) {
       return NextResponse.json(
         { ok: false, error: "No autorizado. Inicie sesión en el panel." },
         { status: 401 }
@@ -134,4 +118,4 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: ["/panel/:path*", "/api/panel/:path*"],
-};
+};

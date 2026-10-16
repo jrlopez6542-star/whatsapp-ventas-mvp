@@ -59,12 +59,27 @@ function getMemoryAuthStore(): MemoryAuthStore {
 }
 
 export function getSessionSigningSecret(): string {
-  const secret =
-    (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "") ||
-    (process.env.CRON_SECRET || "").trim().replace(/^"|"$/g, "") ||
-    (process.env.EVOLUTION_API_KEY || "").trim().replace(/^"|"$/g, "") ||
-    "bunuelandia-secret-panel-signing-key-default-2026";
-  return secret;
+  const secret = (
+    process.env.PANEL_SESSION_SECRET ||
+    process.env.PANEL_PASSWORD ||
+    process.env.CRON_SECRET ||
+    process.env.EVOLUTION_API_KEY ||
+    ""
+  ).trim().replace(/^"|"$/g, "");
+
+  if (secret) {
+    return secret;
+  }
+
+  // En producción, es un fallo crítico no tener un secreto configurado
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "[security] Falta secreto de firma de sesión en producción (PANEL_SESSION_SECRET). Configure una clave secreta segura."
+    );
+  }
+
+  // En desarrollo/pruebas locales, usar clave no productiva
+  return "dev-local-secret-panel-signing-key-only-not-for-prod";
 }
 
 export function signToken(rawToken: string): string {
@@ -83,9 +98,9 @@ export function verifySignedToken(signedToken: string): string | null {
   if (!rawToken || !sig || rawToken.length !== 64 || sig.length !== 64) {
     return null;
   }
-  const secret = getSessionSigningSecret();
-  const expectedSig = createHmac("sha256", secret).update(rawToken).digest("hex");
   try {
+    const secret = getSessionSigningSecret();
+    const expectedSig = createHmac("sha256", secret).update(rawToken).digest("hex");
     const a = Buffer.from(sig, "hex");
     const b = Buffer.from(expectedSig, "hex");
     if (a.length === b.length && timingSafeEqual(a, b)) {
@@ -102,6 +117,7 @@ export function extractRawToken(token: string): string {
   if (trimmed.includes(".")) {
     const verified = verifySignedToken(trimmed);
     if (verified) return verified;
+    return "";
   }
   return trimmed;
 }
@@ -113,7 +129,8 @@ function hashToken(rawToken: string): string {
 /**
  * Genera el hash canónico (SHA-256) de un token de sesión.
  * Si el token viene firmado (rawToken.sig), extrae y verifica el rawToken antes de hashear.
- * Si viene como rawToken o como hash legacy, hashea directamente el valor normalizado.
+ * Si la firma no es válida, retorna cadena vacía para evitar validar o revocar firmas corruptas.
+ * Si viene como rawToken (64 chars hex), hashea directamente el valor normalizado.
  * Criterio único y unificado para validación, búsqueda y revocación.
  */
 export function canonicalTokenHash(tokenInput: string): string {
@@ -122,9 +139,8 @@ export function canonicalTokenHash(tokenInput: string): string {
   if (!trimmed) return "";
   if (trimmed.includes(".")) {
     const verified = verifySignedToken(trimmed);
-    if (verified) {
-      return createHash("sha256").update(verified).digest("hex");
-    }
+    if (!verified) return "";
+    return createHash("sha256").update(verified).digest("hex");
   }
   return createHash("sha256").update(trimmed).digest("hex");
 }
@@ -438,13 +454,14 @@ export async function deleteUser(id: string): Promise<boolean> {
 export async function createSession(
   userId: string,
   userAgent?: string,
-  ipAddress?: string
+  ipAddress?: string,
+  ttlMs: number = SESSION_TTL_MS
 ): Promise<{ token: string; rawToken: string; expiresAt: number }> {
   const rawToken = randomBytes(32).toString("hex");
   const tokenHash = hashToken(rawToken);
   const id = `ses_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const now = Date.now();
-  const expiresAt = now + SESSION_TTL_MS;
+  const expiresAt = now + ttlMs;
 
   if (!isTursoConfigured()) {
     getMemoryAuthStore().sessions.set(tokenHash, {
@@ -481,6 +498,38 @@ export async function createSession(
 
   const signedToken = signToken(rawToken);
   return { token: signedToken, rawToken, expiresAt };
+}
+
+/**
+ * Modifica la fecha de expiración de una sesión para pruebas automatizadas aisladas.
+ * Compatible tanto con Turso como con el almacén en memoria.
+ */
+export async function setSessionExpiryForTesting(tokenInput: string, expiresAt: number): Promise<void> {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("[security] setSessionExpiryForTesting no está permitido en entornos de producción.");
+  }
+  const tokenHash = canonicalTokenHash(tokenInput);
+  if (!tokenHash) return;
+
+  if (!isTursoConfigured()) {
+    const mem = getMemoryAuthStore();
+    const session = mem.sessions.get(tokenHash);
+    if (session) {
+      session.expiresAt = expiresAt;
+    }
+    return;
+  }
+
+  try {
+    await ensureTursoReady();
+    const client = getTursoClient();
+    await client.execute({
+      sql: `UPDATE user_sessions SET expires_at = ? WHERE token_hash = ?`,
+      args: [expiresAt, tokenHash],
+    });
+  } catch (err) {
+    console.error("[auth] setSessionExpiryForTesting error:", err);
+  }
 }
 
 /**
@@ -606,27 +655,40 @@ export async function revokeSession(tokenInput: string): Promise<void> {
 
 /**
  * Validador estricto de autenticación para endpoints API del panel.
- * Verifica cookie de sesión multiusuario o token derivado de PANEL_PASSWORD.
+ * Verifica cookies de sesión (panel_session y crm_session) contra Turso/almacén.
+ * Rechaza de forma determinista si cualquiera de las cookies presentes fue revocada.
  */
 export async function requirePanelAuth(
   request: NextRequest,
   allowedRoles?: UserRole[]
 ): Promise<{ authorized: boolean; user?: SessionUser | null; error?: string }> {
-  const token =
-    request.cookies.get("panel_session")?.value?.trim() ||
-    request.cookies.get("crm_session")?.value?.trim();
-  if (!token) {
+  const panelCookie = request.cookies.get("panel_session")?.value?.trim();
+  const crmCookie = request.cookies.get("crm_session")?.value?.trim();
+
+  if (!panelCookie && !crmCookie) {
     return { authorized: false, error: "No autorizado. Inicie sesión en el panel." };
   }
 
-  // Comprobar si el token fue explícitamente revocado
-  const tokenHash = canonicalTokenHash(token);
-  if (await isTokenRevoked(tokenHash)) {
-    return { authorized: false, error: "Sesión revocada. Inicie sesión nuevamente." };
+  // 1. Candado estricto anti-revocación y firmas forjadas: si cualquiera de las cookies presentes fue adulterada o revocada, RECHAZAR de inmediato
+  for (const c of [panelCookie, crmCookie]) {
+    if (c) {
+      if (c.includes(".") && !verifySignedToken(c)) {
+        return { authorized: false, error: "Firma de sesión inválida o adulterada." };
+      }
+      const tokenHash = canonicalTokenHash(c);
+      if (tokenHash && (await isTokenRevoked(tokenHash))) {
+        return { authorized: false, error: "Sesión revocada. Inicie sesión nuevamente." };
+      }
+    }
   }
 
-  // 1. Validar sesión multiusuario en base de datos o almacén
-  const user = await validateSession(token);
+  // 2. Validar sesión multiusuario activa en base de datos o almacén
+  const primaryToken = panelCookie || crmCookie;
+  let user = await validateSession(primaryToken!);
+  if (!user && panelCookie && crmCookie) {
+    user = await validateSession(crmCookie);
+  }
+
   if (user) {
     if (!user.active) {
       return { authorized: false, error: "Usuario inactivo o suspendido." };
@@ -635,28 +697,6 @@ export async function requirePanelAuth(
       return { authorized: false, error: "Acceso denegado: permisos insuficientes." };
     }
     return { authorized: true, user };
-  }
-
-  // 2. Compatibilidad con contraseña legacy del entorno
-  const envPassword = (process.env.PANEL_PASSWORD || "").trim().replace(/^"|"$/g, "");
-  if (envPassword) {
-    const expectedLegacy = createHash("sha256").update(`whatsapp-ventas-panel:${envPassword}`).digest("hex");
-    if (token === expectedLegacy) {
-      return {
-        authorized: true,
-        user: {
-          id: "legacy_admin",
-          email: "admin@bunuelandia.co",
-          name: "Administrador Legacy",
-          role: "admin",
-          active: true,
-          createdAt: 0,
-          updatedAt: 0,
-          sessionId: "legacy_session",
-          expiresAt: Date.now() + 86400000,
-        },
-      };
-    }
   }
 
   return { authorized: false, error: "Sesión inválida o expirada." };
