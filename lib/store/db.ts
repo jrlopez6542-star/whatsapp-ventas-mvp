@@ -127,6 +127,10 @@ export async function ensureTursoReady(): Promise<void> {
           used_at INTEGER,
           created_at INTEGER NOT NULL
         )`,
+        `CREATE TABLE IF NOT EXISTS revoked_tokens (
+          token_hash TEXT PRIMARY KEY,
+          revoked_at INTEGER NOT NULL
+        )`,
       ],
       "write"
     );
@@ -233,13 +237,6 @@ export async function ensureTursoReady(): Promise<void> {
       }
     } catch (repairErr) {
       console.warn("[db data repair notice]", repairErr);
-    }
-
-    try {
-      const { ensureInitialAdmin } = await import("@/lib/auth/session");
-      await ensureInitialAdmin();
-    } catch (adminErr) {
-      console.warn("[db ensureInitialAdmin notice]", adminErr);
     }
   })().catch((err: unknown) => {
     initializedPromise = null;

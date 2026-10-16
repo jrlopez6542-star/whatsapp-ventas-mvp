@@ -477,6 +477,10 @@ export async function validateSession(tokenInput: string): Promise<SessionUser |
   }
 
   const tokenHash = hashToken(rawToken);
+  const directHash = hashToken(tokenInput);
+  if (await isTokenRevoked(tokenHash) || await isTokenRevoked(directHash)) {
+    return null;
+  }
   const now = Date.now();
 
   if (!isTursoConfigured()) {
@@ -530,6 +534,24 @@ export async function validateSession(tokenInput: string): Promise<SessionUser |
   }
 }
 
+const memoryRevokedTokens = new Set<string>();
+
+export async function isTokenRevoked(tokenHash: string): Promise<boolean> {
+  if (memoryRevokedTokens.has(tokenHash)) return true;
+  if (!isTursoConfigured()) return false;
+  try {
+    await ensureTursoReady();
+    const client = getTursoClient();
+    const res = await client.execute({
+      sql: `SELECT 1 FROM revoked_tokens WHERE token_hash = ? LIMIT 1`,
+      args: [tokenHash],
+    });
+    return res.rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Revoca una sesión específica por su token crudo o firmado
  */
@@ -537,6 +559,10 @@ export async function revokeSession(tokenInput: string): Promise<void> {
   if (!tokenInput) return;
   const rawToken = extractRawToken(tokenInput);
   const tokenHash = hashToken(rawToken);
+  const directHash = hashToken(tokenInput);
+
+  memoryRevokedTokens.add(tokenHash);
+  memoryRevokedTokens.add(directHash);
 
   if (!isTursoConfigured()) {
     getMemoryAuthStore().sessions.delete(tokenHash);
@@ -546,10 +572,20 @@ export async function revokeSession(tokenInput: string): Promise<void> {
   try {
     await ensureTursoReady();
     const client = getTursoClient();
-    await client.execute({
-      sql: `DELETE FROM user_sessions WHERE token_hash = ?`,
-      args: [tokenHash],
-    });
+    await client.batch([
+      {
+        sql: `DELETE FROM user_sessions WHERE token_hash = ?`,
+        args: [tokenHash],
+      },
+      {
+        sql: `INSERT OR REPLACE INTO revoked_tokens (token_hash, revoked_at) VALUES (?, ?)`,
+        args: [tokenHash, Date.now()],
+      },
+      {
+        sql: `INSERT OR REPLACE INTO revoked_tokens (token_hash, revoked_at) VALUES (?, ?)`,
+        args: [directHash, Date.now()],
+      },
+    ], "write");
   } catch (err) {
     console.error("[auth] revokeSession Turso error:", err);
   }
@@ -563,9 +599,19 @@ export async function requirePanelAuth(
   request: NextRequest,
   allowedRoles?: UserRole[]
 ): Promise<{ authorized: boolean; user?: SessionUser | null; error?: string }> {
-  const token = request.cookies.get("panel_session")?.value?.trim();
+  const token =
+    request.cookies.get("panel_session")?.value?.trim() ||
+    request.cookies.get("crm_session")?.value?.trim();
   if (!token) {
     return { authorized: false, error: "No autorizado. Inicie sesión en el panel." };
+  }
+
+  // Comprobar si el token fue explícitamente revocado
+  const rawToken = extractRawToken(token);
+  const tokenHash = hashToken(rawToken);
+  const directHash = hashToken(token);
+  if (await isTokenRevoked(tokenHash) || await isTokenRevoked(directHash)) {
+    return { authorized: false, error: "Sesión revocada. Inicie sesión nuevamente." };
   }
 
   // 1. Validar sesión multiusuario en base de datos o almacén

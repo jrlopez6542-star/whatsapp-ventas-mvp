@@ -71,13 +71,16 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    response.cookies.set("panel_session", token, {
+    const cookieOptions = {
       httpOnly: true,
       path: "/",
-      sameSite: "lax",
+      sameSite: "lax" as const,
       secure: process.env.NODE_ENV === "production",
       maxAge: 60 * 60 * 24 * 7, // 7 días
-    });
+    };
+
+    response.cookies.set("panel_session", token, cookieOptions);
+    response.cookies.set("crm_session", token, cookieOptions);
 
     return response;
   } catch (error) {

@@ -244,6 +244,7 @@ export default function PanelDashboard() {
   const [filter, setFilter] = useState<"all" | "bot" | "human" | "closed">("all");
   const [messages, setMessages] = useState<Message[]>([]);
   const [replyText, setReplyText] = useState("");
+  const [loggingOut, setLoggingOut] = useState(false);
 
   const scrollToBottom = useCallback((smooth = false) => {
     const el = chatContainerRef.current;
@@ -733,8 +734,25 @@ export default function PanelDashboard() {
   };
 
   const handleLogout = async () => {
-    await fetch("/api/panel/auth/logout", { method: "POST" });
-    window.location.href = "/panel/login";
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      const res = await fetch("/api/panel/auth/logout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!res.ok) {
+        console.error("[logout] Server error:", res.status);
+      }
+    } catch (err) {
+      console.error("[logout] Network error:", err);
+    } finally {
+      if (typeof document !== "undefined") {
+        document.cookie = "panel_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
+        document.cookie = "crm_session=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax";
+      }
+      window.location.href = "/panel/login?logout=1";
+    }
   };
 
   const filteredConversations = conversations.filter((c) => {
@@ -870,8 +888,13 @@ export default function PanelDashboard() {
             <button onClick={() => setShowQrModal(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-slate-400 hover:bg-[#202c33] hover:text-white">
               <i className="ph ph-qr-code text-lg"></i> Vincular WhatsApp
             </button>
-            <button onClick={handleLogout} className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-[#ef4444] hover:bg-[#ef4444]/10">
-              <i className="ph ph-sign-out text-lg"></i> Cerrar Sesión
+            <button
+              onClick={handleLogout}
+              disabled={loggingOut}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition text-[#ef4444] hover:bg-[#ef4444]/10 disabled:opacity-50"
+            >
+              <i className={`ph ${loggingOut ? "ph-spinner animate-spin" : "ph-sign-out"} text-lg`}></i>
+              {loggingOut ? "Cerrando sesión..." : "Cerrar Sesión"}
             </button>
           </div>
         </aside>

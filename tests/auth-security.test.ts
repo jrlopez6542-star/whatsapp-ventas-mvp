@@ -139,3 +139,50 @@ test("Seguridad: Cambio de contraseña revoca sesiones previas", async () => {
   const okOld = await verifyPassword("OldPassword123*", userWithPass.passwordHash);
   assert.equal(okOld, false, "La contraseña vieja ya no debe ser válida");
 });
+
+test("Logout y Revocación: requirePanelAuth rechaza tokens revocados (panel_session y crm_session)", async () => {
+  const { requirePanelAuth } = await import("../lib/auth/session");
+  const { NextRequest } = await import("next/server");
+
+  const email = `logout_user_${Date.now()}@bunuelandia.co`;
+  const user = await createUser({
+    email,
+    password: "Password123*",
+    name: "User Logout Test",
+    role: "operator",
+  });
+
+  const { token } = await createSession(user.id);
+
+  // 1. Antes de logout: acceso autorizado con panel_session
+  const reqBefore = new NextRequest("http://localhost:3000/api/panel/orders", {
+    headers: { cookie: `panel_session=${token}` },
+  });
+  const authBefore = await requirePanelAuth(reqBefore);
+  assert.equal(authBefore.authorized, true);
+
+  // 2. Antes de logout: acceso autorizado con crm_session
+  const reqCrmBefore = new NextRequest("http://localhost:3000/api/panel/orders", {
+    headers: { cookie: `crm_session=${token}` },
+  });
+  const authCrmBefore = await requirePanelAuth(reqCrmBefore);
+  assert.equal(authCrmBefore.authorized, true);
+
+  // 3. Ejecutar revocación (Logout)
+  await revokeSession(token);
+
+  // 4. Tras logout: acceso denegado con panel_session
+  const reqAfter = new NextRequest("http://localhost:3000/api/panel/orders", {
+    headers: { cookie: `panel_session=${token}` },
+  });
+  const authAfter = await requirePanelAuth(reqAfter);
+  assert.equal(authAfter.authorized, false, "La cookie reutilizada tras logout debe ser rechazada");
+
+  // 5. Tras logout: acceso denegado con crm_session
+  const reqCrmAfter = new NextRequest("http://localhost:3000/api/panel/orders", {
+    headers: { cookie: `crm_session=${token}` },
+  });
+  const authCrmAfter = await requirePanelAuth(reqCrmAfter);
+  assert.equal(authCrmAfter.authorized, false, "crm_session reutilizada tras logout debe ser rechazada");
+});
+

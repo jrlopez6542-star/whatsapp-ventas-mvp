@@ -79,7 +79,9 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const token = request.cookies.get(PANEL_COOKIE)?.value?.trim();
+  const token =
+    request.cookies.get("panel_session")?.value?.trim() ||
+    request.cookies.get("crm_session")?.value?.trim();
   const password = getPassword();
 
   // Verificación estricta del token de sesión:
@@ -103,7 +105,9 @@ export async function middleware(request: NextRequest) {
 
   if (pathname.startsWith("/panel")) {
     if (isLoginPage) {
-      if (hasValidToken) {
+      // Si el usuario acaba de solicitar logout explícito, no auto-redirigir a /panel
+      const isExplicitLogout = request.nextUrl.searchParams.has("logout");
+      if (hasValidToken && !isExplicitLogout) {
         return NextResponse.redirect(new URL("/panel", request.url));
       }
       return NextResponse.next();
