@@ -1,7 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 
+function normalizeSecret(val: string | undefined): string {
+  if (!val) return "";
+  let s = val.trim();
+  while (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    if (s.length < 2) break;
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
 function getSigningSecret(): string | null {
-  const secret = (process.env.PANEL_SESSION_SECRET || "").trim().replace(/^"|"$/g, "");
+  const secret = normalizeSecret(process.env.PANEL_SESSION_SECRET);
 
   if (process.env.NODE_ENV === "production") {
     if (!secret) {

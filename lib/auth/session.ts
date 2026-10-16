@@ -58,8 +58,21 @@ function getMemoryAuthStore(): MemoryAuthStore {
   return globalThis.__memoryAuthStore;
 }
 
+export function normalizeSecret(val: string | undefined): string {
+  if (!val) return "";
+  let s = val.trim();
+  while (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    if (s.length < 2) break;
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
 export function getSessionSigningSecret(): string {
-  const secret = (process.env.PANEL_SESSION_SECRET || "").trim().replace(/^"|"$/g, "");
+  const secret = normalizeSecret(process.env.PANEL_SESSION_SECRET);
 
   if (process.env.NODE_ENV === "production") {
     if (!secret) {
@@ -664,7 +677,7 @@ export async function requirePanelAuth(
   // 1. Candado estricto anti-revocación y firmas forjadas: si cualquiera de las cookies presentes fue adulterada o revocada, RECHAZAR de inmediato
   for (const c of [panelCookie, crmCookie]) {
     if (c) {
-      if (c.includes(".") && !verifySignedToken(c)) {
+      if (!verifySignedToken(c)) {
         return { authorized: false, error: "Firma de sesión inválida o adulterada." };
       }
       const tokenHash = canonicalTokenHash(c);

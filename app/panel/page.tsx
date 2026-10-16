@@ -27,7 +27,7 @@ export default async function PanelPage() {
   // 1. Candado estricto anti-revocación y firmas forjadas:
   for (const c of [panelCookie, crmCookie]) {
     if (c) {
-      if (c.includes(".") && !verifySignedToken(c)) {
+      if (!verifySignedToken(c)) {
         redirect("/panel/login?error=invalid");
       }
       const hash = canonicalTokenHash(c);

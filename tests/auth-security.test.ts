@@ -541,9 +541,10 @@ test("Seguridad E2: Firmas falsas y tokens manipulados son rechazados de forma d
 });
 
 test("Seguridad E3: Ausencia de secreto de firma en producción falla de forma segura", async () => {
-  const { getSessionSigningSecret, verifySignedToken, signToken, requirePanelAuth, setSessionExpiryForTesting } = await import("../lib/auth/session");
+  const { normalizeSecret, getSessionSigningSecret, verifySignedToken, signToken, requirePanelAuth, setSessionExpiryForTesting } = await import("../lib/auth/session");
   const { middleware } = await import("../middleware");
   const { NextRequest } = await import("next/server");
+  const { createHmac } = await import("crypto");
 
   const originalEnv = { ...process.env };
 
@@ -553,6 +554,19 @@ test("Seguridad E3: Ausencia de secreto de firma en producción falla de forma s
     delete process.env.PANEL_PASSWORD;
     delete process.env.CRON_SECRET;
     delete process.env.EVOLUTION_API_KEY;
+
+    // 0. Pruebas directas de normalización de secreto (ausente, vacío, espacios, comillas simples y dobles)
+    assert.equal(normalizeSecret(undefined), "", "normalizeSecret con undefined debe dar vacio");
+    assert.equal(normalizeSecret(""), "", "normalizeSecret con cadena vacia debe dar vacio");
+    assert.equal(normalizeSecret("   "), "", "normalizeSecret con espacios debe dar vacio");
+    assert.equal(normalizeSecret("\t  \n"), "", "normalizeSecret con tabuladores y saltos debe dar vacio");
+    assert.equal(normalizeSecret('""'), "", "normalizeSecret con comillas dobles vacias debe dar vacio");
+    assert.equal(normalizeSecret("''"), "", "normalizeSecret con comillas simples vacias debe dar vacio");
+    assert.equal(normalizeSecret('"   "'), "", "normalizeSecret con comillas dobles conteniendo espacios debe dar vacio");
+    assert.equal(normalizeSecret("'   '"), "", "normalizeSecret con comillas simples conteniendo espacios debe dar vacio");
+    assert.equal(normalizeSecret('  "valid-secret-key"  '), "valid-secret-key", "normalizeSecret debe remover comillas dobles y espacios externos");
+    assert.equal(normalizeSecret("  'valid-secret-key'  "), "valid-secret-key", "normalizeSecret debe remover comillas simples y espacios externos");
+    assert.equal(normalizeSecret(' "  valid-secret-key  " '), "valid-secret-key", "normalizeSecret debe remover espacios internos dentro de comillas");
 
     // 1. En producción, getSessionSigningSecret DEBE lanzar error de configuración
     assert.throws(
@@ -593,7 +607,32 @@ test("Seguridad E3: Ausencia de secreto de firma en producción falla de forma s
     const midPageRes = await middleware(midPageReq);
     assert.equal(midPageRes.status, 307, "Middleware debe redirigir a login si falta secreto en producción");
 
-    // 6. setSessionExpiryForTesting DEBE ser bloqueado estrictamente en producción
+    // 6. Probar variaciones de secreto vacío, espacios y comillas en producción: todas deben fallar de forma segura
+    const invalidSecretVariants = [
+      "",
+      "   ",
+      "\t  \n",
+      '""',
+      "''",
+      '"   "',
+      "'   '",
+      ' " " ',
+    ];
+    for (const badSecret of invalidSecretVariants) {
+      process.env.PANEL_SESSION_SECRET = badSecret;
+      assert.throws(
+        () => getSessionSigningSecret(),
+        /secreto de firma de sesión en producción/i,
+        `Secreto inválido '${badSecret}' debe lanzar excepción en producción`
+      );
+      const midBadRes = await middleware(testReq);
+      assert.equal(midBadRes.status, 401, `Middleware debe retornar 401 con secreto '${badSecret}'`);
+      const authBadRes = await requirePanelAuth(testReq);
+      assert.equal(authBadRes.authorized, false, `requirePanelAuth debe denegar acceso con secreto '${badSecret}'`);
+    }
+
+    // 7. setSessionExpiryForTesting DEBE ser bloqueado estrictamente en producción
+    delete process.env.PANEL_SESSION_SECRET;
     await assert.rejects(
       async () => {
         await setSessionExpiryForTesting("dummy_token", Date.now());
@@ -602,7 +641,7 @@ test("Seguridad E3: Ausencia de secreto de firma en producción falla de forma s
       "setSessionExpiryForTesting debe rechazar su uso en producción para impedir manipulación de sesiones"
     );
 
-    // 7. En producción, PANEL_PASSWORD, CRON_SECRET o EVOLUTION_API_KEY NO son aceptados como alternativas
+    // 8. En producción, PANEL_PASSWORD, CRON_SECRET o EVOLUTION_API_KEY NO son aceptados como alternativas
     process.env.PANEL_PASSWORD = "SomePassword123*";
     process.env.CRON_SECRET = "SomeCronSecret123*";
     process.env.EVOLUTION_API_KEY = "SomeApiKey123*";
@@ -619,10 +658,52 @@ test("Seguridad E3: Ausencia de secreto de firma en producción falla de forma s
     const midAltRes = await middleware(testReq);
     assert.equal(midAltRes.status, 401, "Middleware no debe aceptar alternativas a PANEL_SESSION_SECRET en producción");
 
-    // 8. Al configurar PANEL_SESSION_SECRET en producción, es aceptado sin problemas
+    // 9. El secreto local de desarrollo NUNCA autoriza sesiones en producción
+    const devKey = "dev-local-secret-panel-signing-key-only-not-for-prod";
+    const devRawToken = "d".repeat(64);
+    const devSig = createHmac("sha256", devKey).update(devRawToken).digest("hex");
+    const devSignedToken = `${devRawToken}.${devSig}`;
+
+    const devReq = new NextRequest("http://localhost:3000/api/panel/orders", {
+      headers: { cookie: `panel_session=${devSignedToken}` },
+    });
+    // Caso 9a: Sin secreto en producción
+    assert.equal(verifySignedToken(devSignedToken), null, "verifySignedToken debe rechazar token dev en producción sin secreto");
+    const midDevNoSecret = await middleware(devReq);
+    assert.equal(midDevNoSecret.status, 401, "Middleware debe rechazar token dev en producción sin secreto");
+    const authDevNoSecret = await requirePanelAuth(devReq);
+    assert.equal(authDevNoSecret.authorized, false, "requirePanelAuth debe rechazar token dev en producción sin secreto");
+
+    // Caso 9b: Con secreto de producción configurado
     const prodSecret = "ValidProdSecret64BytesLengthHexOrHighEntropy!";
     process.env.PANEL_SESSION_SECRET = prodSecret;
-    assert.equal(getSessionSigningSecret(), prodSecret, "Debe retornar PANEL_SESSION_SECRET en producción");
+    assert.equal(verifySignedToken(devSignedToken), null, "verifySignedToken debe rechazar token firmado con clave de dev");
+    const midDevWithSecret = await middleware(devReq);
+    assert.equal(midDevWithSecret.status, 401, "Middleware debe rechazar token firmado con clave de dev en producción");
+    const authDevWithSecret = await requirePanelAuth(devReq);
+    assert.equal(authDevWithSecret.authorized, false, "requirePanelAuth debe rechazar token firmado con clave de dev en producción");
+
+    // 10. Al configurar PANEL_SESSION_SECRET con comillas/espacios en producción, es normalizado y aceptado
+    process.env.PANEL_SESSION_SECRET = `  "${prodSecret}"  `;
+    assert.equal(getSessionSigningSecret(), prodSecret, "Debe retornar PANEL_SESSION_SECRET normalizado en producción");
+
+    const validSignedToken = signToken(devRawToken);
+    assert.equal(verifySignedToken(validSignedToken), devRawToken, "Token firmado con secreto normalizado debe ser verificado");
+    const validReq = new NextRequest("http://localhost:3000/api/panel/orders", {
+      headers: { cookie: `panel_session=${validSignedToken}` },
+    });
+    // Middleware debe validar la firma en Edge
+    const midValidRes = await middleware(validReq);
+    assert.equal(midValidRes.status, 200, "Middleware debe permitir peticiones con firma válida de producción");
+
+    // 11. Tokens no firmados (sin punto o con formato crudo) son rechazados por requirePanelAuth y middleware
+    const unsignedReq = new NextRequest("http://localhost:3000/api/panel/orders", {
+      headers: { cookie: `panel_session=${devRawToken}` },
+    });
+    const unsignedAuth = await requirePanelAuth(unsignedReq);
+    assert.equal(unsignedAuth.authorized, false, "requirePanelAuth debe rechazar tokens sin firma");
+    const unsignedMid = await middleware(unsignedReq);
+    assert.equal(unsignedMid.status, 401, "Middleware debe rechazar tokens sin firma");
   } finally {
     process.env = originalEnv;
   }

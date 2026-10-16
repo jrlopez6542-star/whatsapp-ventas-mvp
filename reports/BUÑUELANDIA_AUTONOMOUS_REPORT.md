@@ -13,7 +13,11 @@ Se completó la auditoría y corrección integral del sistema de autenticación,
 
 Se verificaron de manera estricta los 47 tests del proyecto, corrigiendo y ampliando las suites de seguridad `Seguridad E1` a `Seguridad E7` sin alterar el audio, la transcripción, la cobertura de domicilios ni los datos reales en producción.
 
-Adicionalmente, se auditó y corrigió la obtención del secreto de firma en producción: se eliminó cualquier alternativa secundaria (`PANEL_PASSWORD`, `CRON_SECRET`, `EVOLUTION_API_KEY`), haciendo `PANEL_SESSION_SECRET` estricta y exclusivamente obligatorio en `lib/auth/session.ts` y `middleware.ts`.
+Adicionalmente, se auditó y perfeccionó la obtención del secreto de firma en producción:
+1. Se implementó una normalización robusta y unificada (`normalizeSecret`) tanto en `lib/auth/session.ts` como en `middleware.ts`, eliminando espacios externos e internos dentro de comillas (dobles y simples).
+2. Se eliminó cualquier alternativa secundaria (`PANEL_PASSWORD`, `CRON_SECRET`, `EVOLUTION_API_KEY`), haciendo `PANEL_SESSION_SECRET` estricta y exclusivamente obligatorio en producción.
+3. Se garantizó que el secreto de desarrollo nunca sea aceptado en producción para validar sesiones.
+4. Se blindaron `requirePanelAuth` y `app/panel/page.tsx` para exigir firmas HMAC verificables en cualquier cookie, rechazando tokens no firmados o manipulados.
 
 ---
 
@@ -28,7 +32,7 @@ Adicionalmente, se auditó y corrigió la obtención del secreto de firma en pro
   - Muestra alertas específicas según el motivo de redirección:
     - `?logout=1`: Sesión finalizada exitosamente.
     - `?error=revoked`: Sesión revocada o cerrada remotamente.
-    - `?error=invalid`: Firma adulterada o manipulada.
+    - `?error=invalid`: Firma adulterada, no verificable o manipulada.
     - `?error=config`: Error de configuración de secreto en servidor.
 
 ### 2.2 Doble Barrera de Autorización (Edge Middleware + Server Component)
@@ -42,12 +46,23 @@ Adicionalmente, se auditó y corrigió la obtención del secreto de firma en pro
    - Comprueba persistencia en base de datos: estado de revocación en `revoked_tokens`, expiración de la sesión en `user_sessions`, y vigencia del usuario (`user.active === 1`).
    - El panel se extrajo al componente cliente `PanelDashboard.tsx` preservando el 100% de las funciones: pedidos en tiempo real, chat en vivo, catálogo, configuración de negocio, sincronización QR de WhatsApp y logs.
 
-### 2.3 Obligatoriedad Exclusiva de `PANEL_SESSION_SECRET`
-- Tanto en `lib/auth/session.ts` (`getSessionSigningSecret`) como en `middleware.ts` (`getSigningSecret`), se eliminó cualquier fallback a secretos ajenos (`PANEL_PASSWORD`, `CRON_SECRET`, `EVOLUTION_API_KEY`).
-- En producción (`process.env.NODE_ENV === "production"`), la ausencia de `PANEL_SESSION_SECRET` provoca un fallo Fail-Closed inmediato:
-  - En Node.js: excepción de configuración impidiendo firmar o validar sesiones.
-  - En Edge Middleware: retorno `null` provocando HTTP 401 en APIs y HTTP 307 hacia `/panel/login` en páginas privadas.
-- En entornos locales o de test, se utiliza `PANEL_SESSION_SECRET` si existe, o una clave fija de desarrollo no productiva.
+### 2.3 Normalización y Obligatoriedad Exclusiva de `PANEL_SESSION_SECRET`
+- Tanto en `lib/auth/session.ts` (`getSessionSigningSecret`) como en `middleware.ts` (`getSigningSecret`), se utiliza la función unificada `normalizeSecret`:
+  - Limpia espacios con `.trim()`.
+  - Remueve iterativamente comillas dobles (`"`) y simples (`'`) externas, volviendo a recortar espacios.
+  - Casos como `""`, `"   "`, `'\t \n'`, `'""'`, `"''"`, `'"   "'` y `"'   '"` normalizan a cadena vacía `""`.
+  - Casos válidos como `'  "my-secret"  '` o `"  'my-secret'  "` normalizan limpiamente a `"my-secret"`.
+- En producción (`process.env.NODE_ENV === "production"`):
+  - La ausencia o vacío de `PANEL_SESSION_SECRET` provoca un fallo **Fail-Closed** inmediato:
+    - En Node.js: excepción de configuración impidiendo firmar o validar sesiones.
+    - En Edge Middleware: retorno `null` provocando HTTP 401 en APIs y HTTP 307 hacia `/panel/login` en páginas privadas.
+  - El secreto de desarrollo local (`"dev-local-secret-panel-signing-key-only-not-for-prod"`) está **completamente bloqueado en producción** y nunca se utiliza como alternativa.
+- En entornos locales o de test, se utiliza `PANEL_SESSION_SECRET` si existe, o la clave fija de desarrollo no productiva.
+
+### 2.4 Candado de Firma Verificable
+- En `requirePanelAuth` y `app/panel/page.tsx`:
+  - Se eliminó la excepción permisiva para tokens sin punto (`if (!verifySignedToken(c))`).
+  - Cualquier cookie presente en la petición HTTP debe contar con una firma criptográfica verificable. Tokens no firmados, manipulados o con firma no coincidente son rechazados de inmediato.
 
 ---
 
@@ -61,15 +76,14 @@ Adicionalmente, se auditó y corrigió la obtención del secreto de firma en pro
 - Rechazo determinista ante tokens con HMAC alterado o tokens crudos manipulados.
 - Bloqueo 401 inmediato en Edge Middleware.
 
-### Seguridad E3: Ausencia de Secreto en Producción, Sin Alternativas y Blindaje de Pruebas
-- Se verifica que si `NODE_ENV === "production"`:
-  - Si falta `PANEL_SESSION_SECRET`, `getSessionSigningSecret()` y `signToken()` lanzan excepciones de configuración.
-  - `verifySignedToken()` retorna `null`.
-  - `requirePanelAuth()` deniega acceso de forma segura (`authorized: false`).
-  - `middleware()` retorna 401 en APIs y 307 en páginas privadas.
-  - La presencia de `PANEL_PASSWORD`, `CRON_SECRET` o `EVOLUTION_API_KEY` **no se acepta como alternativa** en producción.
-  - `setSessionExpiryForTesting()` lanza excepción bloqueando cualquier intento de manipulación en producción.
-  - Al configurar `PANEL_SESSION_SECRET` en producción, el secreto es aceptado correctamente.
+### Seguridad E3: Normalización de Secreto, Fail-Closed, Rechazo de Dev Secret y Tokens No Firmados
+- Se validaron exhaustivamente:
+  1. **Normalización:** `undefined`, `""`, `"   "`, `'\t \n'`, `'""'`, `"''"`, `'"   "'`, `"'   '"`, `'  "valid-secret-key"  '`, `"  'valid-secret-key'  "`.
+  2. **Ausencia y Variantes Vacías en Producción:** Todas las variantes lanzan excepción en `getSessionSigningSecret()`, retornan 401 en APIs de middleware y 307 en páginas de panel, y deniegan acceso en `requirePanelAuth()`.
+  3. **Rechazo de Alternativas:** `PANEL_PASSWORD`, `CRON_SECRET` y `EVOLUTION_API_KEY` son ignorados y no se aceptan como secretos de firma.
+  4. **Aislamiento de Clave de Desarrollo:** Un token firmado con la clave fija de desarrollo es rechazado tanto con secreto de producción configurado como sin él.
+  5. **Secreto Válido con Comillas/Espacios:** Es normalizado y permite verificación criptográfica exitosa en Edge Middleware y servidor.
+  6. **Rechazo de Tokens No Firmados:** Peticiones con tokens crudos sin firma son rechazadas por `requirePanelAuth` (authorized: false) y middleware (401).
 
 ### Seguridad E4: Rechazo de Tokens Derivados de `PANEL_PASSWORD`
 - Aislamiento completo con `try ... finally` y contraseña de prueba controlada.
@@ -126,13 +140,13 @@ Se verificó el rechazo de solicitudes no autenticadas (código previsto 401, o 
 | `npm test` | **PASS** | 47 tests ejecutados, 47 aprobados, 0 fallos. |
 | `npx tsc --noEmit` | **PASS** | 0 errores de tipado TypeScript estricto. |
 | `npm run lint` | **PASS** | 0 errores ESLint (161 advertencias menores previas). |
-| `npm run build` | **PASS** | Next.js 16 compilado y empaquetado exitosamente. |
+| `npm run build` | **PASS** | Next.js 16 compilado y empaquetado exitosamente en Turbopack (1.3s). |
 
 ---
 
 ## 5. Riesgos Pendientes y Recomendaciones Operativas
 
 1. **Configuración de Secreto en Vercel (`PANEL_SESSION_SECRET`):**
-   - En producción, el sistema opera en modo Fail-Closed y ya no acepta claves alternativas. Es indispensable que `PANEL_SESSION_SECRET` esté configurada en las variables de entorno de producción de Vercel antes de desplegar.
+   - En producción, el sistema opera en modo Fail-Closed y ya no acepta claves alternativas ni claves de desarrollo. La variable `PANEL_SESSION_SECRET` configurada en Vercel permite que tanto el Edge Middleware como las rutas de Node.js operen con validación criptográfica segura.
 2. **Despliegue a Producción:**
    - Mantener los cambios en la rama `fix/panel-auth-logout-security`. No realizar push a `main` ni despliegues directos sin validación final del operador humano.
