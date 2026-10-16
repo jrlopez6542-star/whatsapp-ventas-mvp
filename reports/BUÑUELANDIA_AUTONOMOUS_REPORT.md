@@ -3,6 +3,7 @@
 
 **Fecha:** 16 de Octubre de 2026  
 **Rama:** `fix/panel-auth-logout-security`  
+**Último Commit:** `30633f7` (`fix(auth): unificar normalizacion de secreto, blindar firmas y aislar clave dev en produccion`)  
 **Estado:** ✅ APROBADO (Tests, Linter, Typecheck y Build)
 
 ---
@@ -18,6 +19,7 @@ Adicionalmente, se auditó y perfeccionó la obtención del secreto de firma en 
 2. Se eliminó cualquier alternativa secundaria (`PANEL_PASSWORD`, `CRON_SECRET`, `EVOLUTION_API_KEY`), haciendo `PANEL_SESSION_SECRET` estricta y exclusivamente obligatorio en producción.
 3. Se garantizó que el secreto de desarrollo nunca sea aceptado en producción para validar sesiones.
 4. Se blindaron `requirePanelAuth` y `app/panel/page.tsx` para exigir firmas HMAC verificables en cualquier cookie, rechazando tokens no firmados o manipulados.
+5. Se verificó que todas las funciones del panel, el procesamiento de notas de voz/audio y el flujo de logout permanezcan 100% operativos.
 
 ---
 
@@ -63,6 +65,14 @@ Adicionalmente, se auditó y perfeccionó la obtención del secreto de firma en 
 - En `requirePanelAuth` y `app/panel/page.tsx`:
   - Se eliminó la excepción permisiva para tokens sin punto (`if (!verifySignedToken(c))`).
   - Cualquier cookie presente en la petición HTTP debe contar con una firma criptográfica verificable. Tokens no firmados, manipulados o con firma no coincidente son rechazados de inmediato.
+
+### 2.5 Verificación Integral de Funciones del Panel, Audio y Logout
+- **Panel Administrativo (`PanelDashboard.tsx`):**
+  - Mantiene activas todas las vistas y operaciones: Pedidos en tiempo real (con enlaces a facturas de contabilidad), Chats en vivo con toma de control manual, Catálogo con interruptores de disponibilidad de producto, Configuración del negocio (horarios, sedes y radios de cobertura), Sincronización QR con Evolution API, y Registros de auditoría.
+- **Canal de Audio y Transcripción:**
+  - El pipeline de notas de voz en WhatsApp (`lib/agent/audio-transcriber.ts`), descarga de buffers multimedia (`lib/evolution.ts`) e integración en el webhook principal (`app/api/webhooks/evolution/route.ts`) se mantuvo 100% inalterado y funcional.
+- **Cierre de Sesión:**
+  - El handler `handleLogout` en `PanelDashboard.tsx` invoca `/api/panel/auth/logout`, revocando tokens en Turso y purgando las cookies con caducidad inmediata, asegurando redirección a `/panel/login?logout=1`.
 
 ---
 
