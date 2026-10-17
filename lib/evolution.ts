@@ -181,11 +181,28 @@ export function resolveEvolutionSendNumber(to: string): {
   return { number: `${digits}@lid`, kind: "lid" };
 }
 
+export function isDeployedEnvironment(): boolean {
+  return (
+    process.env.NODE_ENV === "production" ||
+    Boolean(process.env.VERCEL) ||
+    Boolean(process.env.VERCEL_ENV)
+  );
+}
+
 export function verifyEvolutionWebhookSecret(
   headerValue: string | null
 ): boolean {
   const secret = process.env.EVOLUTION_WEBHOOK_SECRET?.trim();
-  if (!secret) return true; // optional if not configured in environment
+  const isDeployed = isDeployedEnvironment();
+
+  // En entornos desplegados (producción o preview), el secreto es ESTRICTAMENTE OBLIGATORIO
+  if (isDeployed && !secret) {
+    console.error("[security] Falta EVOLUTION_WEBHOOK_SECRET en entorno desplegado. Rechazando webhook por fallo seguro.");
+    return false;
+  }
+
+  // En desarrollo local sin secreto configurado, se permite para pruebas locales
+  if (!secret) return true;
   if (!headerValue) return false;
 
   const bufA = Buffer.from(headerValue);
@@ -281,6 +298,49 @@ export function pickBestPhoneTarget(
     }
   }
   return { phoneDigits: "", phoneJid: "" };
+}
+
+/**
+ * Parsea eventos de actualización de estado de mensajes de Evolution API (MESSAGES_UPDATE).
+ */
+export function parseEvolutionMessageUpdate(
+  body: unknown
+): { messageId: string; status: "delivered" | "read" | "failed" } | null {
+  const root = asRecord(body);
+  if (!root) return null;
+
+  const eventRaw = String(root.event || root.type || "").toLowerCase();
+  const isUpdate =
+    eventRaw === "messages.update" ||
+    eventRaw === "messages_update" ||
+    eventRaw === "message.update";
+
+  if (!isUpdate) return null;
+
+  const data = root.data;
+  if (!data) return null;
+
+  const item = Array.isArray(data) ? asRecord(data[0]) : asRecord(data);
+  if (!item) return null;
+
+  const key = asRecord(item.key);
+  const messageId = strField(key?.id || item.id);
+  if (!messageId) return null;
+
+  const update = asRecord(item.update) || item;
+  const rawStatus = String(update.status || "").toUpperCase();
+
+  if (rawStatus === "DELIVERY_ACK" || rawStatus === "DELIVERED" || rawStatus === "3") {
+    return { messageId, status: "delivered" };
+  }
+  if (rawStatus === "READ" || rawStatus === "PLAYED" || rawStatus === "4") {
+    return { messageId, status: "read" };
+  }
+  if (rawStatus === "ERROR" || rawStatus === "FAILED" || rawStatus === "0") {
+    return { messageId, status: "failed" };
+  }
+
+  return null;
 }
 
 /**

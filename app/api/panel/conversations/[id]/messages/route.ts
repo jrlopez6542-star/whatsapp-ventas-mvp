@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { appendMessage, getMessages, setConversationStatus } from "@/lib/store";
+import { appendMessage, getMessages, setConversationStatus, updateMessageDeliveryStatus } from "@/lib/store";
 import { sendOutboundWhatsApp } from "@/lib/whatsapp-send";
 import { requirePanelAuth } from "@/lib/auth/session";
 
@@ -47,14 +47,22 @@ export async function POST(
 
     // Auto-takeover: al responder manualmente un humano, cambiar estado a 'human'
     await setConversationStatus(decodedId, "human");
-    await appendMessage(decodedId, "assistant", body.trim());
+    const savedMsg = await appendMessage(decodedId, "assistant", body.trim(), { deliveryStatus: "pending" });
 
     // Enviar mensaje saliente vía WhatsApp (Evolution o Twilio)
     const sendResult = await sendOutboundWhatsApp(decodedId, body.trim());
 
+    if (sendResult.ok) {
+      await updateMessageDeliveryStatus(savedMsg.id, "accepted", { providerMessageId: sendResult.id });
+    } else {
+      await updateMessageDeliveryStatus(savedMsg.id, "failed", { errorDetails: sendResult.error });
+    }
+
     return NextResponse.json({
-      ok: true,
+      ok: sendResult.ok,
       send: sendResult,
+      messageId: savedMsg.id,
+      error: sendResult.ok ? undefined : sendResult.error,
       mode: "human_manual",
     });
   } catch (error) {

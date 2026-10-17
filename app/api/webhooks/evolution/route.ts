@@ -8,12 +8,19 @@ import {
   sendEvolutionPresence,
   getEvolutionMediaBase64,
   parseEvolutionCall,
+  parseEvolutionMessageUpdate,
   rejectEvolutionCall,
 } from "@/lib/evolution";
 import { transcribeWhatsAppAudio } from "@/lib/agent/audio-transcriber";
 import { sendDelayedOutboundWhatsApp } from "@/lib/outbound-queue";
 import { sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
-import { claimWebhookEvent } from "@/lib/webhook-dedupe";
+import {
+  claimWebhookEvent,
+  claimWebhookEventDetailed,
+  completeWebhookEvent,
+  failWebhookEvent,
+} from "@/lib/webhook-dedupe";
+import { isPhoneWhitelisted, logWhitelistRejection } from "@/lib/security-whitelist";
 import { handleSalesMessage } from "@/lib/agent/sales-agent";
 import { verifyReceiptWithGemini } from "@/lib/agent/receipt-verifier";
 import { notifyDeliveryDriver } from "@/lib/delivery-driver";
@@ -22,6 +29,8 @@ import { logSystemEvent } from "@/lib/logger";
 import {
   appendMessage,
   updateMessageContent,
+  updateMessageDeliveryStatus,
+  updateMessageDeliveryStatusByProviderId,
   getConversation,
   getOrCreateConversation,
   setConversationStatus,
@@ -90,9 +99,24 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // 0. Manejo de actualizaciones de estado de mensajes (DELIVERY_ACK / READ / FAILED)
+    const msgUpdate = parseEvolutionMessageUpdate(body);
+    if (msgUpdate) {
+      const deliveryStatus = msgUpdate.status === "failed" ? "failed" : "delivered";
+      await updateMessageDeliveryStatusByProviderId(msgUpdate.messageId, deliveryStatus);
+      return jsonOk({ messageUpdate: msgUpdate.status, messageId: msgUpdate.messageId });
+    }
+
     // 1. Manejo de llamadas entrantes de WhatsApp (voz o video)
     const incomingCall = parseEvolutionCall(body);
     if (incomingCall) {
+      const callTarget = incomingCall.replyJid || incomingCall.from;
+      const callCheck = isPhoneWhitelisted(callTarget);
+      if (!callCheck.allowed) {
+        logWhitelistRejection("inbound", callTarget, callCheck.reason);
+        return jsonOk({ skipped: "not_whitelisted", callId: incomingCall.id });
+      }
+
       const callClaimed = await claimWebhookEvent("call_" + incomingCall.id);
       if (!callClaimed) {
         return jsonOk({ skipped: "duplicate_call", id: incomingCall.id });
@@ -162,6 +186,14 @@ export async function POST(request: NextRequest) {
     const parsed = parseEvolutionUpsert(body);
     if (!parsed) {
       return jsonOk({ skipped: "unparseable" });
+    }
+
+    // Filtrar por lista blanca de pruebas (inbound) antes de persistir o invocar IA
+    const senderTarget = parsed.digits || parsed.replyJid || parsed.from;
+    const senderCheck = isPhoneWhitelisted(senderTarget);
+    if (!senderCheck.allowed) {
+      logWhitelistRejection("inbound", senderTarget, senderCheck.reason);
+      return jsonOk({ skipped: "not_whitelisted", messageId: parsed.messageId });
     }
 
     if (parsed.fromMe) {
@@ -237,9 +269,9 @@ export async function POST(request: NextRequest) {
     }
 
     if (parsed.messageId) {
-      const claimed = await claimWebhookEvent(parsed.messageId);
-      if (!claimed) {
-        return jsonOk({ skipped: "duplicate", id: parsed.messageId });
+      const claimResult = await claimWebhookEventDetailed(parsed.messageId);
+      if (!claimResult.claimed) {
+        return jsonOk({ skipped: claimResult.reason || "duplicate", id: parsed.messageId });
       }
     }
 
@@ -275,6 +307,7 @@ export async function POST(request: NextRequest) {
     const orgSettings = await getOrgSettings().catch(() => null);
     if (orgSettings?.botEnabled === "false") {
       console.log("[evolution] bot is disabled via master switch — skipping auto-reply", { from: fromKey });
+      if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
       return jsonOk({ mode: "bot_disabled" });
     }
 
@@ -288,6 +321,7 @@ export async function POST(request: NextRequest) {
         logSystemEvent("info", "agent", "Bot reactivado automáticamente por expiración de 12h en modo humano", { from: fromKey });
       } else {
         console.log("[evolution] human mode — skip AI", { from: fromKey });
+        if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
         return jsonOk({ mode: "human" });
       }
     }
@@ -301,6 +335,7 @@ export async function POST(request: NextRequest) {
 
     // FAST ACK: Responder 200 OK inmediatamente (<80ms) delegando todo el procesamiento a after()
     after(async () => {
+      let hasFailed = false;
       try {
         let currentText = text;
 
@@ -648,6 +683,13 @@ export async function POST(request: NextRequest) {
         }
         if (!send.ok) {
           console.error("[evolution] outbound failed", send);
+          try {
+            const msgs = await getMessages(fromKey);
+            const lastAssistantMsg = [...msgs].reverse().find((m) => m.role === "assistant");
+            if (lastAssistantMsg) {
+              await updateMessageDeliveryStatus(lastAssistantMsg.id, "failed", { errorDetails: send.error });
+            }
+          } catch {}
         } else {
           console.log("[evolution] outbound sent", {
             from: fromKey,
@@ -655,9 +697,24 @@ export async function POST(request: NextRequest) {
             delayMs: send.delayMs,
             id: send.id,
           });
+          try {
+            const msgs = await getMessages(fromKey);
+            const lastAssistantMsg = [...msgs].reverse().find((m) => m.role === "assistant");
+            if (lastAssistantMsg) {
+              await updateMessageDeliveryStatus(lastAssistantMsg.id, "accepted", { providerMessageId: send.id });
+            }
+          } catch {}
         }
       } catch (err) {
+        hasFailed = true;
         console.error("[evolution] deferred background task error", err);
+        if (parsed.messageId) {
+          await failWebhookEvent(parsed.messageId, err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (!hasFailed && parsed.messageId) {
+          await completeWebhookEvent(parsed.messageId);
+        }
       }
     });
 

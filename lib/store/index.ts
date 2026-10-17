@@ -14,12 +14,18 @@ export interface Conversation {
   lastMessage?: string;
 }
 
+export type MessageDeliveryStatus = "pending" | "accepted" | "failed" | "delivered";
+
 export interface Message {
   id: string;
   conversationId: string;
   role: "user" | "assistant" | "system";
   content: string;
   createdAt: number;
+  deliveryStatus?: MessageDeliveryStatus;
+  providerMessageId?: string;
+  errorDetails?: string;
+  updatedAt?: number;
 }
 
 export interface Product {
@@ -228,15 +234,29 @@ class MemoryStore {
     this.messages = this.messages.filter((m) => m.conversationId !== id);
   }
 
-  appendMessage(conversationId: string, role: "user" | "assistant" | "system", content: string): Message {
+  appendMessage(
+    conversationId: string,
+    role: "user" | "assistant" | "system",
+    content: string,
+    options?: {
+      deliveryStatus?: MessageDeliveryStatus;
+      providerMessageId?: string;
+      errorDetails?: string;
+    }
+  ): Message {
     const c = this.getOrCreateConversation(conversationId);
     c.updatedAt = Date.now();
+    const defaultStatus: MessageDeliveryStatus = role === "assistant" ? "pending" : "delivered";
     const msg: Message = {
       id: randomUUID(),
       conversationId,
       role,
       content,
       createdAt: Date.now(),
+      deliveryStatus: options?.deliveryStatus || defaultStatus,
+      providerMessageId: options?.providerMessageId,
+      errorDetails: options?.errorDetails,
+      updatedAt: Date.now(),
     };
     this.messages.push(msg);
     return msg;
@@ -246,6 +266,22 @@ class MemoryStore {
     const msg = this.messages.find((m) => m.id === id);
     if (msg) {
       msg.content = content;
+      return true;
+    }
+    return false;
+  }
+
+  updateMessageDeliveryStatus(
+    id: string,
+    status: MessageDeliveryStatus,
+    details?: { providerMessageId?: string; errorDetails?: string }
+  ): boolean {
+    const msg = this.messages.find((m) => m.id === id);
+    if (msg) {
+      msg.deliveryStatus = status;
+      if (details?.providerMessageId) msg.providerMessageId = details.providerMessageId;
+      if (details?.errorDetails) msg.errorDetails = details.errorDetails;
+      msg.updatedAt = Date.now();
       return true;
     }
     return false;
@@ -542,9 +578,14 @@ export async function setConversationPhone(
 export async function appendMessage(
   conversationId: string,
   role: "user" | "assistant" | "system",
-  content: string
+  content: string,
+  options?: {
+    deliveryStatus?: MessageDeliveryStatus;
+    providerMessageId?: string;
+    errorDetails?: string;
+  }
 ): Promise<Message> {
-  const memoryMsg = getMemoryStore().appendMessage(conversationId, role, content);
+  const memoryMsg = getMemoryStore().appendMessage(conversationId, role, content, options);
   if (isTursoConfigured()) {
     try {
       await ensureTursoReady();
@@ -552,8 +593,18 @@ export async function appendMessage(
       // En Turso, la columna 'id' de 'messages' es INTEGER PRIMARY KEY AUTOINCREMENT.
       // Insertamos sin especificar 'id' para evitar error SQLITE_MISMATCH (datatype mismatch con UUID).
       const res = await client.execute({
-        sql: `INSERT INTO messages (conversation_id, role, content, at, created_at) VALUES (?, ?, ?, '', ?)`,
-        args: [conversationId, role, content, memoryMsg.createdAt],
+        sql: `INSERT INTO messages (conversation_id, role, content, at, created_at, delivery_status, provider_message_id, error_details, updated_at)
+              VALUES (?, ?, ?, '', ?, ?, ?, ?, ?)`,
+        args: [
+          conversationId,
+          role,
+          content,
+          memoryMsg.createdAt,
+          memoryMsg.deliveryStatus || "pending",
+          options?.providerMessageId || null,
+          options?.errorDetails || null,
+          Date.now(),
+        ],
       });
       if (res?.lastInsertRowid != null) {
         memoryMsg.id = String(res.lastInsertRowid);
@@ -585,6 +636,68 @@ export async function updateMessageContent(id: string, content: string): Promise
   }
 }
 
+export async function updateMessageDeliveryStatus(
+  id: string,
+  status: MessageDeliveryStatus,
+  details?: {
+    providerMessageId?: string;
+    errorDetails?: string;
+  }
+): Promise<void> {
+  const now = Date.now();
+  getMemoryStore().updateMessageDeliveryStatus(id, status, details);
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: `UPDATE messages 
+              SET delivery_status = ?, 
+                  provider_message_id = COALESCE(?, provider_message_id),
+                  error_details = COALESCE(?, error_details),
+                  updated_at = ?
+              WHERE id = ? OR rowid = ?`,
+        args: [
+          status,
+          details?.providerMessageId || null,
+          details?.errorDetails || null,
+          now,
+          id,
+          id,
+        ],
+      });
+    } catch (err) {
+      console.warn("[store] updateMessageDeliveryStatus Turso error:", err);
+    }
+  }
+}
+
+export async function updateMessageDeliveryStatusByProviderId(
+  providerMessageId: string,
+  status: MessageDeliveryStatus
+): Promise<void> {
+  if (!providerMessageId) return;
+  const now = Date.now();
+  const mem = getMemoryStore();
+  const found = mem.messages.find((m) => m.providerMessageId === providerMessageId);
+  if (found) {
+    found.deliveryStatus = status;
+    found.updatedAt = now;
+  }
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: `UPDATE messages SET delivery_status = ?, updated_at = ? WHERE provider_message_id = ?`,
+        args: [status, now, providerMessageId],
+      });
+    } catch (err) {
+      console.warn("[store] updateMessageDeliveryStatusByProviderId Turso error:", err);
+    }
+  }
+}
+
 export async function getMessages(conversationId: string): Promise<Message[]> {
   if (!isTursoConfigured()) {
     return getMemoryStore().getMessages(conversationId);
@@ -607,6 +720,10 @@ export async function getMessages(conversationId: string): Promise<Message[]> {
       role: (r.role as "user" | "assistant" | "system") || "user",
       content: String(r.content || ""),
       createdAt: parseTimestamp(r.created_at),
+      deliveryStatus: (r.delivery_status as MessageDeliveryStatus) || undefined,
+      providerMessageId: r.provider_message_id ? String(r.provider_message_id) : undefined,
+      errorDetails: r.error_details ? String(r.error_details) : undefined,
+      updatedAt: r.updated_at ? Number(r.updated_at) : undefined,
     }));
   } catch (err) {
     console.error("[store] getMessages Turso error:", err);
@@ -927,10 +1044,13 @@ export async function claimOrderDriverNotification(
       }
       return false;
     } catch (err) {
-      console.warn("[store] claimOrderDriverNotification error:", err);
+      console.error("[store] claimOrderDriverNotification error de persistencia en Turso:", err);
+      // Fail-Closed: Un fallo de persistencia NO debe interpretarse como una reclamación exitosa
+      return false;
     }
   }
 
+  // Almacén en memoria exclusivo para pruebas o entornos sin Turso configurado
   if (memOrder) {
     memOrder.driverNotified = `sending_${kind}`;
     memOrder.driverNotifiedAt = now;

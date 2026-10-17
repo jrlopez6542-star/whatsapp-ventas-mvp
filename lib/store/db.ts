@@ -1,21 +1,108 @@
 let cachedClient: any = null;
 let initializedPromise: Promise<void> | null = null;
 
-export function isTursoConfigured(): boolean {
-  return Boolean(
-    process.env.TURSO_DATABASE_URL?.trim() &&
-      process.env.TURSO_AUTH_TOKEN?.trim()
+/**
+ * Detecta si la ejecución actual corresponde al entorno Preview de Vercel.
+ */
+export function isPreviewEnvironment(): boolean {
+  return (
+    process.env.VERCEL_ENV === "preview" ||
+    (Boolean(process.env.VERCEL) && process.env.VERCEL_ENV !== "production")
   );
+}
+
+/**
+ * Valida el acceso a Turso según el entorno de ejecución.
+ * En Preview, exige autorización explícita (TURSO_ENVIRONMENT='sandbox' | 'preview' | 'test' o ALLOW_TURSO_IN_PREVIEW='true')
+ * y bloquea por fallo seguro cualquier intento de conexión a URLs con indicadores de producción.
+ */
+export function validateTursoEnvironmentAccess(url?: string): { allowed: boolean; reason?: string } {
+  const targetUrl = (
+    url ||
+    (isPreviewEnvironment() && process.env.TURSO_DATABASE_URL_PREVIEW) ||
+    process.env.TURSO_DATABASE_URL ||
+    ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!targetUrl) {
+    return { allowed: false, reason: "missing_url" };
+  }
+
+  const isPreview = isPreviewEnvironment();
+  if (isPreview) {
+    // 1. Verificación explícita de entorno (no confiar únicamente en el nombre de la URL)
+    const envFlag = (process.env.TURSO_ENVIRONMENT || "").trim().toLowerCase();
+    const allowPreview =
+      envFlag === "preview" ||
+      envFlag === "sandbox" ||
+      envFlag === "test" ||
+      process.env.ALLOW_TURSO_IN_PREVIEW === "true";
+
+    if (!allowPreview) {
+      return {
+        allowed: false,
+        reason:
+          "Entorno Preview detectado sin configuración explícita para Turso. Configure TURSO_ENVIRONMENT='sandbox' o 'preview' para autorizar el uso de una base de datos no productiva.",
+      };
+    }
+
+    // 2. Fallo seguro (defensa en profundidad contra URLs de producción)
+    const hasProdIndicator =
+      targetUrl.includes("bunuelandia-prod") ||
+      targetUrl.includes("-prod.") ||
+      targetUrl.includes("_prod.") ||
+      targetUrl.includes("/production") ||
+      (targetUrl.includes("prod") && !targetUrl.includes("sandbox") && !targetUrl.includes("test"));
+
+    if (hasProdIndicator) {
+      return {
+        allowed: false,
+        reason:
+          "La URL de Turso configurada contiene indicadores de producción. Conexión rechazada en Preview por fallo seguro.",
+      };
+    }
+  }
+
+  return { allowed: true };
+}
+
+export function isTursoConfigured(): boolean {
+  if (cachedClient) return true;
+
+  const isPreview = isPreviewEnvironment();
+  const url = isPreview && process.env.TURSO_DATABASE_URL_PREVIEW?.trim()
+    ? process.env.TURSO_DATABASE_URL_PREVIEW.trim()
+    : process.env.TURSO_DATABASE_URL?.trim();
+  const authToken = isPreview && process.env.TURSO_AUTH_TOKEN_PREVIEW?.trim()
+    ? process.env.TURSO_AUTH_TOKEN_PREVIEW.trim()
+    : process.env.TURSO_AUTH_TOKEN?.trim();
+
+  if (!url || !authToken) return false;
+
+  const validation = validateTursoEnvironmentAccess(url);
+  return validation.allowed;
 }
 
 export function getTursoClient(): any {
   if (cachedClient) return cachedClient;
 
-  const url = process.env.TURSO_DATABASE_URL?.trim();
-  const authToken = process.env.TURSO_AUTH_TOKEN?.trim();
+  const isPreview = isPreviewEnvironment();
+  const url = isPreview && process.env.TURSO_DATABASE_URL_PREVIEW?.trim()
+    ? process.env.TURSO_DATABASE_URL_PREVIEW.trim()
+    : process.env.TURSO_DATABASE_URL?.trim();
+  const authToken = isPreview && process.env.TURSO_AUTH_TOKEN_PREVIEW?.trim()
+    ? process.env.TURSO_AUTH_TOKEN_PREVIEW.trim()
+    : process.env.TURSO_AUTH_TOKEN?.trim();
 
   if (!url || !authToken) {
     throw new Error("Turso no está configurado (faltan TURSO_DATABASE_URL o TURSO_AUTH_TOKEN)");
+  }
+
+  const validation = validateTursoEnvironmentAccess(url);
+  if (!validation.allowed) {
+    throw new Error(`[SECURITY FATAL] ${validation.reason}`);
   }
 
   // Dynamic import/require so environments without @libsql/client can still run memory mode/tests
@@ -235,10 +322,26 @@ export async function ensureTursoReady(): Promise<void> {
       "role TEXT",
       "content TEXT",
       "created_at INTEGER DEFAULT 0",
+      "delivery_status TEXT DEFAULT 'pending'",
+      "provider_message_id TEXT",
+      "error_details TEXT",
+      "updated_at INTEGER DEFAULT 0",
     ];
     for (const col of alterMessages) {
       try {
         await client.execute(`ALTER TABLE messages ADD COLUMN ${col};`);
+      } catch {}
+    }
+
+    const alterWebhookReceipts = [
+      "status TEXT DEFAULT 'completed'",
+      "completed_at INTEGER DEFAULT 0",
+      "error TEXT",
+      "order_id TEXT",
+    ];
+    for (const col of alterWebhookReceipts) {
+      try {
+        await client.execute(`ALTER TABLE webhook_receipts ADD COLUMN ${col};`);
       } catch {}
     }
 

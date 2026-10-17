@@ -1,5 +1,6 @@
 import { isEvolutionConfigured, sendEvolutionText, sendEvolutionMedia } from "@/lib/evolution";
 import { isTwilioSendConfigured, sendWhatsAppMessage } from "@/lib/twilio";
+import { isPhoneWhitelisted, logWhitelistRejection } from "@/lib/security-whitelist";
 
 export type OutboundWhatsAppResult =
   | { ok: true; id: string; channel: "evolution" | "twilio" }
@@ -22,6 +23,16 @@ export async function sendOutboundWhatsAppMedia(
   mediaUrlOrBase64: string,
   caption?: string
 ): Promise<OutboundWhatsAppResult> {
+  const check = isPhoneWhitelisted(to);
+  if (!check.allowed) {
+    logWhitelistRejection("outbound", to, check.reason);
+    return {
+      ok: false,
+      error: `Destinatario no autorizado por lista blanca de pruebas (${check.reason})`,
+      channel: "none",
+    };
+  }
+
   if (isEvolutionConfigured()) {
     const res = await sendEvolutionMedia(to, mediaUrlOrBase64, caption);
     if (res.ok) return { ok: true, id: res.id, channel: "evolution" };
@@ -34,6 +45,16 @@ export async function sendOutboundWhatsApp(
   to: string,
   body: string
 ): Promise<OutboundWhatsAppResult> {
+  const check = isPhoneWhitelisted(to);
+  if (!check.allowed) {
+    logWhitelistRejection("outbound", to, check.reason);
+    return {
+      ok: false,
+      error: `Destinatario no autorizado por lista blanca de pruebas (${check.reason})`,
+      channel: "none",
+    };
+  }
+
   // Desactivar botones: Si el texto contiene [BOTONES:...], convertir a lista numerada en el texto
   const buttonsRegex = /\[BOTONES:\s*(.+?)\]/i;
   const match = body.match(buttonsRegex);
