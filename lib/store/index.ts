@@ -328,7 +328,7 @@ declare global {
   var __whatsappMemoryStore: MemoryStore | undefined;
 }
 
-function getMemoryStore(): MemoryStore {
+export function getMemoryStore(): MemoryStore {
   if (!globalThis.__whatsappMemoryStore) {
     globalThis.__whatsappMemoryStore = new MemoryStore();
   }

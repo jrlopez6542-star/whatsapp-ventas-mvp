@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   handleSalesMessage,
+  extractAddress,
+  extractChangeInstructions,
+  cleanAddressCandidate,
 } from "../lib/agent/sales-agent";
 import {
   OFFICIAL_PRICES,
@@ -596,4 +599,94 @@ test("Test K: Reclamo zombi/stale por caída inesperada de instancia no bloquea 
     if (oldInst !== undefined) process.env.EVOLUTION_INSTANCE = oldInst; else delete process.env.EVOLUTION_INSTANCE;
   }
 });
+
+test("Test L: Extracción limpia de dirección desacoplada de medios de pago y captura de cambio en efectivo", async () => {
+  // 1. Validaciones directas del parser de dirección
+  const raw1 = "Mi dirección es Calle 7 # 11-20 conjunto El Portal y pago en efectivo con billete de 50";
+  const addr1 = extractAddress(raw1);
+  assert.equal(addr1, "Calle 7 # 11-20 conjunto El Portal", "La dirección extraída no debe incluir el sufijo de pago ni el billete");
+
+  const raw2 = "Cra 15 # 10-20 apto 302 pago en efectivo con 50 mil";
+  const addr2 = extractAddress(raw2);
+  assert.equal(addr2, "Cra 15 # 10-20 apto 302", "Debe desacoplar el pago en efectivo de la dirección urbana");
+
+  const raw3 = "Vereda La Balsa conjunto Los Sauces casa 4 y pago por nequi";
+  const addr3 = extractAddress(raw3);
+  assert.equal(addr3, "Vereda La Balsa conjunto Los Sauces casa 4", "Debe desacoplar el medio Nequi de la dirección rural");
+
+  // 2. Validaciones del extractor de cambio
+  const ch1 = extractChangeInstructions(raw1);
+  assert.equal(ch1, "Billete de $50.000", "Debe formatear billete de 50 como $50.000 COP");
+
+  const ch2 = extractChangeInstructions("Pago con billete de 100");
+  assert.equal(ch2, "Billete de $100.000", "Debe formatear billete de 100 como $100.000 COP");
+
+  const ch3 = extractChangeInstructions("con billete de 20 mil");
+  assert.equal(ch3, "Billete de $20.000", "Debe formatear billete de 20 mil como $20.000 COP");
+
+  // 3. Flujo conversacional completo con creación de orden
+  const convId = "whatsapp:+573197776655";
+  await handleSalesMessage(convId, "Quiero una caja tradicional de 8", "Sebastián");
+  const step6Res = await handleSalesMessage(convId, raw1, "Sebastián");
+
+  assert.ok(step6Res.reply.includes("Calle 7 # 11-20 conjunto El Portal"), "El resumen debe mostrar la dirección limpia");
+  assert.ok(!step6Res.reply.includes("conjunto El Portal y pago"), "El resumen no debe mostrar la cláusula de pago dentro de la dirección");
+  assert.ok(step6Res.reply.includes("Billete de $50.000"), "El resumen debe reflejar el billete de pago informado");
+
+  // Confirmar orden con 1
+  const step7Res = await handleSalesMessage(convId, "1", "Sebastián");
+  assert.ok(step7Res.reply.includes("Pedido Confirmado"), "Debe confirmar el pedido");
+
+  // Verificar campos persistidos en la orden
+  const orders = await getOrders();
+  const savedOrder = orders.find((o) => o.conversationId === convId);
+  assert.ok(savedOrder, "La orden debe existir en persistencia");
+  assert.equal(savedOrder.deliveryAddress, "Calle 7 # 11-20 conjunto El Portal", "La dirección guardada debe ser exactamente la dirección física");
+  assert.ok(savedOrder.paymentMethod?.toLowerCase().includes("efectivo"), "El medio de pago debe ser Efectivo");
+  assert.equal(savedOrder.changeAmount, "Billete de $50.000", "Las instrucciones de cambio deben estar en changeAmount");
+  assert.equal(savedOrder.total, 32000, "El total debe ser exactamente $32.000 COP para C8T");
+  assert.equal(savedOrder.deliveryFee, 0, "El domicilio debe ser exactamente $0 COP");
+
+  // 4. Verificar impacto real en la ficha generada para el domiciliario
+  const driverCard = formatDeliveryDriverMessage(savedOrder);
+  assert.ok(driverCard.includes("👉 Calle 7 # 11-20 conjunto El Portal"), "La ficha del domiciliario debe recibir la dirección limpia");
+  assert.ok(!driverCard.includes("conjunto El Portal y pago"), "La ficha del domiciliario no debe tener el texto de pago en la dirección");
+  assert.ok(driverCard.includes("💵 *Paga con:* Billete de $50.000"), "La ficha del domiciliario debe llevar la línea de cambio");
+});
+
+test("Test M: Mensaje de confirmación post-registro no afirma «Tus buñuelos van en camino» cuando el domiciliario está pendiente", async () => {
+  const convId = "whatsapp:+573183332211";
+  await handleSalesMessage(convId, "Quiero una caja tradicional de 4", "Valeria");
+  await handleSalesMessage(convId, "Calle 5 # 3-10 centro y pago en efectivo", "Valeria");
+
+  const confirmRes = await handleSalesMessage(convId, "1", "Valeria");
+  const replyLower = confirmRes.reply.toLowerCase();
+
+  // No debe decir "van en camino"
+  assert.ok(
+    !replyLower.includes("van en camino calienticos"),
+    "No debe afirmar que los buñuelos van en camino calienticos cuando el pedido apenas entra en preparación"
+  );
+  assert.ok(
+    !replyLower.includes("tus buñuelos van en camino"),
+    "No debe afirmar «Tus buñuelos van en camino» mientras el domiciliario está pendiente"
+  );
+
+  // Debe confirmar el registro e indicar estado pendiente de asignación / despacho
+  assert.ok(
+    replyLower.includes("pedido confirmado") || replyLower.includes("registrado"),
+    "Debe confirmar el registro del pedido"
+  );
+  assert.ok(
+    replyLower.includes("pendiente de asignación") || replyLower.includes("despacho") || replyLower.includes("preparación"),
+    "Debe indicar que el pedido está en preparación y pendiente de asignación/despacho al domiciliario"
+  );
+
+  // Verificar estado real persistido en la base de datos
+  const orders = await getOrders();
+  const savedOrder = orders.find((o) => o.conversationId === convId);
+  assert.ok(savedOrder, "La orden debe existir registrada en la base de datos");
+  assert.equal(savedOrder.status, "confirmed", "El estado real del pedido debe ser 'confirmed' (no 'delivering')");
+});
+
 
