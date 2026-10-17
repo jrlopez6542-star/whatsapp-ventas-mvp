@@ -48,11 +48,19 @@ function formatCop(amount: number): string {
 }
 
 // Limpia y valida candidatos a dirección excluyendo palabras genéricas o de medios de pago
-function cleanAddressCandidate(cand: string): string | null {
+export function cleanAddressCandidate(cand: string): string | null {
   if (!cand) return null;
   let clean = cand.trim().replace(/^[:,\s.-]+|[:,\s.-]+$/g, "");
   // Eliminar prefijos verbales y conectores comunes: "en el", "para la", "vivo en", "entregar en", etc.
   clean = clean.replace(/^(?:(?:vivo|estoy|queda|es)\s+en\s+|(?:entregar|despachar|enviar|llevar)\s+(?:en|a)?\s*|(?:en|para|a|al|por)\s+(?:el\s+|la\s+|los\s+|las\s+)?|(?:el|la|los|las)\s+)/i, "").trim();
+
+  // Eliminar cláusulas añadidas de pago, billetes o cambio en la misma frase (ej: "... y pago en efectivo con billete de 50", "... pago por nequi", etc.)
+  clean = clean.replace(
+    /(?:[,\s;.-]+|\s+y\s+|\s+e\s+)(?:(?:el\s+)?medio\s+de\s+pago(?:\s+es)?|pago\s+(?:en|con|por)|pago\b|cancelo\s+(?:en|con|por)|cancelo\b|pagar[eé]\s+(?:en|con|por)|pagar[eé]\b|con\s+billete\s+de|billete\s+de|necesito\s+cambio|vueltas\s+(?:de|para)|cambio\s+(?:de|para)|en\s+efectivo|por\s+nequi|por\s+bre-?b|por\s+transferencia|transferencia\s+por|por\s+bancolombia|por\s+daviplata)\b.*$/i,
+    ""
+  ).trim();
+
+  clean = clean.replace(/^[:,\s.-]+|[:,\s.-]+$/g, "").trim();
 
   const lower = clean.toLowerCase();
   if (
@@ -63,7 +71,13 @@ function cleanAddressCandidate(cand: string): string | null {
     lower.includes("ninguna") ||
     lower.includes("gracias") ||
     lower.includes("buñuelo") ||
-    lower.includes("caja")
+    lower.includes("caja") ||
+    lower.includes("cambiar") ||
+    lower.includes("cambio") ||
+    lower.includes("tradicional") ||
+    lower.includes("surtid") ||
+    lower.includes("cancelar") ||
+    lower.includes("pedido")
   ) {
     return null;
   }
@@ -81,8 +95,52 @@ function cleanAddressCandidate(cand: string): string | null {
   return clean.length >= 4 ? clean : null;
 }
 
+// Extrae instrucciones de cambio de efectivo o denominación de billete
+export function extractChangeInstructions(text: string): string | null {
+  if (!text) return null;
+  const clean = text.replace(/[*_~`]/g, " ").trim();
+
+  // 1. Denominación específica (ej: "con billete de 50", "billete de 50 mil", "billete de 50000", "pago con 50 mil", "cambio para 50")
+  const billMatch = clean.match(
+    /\b(?:(?:con|tengo|llevo)\s+)?(?:billete\s+de|paga\s+con|pago\s+con|cambio\s+(?:de|para)|vueltas\s+(?:de|para))\s*(?:billete\s+de\s*)?(\$?\s*\d[\d.,]*(?:\s*mil|\s*k)?)/i
+  );
+  if (billMatch && billMatch[1]) {
+    const raw = billMatch[1].replace(/[\$\s]/g, "");
+    if (/^\d+$/.test(raw)) {
+      const num = parseInt(raw, 10);
+      if (num === 20 || num === 50 || num === 100) {
+        return `Billete de $${num}.000`;
+      }
+      if (num >= 1000) {
+        return `Billete de $${num.toLocaleString("es-CO")}`;
+      }
+    } else if (raw.toLowerCase().endsWith("mil") || raw.toLowerCase().endsWith("k")) {
+      const numPart = parseInt(raw.replace(/(?:mil|k)/i, ""), 10);
+      if (!isNaN(numPart)) {
+        return `Billete de $${(numPart * 1000).toLocaleString("es-CO")}`;
+      }
+    } else if (/^\d{1,3}(?:\.\d{3})+$/.test(raw)) {
+      return `Billete de $${raw}`;
+    }
+    return `Billete de ${billMatch[1].trim()}`;
+  }
+
+  // 2. Línea explícita de cambio: "Paga con: Billete de 50" o "Cambio: 50.000"
+  const labeledChange = clean.match(
+    /(?:(?:billete|paga con|cambio|vueltas)[^:\n*]*[:\s]+)([^\n\r*]+)/i
+  );
+  if (labeledChange && labeledChange[1]) {
+    const cand = labeledChange[1].trim();
+    if (cand.length > 1 && !cand.toLowerCase().includes("ningun") && !cand.toLowerCase().includes("no")) {
+      return cand;
+    }
+  }
+
+  return null;
+}
+
 // Extrae direcciones colombianas con soporte integral urbano, rural, veredas y conjuntos residenciales
-function extractAddress(text: string): string | null {
+export function extractAddress(text: string): string | null {
   if (!text) return null;
 
   // 0. Ubicación GPS compartida de WhatsApp o enlace directo de Google Maps
@@ -104,7 +162,7 @@ function extractAddress(text: string): string | null {
 
     // 1. Etiqueta directa en la línea: "Dirección: Cra 3a 7 26", "Enviar a: Vereda La Balsa", "Vivo en: Conjunto Puertas del Sol", etc.
     const labeledMatch = trimmed.match(
-      /(?:📍\s*)?(?:(?:mi\s+)?direcci[oó]n(?:\s+es)?|enviar\s+a|despachar\s+(?:a|en)|entregar?\s+(?:a|en|para)|lugar\s+de\s+entrega|destino|vivo\s+en|estoy\s+en|queda\s+en|es\s+en|es\s+para(?:\s+la|\s+el)?|para\s+la|para\s+el|para)[:\s]+([^,;\n]+(?:[,;][^,;\n]+)*)/i
+      /(?:📍\s*)?(?:(?:mi\s+)?direcci[oó]n(?:\s+es)?|enviar\s+a|despachar\s+(?:a|en)|entregar?\s+(?:a|en|para)|lugar\s+de\s+entrega|destino|vivo\s+en|estoy\s+en|queda\s+en|es\s+en|es\s+para(?:\s+la|\s+el)?|para\s+(?:la\s+casa|la\s+oficina|el\s+apto|el\s+apartamento|el\s+conjunto))[:\s]+([^,;\n]+(?:[,;][^,;\n]+)*)/i
     );
     if (labeledMatch && labeledMatch[1]) {
       const cand = cleanAddressCandidate(labeledMatch[1]);
@@ -162,7 +220,7 @@ function extractAddress(text: string): string | null {
 
   // 7. Búsqueda en texto continuo si no coincidió por líneas separadas
   const labeledAll = cleanText.match(
-    /(?:(?:mi\s+)?direcci[oó]n(?:\s+es)?|enviar\s+a|despachar\s+(?:a|en)|entregar?\s+(?:a|en|para)|lugar\s+de\s+entrega|destino|vivo\s+en|estoy\s+en|queda\s+en|es\s+en|es\s+para(?:\s+la|\s+el)?|para\s+la|para\s+el|para)[:\s]+([^,;\n]+(?:[,;][^,;\n]+)*)/i
+    /(?:(?:mi\s+)?direcci[oó]n(?:\s+es)?|enviar\s+a|despachar\s+(?:a|en)|entregar?\s+(?:a|en|para)|lugar\s+de\s+entrega|destino|vivo\s+en|estoy\s+en|queda\s+en|es\s+en|es\s+para(?:\s+la|\s+el)?|para\s+(?:la\s+casa|la\s+oficina|el\s+apto|el\s+apartamento|el\s+conjunto))[:\s]+([^,;\n]+(?:[,;][^,;\n]+)*)/i
   );
   if (labeledAll && labeledAll[1]) {
     const cand = cleanAddressCandidate(labeledAll[1]);
@@ -359,7 +417,9 @@ export function shouldSendTransferQr(
     a.includes("pedido confirmado y registrado") ||
     a.includes("¡pedido confirmado") ||
     a.includes("pedido registrado") ||
-    a.includes("van en camino calienticos");
+    a.includes("van en camino calienticos") ||
+    a.includes("pendiente de asignación") ||
+    a.includes("entra en preparación");
 
   if (isFinalConfirmation) {
     const isTransfer =
@@ -703,7 +763,9 @@ async function tryExtractAndRegisterOrder(
       assistantLower.includes("pedido registrado") ||
       assistantLower.includes("hemos registrado tu pedido") ||
       assistantLower.includes("pedido creado") ||
-      assistantLower.includes("van en camino calienticos"));
+      assistantLower.includes("van en camino calienticos") ||
+      assistantLower.includes("pendiente de asignación") ||
+      assistantLower.includes("entra en preparación"));
 
   if (!hasConfirmationKeyword) return null;
 
@@ -918,6 +980,12 @@ async function tryExtractAndRegisterOrder(
   const changeMatch = assistantReply.match(/(?:(?:billete|paga con|cambio|vueltas)[^:\n*]*[:\s]+)([^\n\r*]+)/i);
   if (changeMatch && changeMatch[1]) {
     detectedChange = changeMatch[1].trim();
+  }
+  if (!detectedChange) {
+    const fromUser = extractChangeInstructions(userText) || extractChangeInstructions(combined);
+    if (fromUser) {
+      detectedChange = fromUser;
+    }
   }
 
   // 9. Extraer número de celular de contacto del cliente
@@ -1865,7 +1933,8 @@ ${sessionItems.length > 0
      SI EL PAGO ES EN EFECTIVO:
      NO envíes cuentas ni QR. Confirma el cambio y que el domiciliario cobrará al entregar.
 
-     🔥 ¡Tus buñuelos van en camino calienticos y crujientes! ¡Gracias por tu compra en BUÑUELANDIA! 🥟
+     👨‍🍳 *¡Tu pedido ya está registrado y entra en preparación!* 🥟🔥
+     🛵 *Estado del domicilio:* Pendiente de asignación y despacho. Te notificaremos cuando el domiciliario salga en camino con tus buñuelos calienticos. ¡Muchas gracias por tu compra en BUÑUELANDIA! 🥟
 
      - Si el cliente responde "2" o dice que quiere modificar algún dato, pregúntale amablemente qué desea cambiar (productos, dirección o medio de pago) y NO registres el pedido.
 
@@ -2164,6 +2233,7 @@ ${sessionItems.length > 0
   }
 
   const foundPayment = extractPaymentMethod(text) || (previous.length > 0 ? extractPaymentMethod(userChatText) : null);
+  const foundChange = extractChangeInstructions(text) || (previous.length > 0 ? extractChangeInstructions(userChatText) : null);
   const { items: extractedItems, total: extractedTotal } = extractProductsFromText(userChatText, products);
 
   if (isGreeting || isNewOrderIntent) {
@@ -2226,7 +2296,8 @@ ${sessionItems.length > 0
         }
         return `• ${nameWithBreakdown} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`;
       }).join("\n");
-      reply = `📋 *Resumen de tu Pedido:*\n${itemsListText}\n\n📦 *Subtotal productos:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n💰 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n\n¿Todo está correcto? Elige una opción:\n1️⃣ ✅ Confirmar pedido\n2️⃣ ✏️ Modificar algún dato`;
+      const changeSummaryLine = foundChange ? `\n💵 *Paga con:* ${foundChange} _(llevaremos tu cambio listo)_` : "";
+      reply = `📋 *Resumen de tu Pedido:*\n${itemsListText}\n\n📦 *Subtotal productos:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n💰 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}${changeSummaryLine}\n\n¿Todo está correcto? Elige una opción:\n1️⃣ ✅ Confirmar pedido\n2️⃣ ✏️ Modificar algún dato`;
     } else {
       // PASO 7: CONFIRMACIÓN OFICIAL Y FACTURACIÓN (Solo tras responder 1 o confirmar)
       const summaryItems = finalItems.map((it) => {
@@ -2259,6 +2330,7 @@ ${sessionItems.length > 0
             customerPhone: detectedPhone,
             deliveryAddress: finalAddress,
             paymentMethod: finalPayment,
+            changeAmount: foundChange || undefined,
             itemsSummary: summaryItems,
             deliveryFee: 0,
           }
@@ -2340,7 +2412,9 @@ ${sessionItems.length > 0
           return `- ${nameWithBreakdown} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`;
         }).join("\n");
 
-        reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*${invoiceNotice}\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}\n👤 *Cliente:* ${clientName}\n\n🛵 ¡Tus buñuelos van en camino calienticos y crujientes! Muchas gracias por preferirnos.`;
+        const changeConfirmLine = order.changeAmount ? `\n💵 *Paga con:* ${order.changeAmount} _(llevaremos tu cambio preparado)_` : "";
+
+        reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*${invoiceNotice}\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}${changeConfirmLine}\n👤 *Cliente:* ${clientName}\n\n👨‍🍳 *Tu pedido está registrado y entra en preparación.* 🥟🔥\n🛵 *Estado del domicilio:* Pendiente de asignación y despacho. Te notificaremos apenas vaya en camino. ¡Muchas gracias por preferirnos!`;
         mode = "order_created";
       }
     }
