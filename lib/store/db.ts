@@ -13,26 +13,42 @@ export function isPreviewEnvironment(): boolean {
 
 /**
  * Valida el acceso a Turso según el entorno de ejecución.
- * En Preview, exige autorización explícita (TURSO_ENVIRONMENT='sandbox' | 'preview' | 'test' o ALLOW_TURSO_IN_PREVIEW='true')
- * y bloquea por fallo seguro cualquier intento de conexión a URLs con indicadores de producción.
+ * En Preview:
+ * - Exige estrictamente variables dedicadas de Sandbox (TURSO_DATABASE_URL_PREVIEW y TURSO_AUTH_TOKEN_PREVIEW).
+ * - No permite fallback a TURSO_DATABASE_URL ni TURSO_AUTH_TOKEN.
+ * - Bloquea si la URL de Preview coincide con la URL de producción configurada (incluso sin la palabra 'prod').
+ * - Exige autorización explícita de entorno (TURSO_ENVIRONMENT='sandbox' | 'preview' | 'test').
+ * - Bloquea por fallo seguro cualquier URL con indicadores de producción.
  */
 export function validateTursoEnvironmentAccess(url?: string): { allowed: boolean; reason?: string } {
-  const targetUrl = (
-    url ||
-    (isPreviewEnvironment() && process.env.TURSO_DATABASE_URL_PREVIEW) ||
-    process.env.TURSO_DATABASE_URL ||
-    ""
-  )
-    .trim()
-    .toLowerCase();
-
-  if (!targetUrl) {
-    return { allowed: false, reason: "missing_url" };
-  }
-
   const isPreview = isPreviewEnvironment();
+
   if (isPreview) {
-    // 1. Verificación explícita de entorno (no confiar únicamente en el nombre de la URL)
+    const previewUrl = process.env.TURSO_DATABASE_URL_PREVIEW?.trim();
+    const previewToken = process.env.TURSO_AUTH_TOKEN_PREVIEW?.trim();
+
+    // 1. En Preview, es ESTRICTAMENTE OBLIGATORIO tener ambas variables dedicadas
+    if (!previewUrl || !previewToken) {
+      return {
+        allowed: false,
+        reason:
+          "En entorno Preview faltan variables dedicadas de Sandbox (TURSO_DATABASE_URL_PREVIEW o TURSO_AUTH_TOKEN_PREVIEW). Conexión rechazada por fallo seguro.",
+      };
+    }
+
+    const targetUrl = (url || previewUrl).trim().toLowerCase();
+
+    // 2. Bloqueo si la URL coincide con la URL de producción configurada (no depende de buscar 'prod')
+    const configuredProdUrl = process.env.TURSO_DATABASE_URL?.trim().toLowerCase();
+    if (configuredProdUrl && (targetUrl === configuredProdUrl || previewUrl.toLowerCase() === configuredProdUrl)) {
+      return {
+        allowed: false,
+        reason:
+          "La URL configurada para Preview coincide con la URL de producción (TURSO_DATABASE_URL). Conexión rechazada en Preview por fallo seguro.",
+      };
+    }
+
+    // 3. Verificación de autorización explícita de entorno
     const envFlag = (process.env.TURSO_ENVIRONMENT || "").trim().toLowerCase();
     const allowPreview =
       envFlag === "preview" ||
@@ -48,7 +64,7 @@ export function validateTursoEnvironmentAccess(url?: string): { allowed: boolean
       };
     }
 
-    // 2. Fallo seguro (defensa en profundidad contra URLs de producción)
+    // 4. Fallo seguro adicional contra URLs con indicadores de producción
     const hasProdIndicator =
       targetUrl.includes("bunuelandia-prod") ||
       targetUrl.includes("-prod.") ||
@@ -63,6 +79,14 @@ export function validateTursoEnvironmentAccess(url?: string): { allowed: boolean
           "La URL de Turso configurada contiene indicadores de producción. Conexión rechazada en Preview por fallo seguro.",
       };
     }
+
+    return { allowed: true };
+  }
+
+  // Fuera de Preview (producción y entornos locales estándar)
+  const targetUrl = (url || process.env.TURSO_DATABASE_URL || "").trim().toLowerCase();
+  if (!targetUrl) {
+    return { allowed: false, reason: "missing_url" };
   }
 
   return { allowed: true };
@@ -72,11 +96,12 @@ export function isTursoConfigured(): boolean {
   if (cachedClient) return true;
 
   const isPreview = isPreviewEnvironment();
-  const url = isPreview && process.env.TURSO_DATABASE_URL_PREVIEW?.trim()
-    ? process.env.TURSO_DATABASE_URL_PREVIEW.trim()
+  // En Preview, NUNCA usar TURSO_DATABASE_URL ni TURSO_AUTH_TOKEN como fallback
+  const url = isPreview
+    ? process.env.TURSO_DATABASE_URL_PREVIEW?.trim()
     : process.env.TURSO_DATABASE_URL?.trim();
-  const authToken = isPreview && process.env.TURSO_AUTH_TOKEN_PREVIEW?.trim()
-    ? process.env.TURSO_AUTH_TOKEN_PREVIEW.trim()
+  const authToken = isPreview
+    ? process.env.TURSO_AUTH_TOKEN_PREVIEW?.trim()
     : process.env.TURSO_AUTH_TOKEN?.trim();
 
   if (!url || !authToken) return false;
@@ -89,15 +114,20 @@ export function getTursoClient(): any {
   if (cachedClient) return cachedClient;
 
   const isPreview = isPreviewEnvironment();
-  const url = isPreview && process.env.TURSO_DATABASE_URL_PREVIEW?.trim()
-    ? process.env.TURSO_DATABASE_URL_PREVIEW.trim()
+  // En Preview, NUNCA usar TURSO_DATABASE_URL ni TURSO_AUTH_TOKEN como fallback
+  const url = isPreview
+    ? process.env.TURSO_DATABASE_URL_PREVIEW?.trim()
     : process.env.TURSO_DATABASE_URL?.trim();
-  const authToken = isPreview && process.env.TURSO_AUTH_TOKEN_PREVIEW?.trim()
-    ? process.env.TURSO_AUTH_TOKEN_PREVIEW.trim()
+  const authToken = isPreview
+    ? process.env.TURSO_AUTH_TOKEN_PREVIEW?.trim()
     : process.env.TURSO_AUTH_TOKEN?.trim();
 
   if (!url || !authToken) {
-    throw new Error("Turso no está configurado (faltan TURSO_DATABASE_URL o TURSO_AUTH_TOKEN)");
+    throw new Error(
+      isPreview
+        ? "En entorno Preview faltan las variables dedicadas TURSO_DATABASE_URL_PREVIEW o TURSO_AUTH_TOKEN_PREVIEW"
+        : "Turso no está configurado (faltan TURSO_DATABASE_URL o TURSO_AUTH_TOKEN)"
+    );
   }
 
   const validation = validateTursoEnvironmentAccess(url);

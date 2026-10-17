@@ -149,38 +149,95 @@ test("4. EVOLUTION_WEBHOOK_SECRET: Obligatorio en entornos desplegados y compara
   }
 });
 
-test("5. Aislamiento de Turso en Preview: Rechaza conexión a producción y exige configuración explícita", () => {
+test("5. Aislamiento estricto de Turso en Preview: Exige variables dedicadas de Sandbox y bloquea producción", () => {
   const origVercelEnv = process.env.VERCEL_ENV;
   const origTursoEnv = process.env.TURSO_ENVIRONMENT;
   const origAllow = process.env.ALLOW_TURSO_IN_PREVIEW;
+  const origDbUrl = process.env.TURSO_DATABASE_URL;
+  const origDbToken = process.env.TURSO_AUTH_TOKEN;
+  const origPreviewUrl = process.env.TURSO_DATABASE_URL_PREVIEW;
+  const origPreviewToken = process.env.TURSO_AUTH_TOKEN_PREVIEW;
 
   try {
+    setTursoClientForTesting(null);
+
+    // 5.1 Preview sin variables dedicadas de sandbox bloquea la conexión (sin fallback a TURSO_DATABASE_URL)
     process.env.VERCEL_ENV = "preview";
+    process.env.TURSO_DATABASE_URL = "libsql://production-db.turso.io";
+    process.env.TURSO_AUTH_TOKEN = "production-secret-token";
+    delete process.env.TURSO_DATABASE_URL_PREVIEW;
+    delete process.env.TURSO_AUTH_TOKEN_PREVIEW;
     delete process.env.TURSO_ENVIRONMENT;
-    delete process.env.ALLOW_TURSO_IN_PREVIEW;
 
-    // 1. Preview sin autorización explícita debe ser rechazado
-    const check1 = validateTursoEnvironmentAccess("libsql://bunuelandia-staging.turso.io");
-    assert.equal(check1.allowed, false);
-    assert.match(check1.reason || "", /sin configuración explícita/i);
+    const checkNoPreview = validateTursoEnvironmentAccess();
+    assert.equal(checkNoPreview.allowed, false);
+    assert.match(checkNoPreview.reason || "", /faltan variables dedicadas de Sandbox/i);
+    assert.equal(isTursoConfigured(), false, "isTursoConfigured debe ser false sin variables dedicadas en Preview");
+    assert.throws(
+      () => getTursoClient(),
+      /En entorno Preview faltan las variables dedicadas/i,
+      "getTursoClient debe fallar antes de inicializar cliente si faltan variables dedicadas en Preview"
+    );
 
-    // 2. Preview con autorización explícita pero URL con indicadores de producción debe ser rechazado
-    process.env.TURSO_ENVIRONMENT = "sandbox";
-    const check2 = validateTursoEnvironmentAccess("libsql://bunuelandia-prod.turso.io");
-    assert.equal(check2.allowed, false);
-    assert.match(check2.reason || "", /indicadores de producción/i);
+    // 5.2 Preview con variables incompletas (URL sin Token o Token sin URL) bloquea la conexión
+    process.env.TURSO_DATABASE_URL_PREVIEW = "libsql://bunuelandia-sandbox.turso.io";
+    delete process.env.TURSO_AUTH_TOKEN_PREVIEW;
+    assert.equal(isTursoConfigured(), false);
+    assert.equal(validateTursoEnvironmentAccess().allowed, false);
 
-    const check3 = validateTursoEnvironmentAccess("libsql://prod-database.turso.io");
-    assert.equal(check3.allowed, false);
-    assert.match(check3.reason || "", /indicadores de producción/i);
+    delete process.env.TURSO_DATABASE_URL_PREVIEW;
+    process.env.TURSO_AUTH_TOKEN_PREVIEW = "sandbox-token";
+    assert.equal(isTursoConfigured(), false);
+    assert.equal(validateTursoEnvironmentAccess().allowed, false);
 
-    // 3. Preview con autorización explícita y base de sandbox debe ser permitido
-    const check4 = validateTursoEnvironmentAccess("libsql://bunuelandia-test-sandbox.turso.io");
-    assert.equal(check4.allowed, true);
+    // 5.3 Una configuración de producción copiada por error no puede autorizarse solo cambiando TURSO_ENVIRONMENT
+    // Caso A: La URL de Preview coincide con la URL de producción configurada (incluso si NO contiene la palabra 'prod')
+    process.env.TURSO_DATABASE_URL = "libsql://my-company-internal-db.turso.io";
+    process.env.TURSO_DATABASE_URL_PREVIEW = "libsql://my-company-internal-db.turso.io";
+    process.env.TURSO_AUTH_TOKEN_PREVIEW = "some-token";
+    process.env.TURSO_ENVIRONMENT = "preview";
+
+    const checkSameAsProd = validateTursoEnvironmentAccess();
+    assert.equal(checkSameAsProd.allowed, false);
+    assert.match(checkSameAsProd.reason || "", /coincide con la URL de producción/i);
+    assert.equal(isTursoConfigured(), false);
+
+    // Caso B: La URL contiene indicadores explícitos de producción
+    process.env.TURSO_DATABASE_URL_PREVIEW = "libsql://bunuelandia-prod.turso.io";
+    const checkProdPattern = validateTursoEnvironmentAccess();
+    assert.equal(checkProdPattern.allowed, false);
+    assert.match(checkProdPattern.reason || "", /indicadores de producción/i);
+
+    // Caso C: Sandbox legítimo con autorización explícita sí es permitido
+    process.env.TURSO_DATABASE_URL = "libsql://bunuelandia-production.turso.io";
+    process.env.TURSO_DATABASE_URL_PREVIEW = "libsql://bunuelandia-sandbox-isolated.turso.io";
+    process.env.TURSO_AUTH_TOKEN_PREVIEW = "sandbox-secret-token";
+    process.env.TURSO_ENVIRONMENT = "preview";
+
+    const checkSandboxValid = validateTursoEnvironmentAccess();
+    assert.equal(checkSandboxValid.allowed, true);
+    assert.equal(isTursoConfigured(), true);
+
+    // 5.4 El entorno de producción legítimo sigue funcionando con su configuración habitual
+    process.env.VERCEL_ENV = "production";
+    delete process.env.TURSO_DATABASE_URL_PREVIEW;
+    delete process.env.TURSO_AUTH_TOKEN_PREVIEW;
+    delete process.env.TURSO_ENVIRONMENT;
+    process.env.TURSO_DATABASE_URL = "libsql://bunuelandia-prod.turso.io";
+    process.env.TURSO_AUTH_TOKEN = "legitimate-prod-auth-token";
+
+    const checkProdLegit = validateTursoEnvironmentAccess();
+    assert.equal(checkProdLegit.allowed, true);
+    assert.equal(isTursoConfigured(), true);
   } finally {
-    process.env.VERCEL_ENV = origVercelEnv;
-    process.env.TURSO_ENVIRONMENT = origTursoEnv;
-    process.env.ALLOW_TURSO_IN_PREVIEW = origAllow;
+    setTursoClientForTesting(null);
+    if (origVercelEnv !== undefined) process.env.VERCEL_ENV = origVercelEnv; else delete process.env.VERCEL_ENV;
+    if (origTursoEnv !== undefined) process.env.TURSO_ENVIRONMENT = origTursoEnv; else delete process.env.TURSO_ENVIRONMENT;
+    if (origAllow !== undefined) process.env.ALLOW_TURSO_IN_PREVIEW = origAllow; else delete process.env.ALLOW_TURSO_IN_PREVIEW;
+    if (origDbUrl !== undefined) process.env.TURSO_DATABASE_URL = origDbUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (origDbToken !== undefined) process.env.TURSO_AUTH_TOKEN = origDbToken; else delete process.env.TURSO_AUTH_TOKEN;
+    if (origPreviewUrl !== undefined) process.env.TURSO_DATABASE_URL_PREVIEW = origPreviewUrl; else delete process.env.TURSO_DATABASE_URL_PREVIEW;
+    if (origPreviewToken !== undefined) process.env.TURSO_AUTH_TOKEN_PREVIEW = origPreviewToken; else delete process.env.TURSO_AUTH_TOKEN_PREVIEW;
   }
 });
 
