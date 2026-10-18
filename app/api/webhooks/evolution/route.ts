@@ -90,10 +90,7 @@ export async function POST(request: NextRequest) {
   const secretCandidate =
     request.headers.get("x-evolution-secret") ||
     request.headers.get("x-webhook-secret") ||
-    bearerToken ||
-    request.headers.get("x-api-key") ||
-    request.nextUrl.searchParams.get("secret") ||
-    request.nextUrl.searchParams.get("token");
+    bearerToken;
 
   if (!verifyEvolutionWebhookSecret(secretCandidate)) {
     console.warn("[evolution] invalid webhook secret");

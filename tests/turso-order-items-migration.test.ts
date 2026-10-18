@@ -232,3 +232,116 @@ test("Migración Turso: createOrder es compatible con esquemas legados que tení
   }
 });
 
+test("Migración Turso: createOrder es compatible con esquemas legados que tenían count y price", async () => {
+  const oldDbUrl = process.env.TURSO_DATABASE_URL;
+  const oldDbToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-prod-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const client = createClient({ url: ":memory:" });
+  setTursoClientForTesting(client);
+
+  try {
+    await client.execute(`
+      CREATE TABLE order_items (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL,
+        sku TEXT NOT NULL,
+        count INTEGER NOT NULL,
+        price INTEGER NOT NULL,
+        created_at INTEGER DEFAULT 0
+      );
+    `);
+
+    resetTursoReadyForTesting();
+    await ensureTursoReady();
+
+    const order = await createOrder(
+      "whatsapp:+573001234567",
+      [{ sku: "C8S", quantity: 2, unitPrice: 32000 }],
+      64000,
+      { customerName: "Cliente Count", deliveryAddress: "Calle 2 # 4-6", paymentMethod: "Efectivo" }
+    );
+
+    assert.ok(order.id, "El pedido debe crearse exitosamente");
+
+    const res = await client.execute({
+      sql: "SELECT * FROM order_items WHERE order_id = ?",
+      args: [order.id],
+    });
+    assert.equal(res.rows.length, 1, "Debe existir 1 ítem");
+    const item: any = res.rows[0];
+    assert.equal(Number(item.quantity), 2, "quantity debe ser 2");
+    assert.equal(Number(item.count), 2, "count heredado debe ser 2");
+    assert.equal(Number(item.unit_price), 32000, "unit_price debe ser 32000");
+    assert.equal(Number(item.price), 32000, "price heredado debe ser 32000");
+  } finally {
+    setTursoClientForTesting(null);
+    if (oldDbUrl !== undefined) process.env.TURSO_DATABASE_URL = oldDbUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (oldDbToken !== undefined) process.env.TURSO_AUTH_TOKEN = oldDbToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});
+
+test("Migración Turso: Reintento de createOrder ante fallo transitorio no duplica pedidos ni order_items", async () => {
+  const oldDbUrl = process.env.TURSO_DATABASE_URL;
+  const oldDbToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-prod-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const realClient = createClient({ url: ":memory:" });
+
+  // Wrapper que falla en el primer batch write de createOrder, pero triunfa en el reintento
+  let batchCalls = 0;
+  const proxyClient = {
+    execute: (stmt: any) => realClient.execute(stmt),
+    batch: async (stmts: any[], mode?: string) => {
+      batchCalls++;
+      // El primer batch en ensureTursoReady es DDL (mode == 'write'). Permitir ese batch.
+      // Fallar específicamente en el segundo batch (el primer intento de inserción de orden).
+      if (batchCalls === 2) {
+        throw new Error("Simulated transient Turso batch failure (first attempt)");
+      }
+      return realClient.batch(stmts, mode as any);
+    },
+  };
+
+  setTursoClientForTesting(proxyClient);
+
+  try {
+    resetTursoReadyForTesting();
+    await ensureTursoReady();
+
+    const order = await createOrder(
+      "whatsapp:+573007654321",
+      [
+        { sku: "C4S", quantity: 1, unitPrice: 18000 },
+        { sku: "BEB_CAFE", quantity: 2, unitPrice: 3500 },
+      ],
+      25000,
+      { customerName: "Cliente Sin Duplicados", deliveryAddress: "Calle 10 # 20-30", paymentMethod: "Efectivo" }
+    );
+
+    assert.ok(order.id, "El pedido debe crearse satisfactoriamente tras el auto-reintento");
+    assert.ok(batchCalls >= 3, `Debe haber intentado al menos 3 batches (inicial, intento fallido y reintento exitoso). Actual: ${batchCalls}`);
+
+    // Verificar en la base de datos real que no hay pedidos duplicados
+    const ordersRes = await realClient.execute({
+      sql: "SELECT * FROM orders WHERE conversation_id = ?",
+      args: ["whatsapp:+573007654321"],
+    });
+    assert.equal(ordersRes.rows.length, 1, "Debe existir exactamente 1 pedido en la tabla orders (sin duplicación)");
+
+    // Verificar que no hay items duplicados
+    const itemsRes = await realClient.execute({
+      sql: "SELECT * FROM order_items WHERE order_id = ? ORDER BY sku ASC",
+      args: [order.id],
+    });
+    assert.equal(itemsRes.rows.length, 2, "Debe existir exactamente 2 ítems en la tabla order_items (sin duplicación)");
+  } finally {
+    setTursoClientForTesting(null);
+    if (oldDbUrl !== undefined) process.env.TURSO_DATABASE_URL = oldDbUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (oldDbToken !== undefined) process.env.TURSO_AUTH_TOKEN = oldDbToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});
+
+

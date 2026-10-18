@@ -895,6 +895,10 @@ export async function createOrder(
         try {
           resetTursoReady();
           await ensureTursoReady();
+          if (memOrder.id && typeof memOrder.id === "string" && memOrder.id.length >= 10) {
+            await client.execute({ sql: "DELETE FROM order_items WHERE order_id = ?", args: [memOrder.id] }).catch(() => {});
+            await client.execute({ sql: "DELETE FROM orders WHERE id = ?", args: [memOrder.id] }).catch(() => {});
+          }
           itemBatch = buildItemBatch();
           await client.batch([orderStmt, ...itemBatch], "write");
         } catch (retryErr) {

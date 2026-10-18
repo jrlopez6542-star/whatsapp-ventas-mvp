@@ -339,18 +339,19 @@ export async function ensureTursoReady(): Promise<void> {
     if (newlyAddedCols.has("quantity")) {
       if (existingCols.has("qty")) {
         await client.execute(
-          "UPDATE order_items SET quantity = qty WHERE (quantity IS NULL OR quantity = 1) AND qty IS NOT NULL AND qty != 1;"
+          "UPDATE order_items SET quantity = qty WHERE (quantity IS NULL OR quantity = 1) AND qty IS NOT NULL AND quantity != qty;"
         );
-      } else if (existingCols.has("count")) {
+      }
+      if (existingCols.has("count")) {
         await client.execute(
-          "UPDATE order_items SET quantity = count WHERE (quantity IS NULL OR quantity = 1) AND count IS NOT NULL AND count != 1;"
+          "UPDATE order_items SET quantity = count WHERE (quantity IS NULL OR quantity = 1) AND count IS NOT NULL AND quantity != count;"
         );
       }
     }
 
     if (newlyAddedCols.has("unit_price") && existingCols.has("price")) {
       await client.execute(
-        "UPDATE order_items SET unit_price = price WHERE (unit_price IS NULL OR unit_price = 0) AND price IS NOT NULL AND price > 0;"
+        "UPDATE order_items SET unit_price = price WHERE (unit_price IS NULL OR unit_price = 0) AND price IS NOT NULL AND unit_price != price;"
       );
     }
 
