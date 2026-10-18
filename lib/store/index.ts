@@ -859,25 +859,53 @@ export async function createOrder(
 
       const buildItemBatch = () => {
         const knownCols = getOrderItemsColumns();
+        const idCol = knownCols.get("id");
+        const isIdInteger = idCol ? idCol.isInteger : false;
+        // Si knownCols está vacío (por ejemplo en tests sin introspección), mantenemos compatibilidad por defecto.
+        // Si knownCols tiene información: solo incluimos id con UUID si la columna existe y NO es de tipo entero.
+        // Si id es INTEGER (típico INTEGER PRIMARY KEY AUTOINCREMENT en SQLite), se omite para que SQLite autoincremente.
+        // Si no existe la columna id, también se omite para evitar error de columna inexistente.
+        const includeUuidId = knownCols.size === 0 ? true : Boolean(knownCols.has("id") && !isIdInteger);
+
         const hasQty = knownCols.has("qty");
         const hasPrice = knownCols.has("price");
         const hasCount = knownCols.has("count");
+        const hasCreatedAt = knownCols.has("created_at");
 
         return items.map((it) => {
-          const cols = ["id", "order_id", "sku", "quantity", "unit_price"];
-          const vals: any[] = [randomUUID(), memOrder.id, it.sku, it.quantity, it.unitPrice];
+          const cols: string[] = [];
+          const vals: any[] = [];
+
+          if (includeUuidId) {
+            cols.push("id");
+            vals.push(randomUUID());
+          }
+
+          cols.push("order_id", "sku", "quantity", "unit_price");
+          vals.push(
+            memOrder.id,
+            String(it.sku),
+            Number(it.quantity) || 1,
+            Number(it.unitPrice) || 0
+          );
+
           if (hasQty) {
             cols.push("qty");
-            vals.push(it.quantity);
+            vals.push(Number(it.quantity) || 1);
           }
           if (hasPrice) {
             cols.push("price");
-            vals.push(it.unitPrice);
+            vals.push(Number(it.unitPrice) || 0);
           }
           if (hasCount) {
             cols.push("count");
-            vals.push(it.quantity);
+            vals.push(Number(it.quantity) || 1);
           }
+          if (hasCreatedAt) {
+            cols.push("created_at");
+            vals.push(Number(memOrder.createdAt) || Date.now());
+          }
+
           const placeholders = cols.map(() => "?").join(", ");
           return {
             sql: `INSERT INTO order_items (${cols.join(", ")}) VALUES (${placeholders})`,

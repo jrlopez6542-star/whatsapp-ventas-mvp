@@ -146,21 +146,29 @@ export function getTursoClient(): any {
   return cachedClient;
 }
 
-let cachedOrderItemsCols: Set<string> = new Set();
+export interface ColumnMeta {
+  name: string;
+  type: string;
+  isInteger: boolean;
+  isPk: boolean;
+  notNull: boolean;
+}
 
-export function getOrderItemsColumns(): Set<string> {
+let cachedOrderItemsCols: Map<string, ColumnMeta> = new Map();
+
+export function getOrderItemsColumns(): Map<string, ColumnMeta> {
   return cachedOrderItemsCols;
 }
 
 export function setTursoClientForTesting(client: any): void {
   cachedClient = client;
   initializedPromise = null;
-  cachedOrderItemsCols = new Set();
+  cachedOrderItemsCols = new Map();
 }
 
 export function resetTursoReady(): void {
   initializedPromise = null;
-  cachedOrderItemsCols = new Set();
+  cachedOrderItemsCols = new Map();
 }
 
 export const resetTursoReadyForTesting = resetTursoReady;
@@ -357,9 +365,22 @@ export async function ensureTursoReady(): Promise<void> {
 
     // 3. Verificación estricta post-migración: confirmar que quantity y unit_price existen
     const postCheck = await client.execute("PRAGMA table_info(order_items);");
-    const verifiedCols = new Set<string>(
-      (postCheck.rows || []).map((r: any) => String(r.name || r[1] || "").toLowerCase())
-    );
+    const verifiedCols = new Map<string, ColumnMeta>();
+    for (const r of postCheck.rows || []) {
+      const colName = String(r.name || r[1] || "").toLowerCase();
+      const colType = String(r.type || r[2] || "").toUpperCase();
+      const isPk = Boolean(r.pk || r[5]);
+      const notNull = Boolean(r.notnull || r[3]);
+      const isInteger = colType.includes("INT");
+      verifiedCols.set(colName, {
+        name: colName,
+        type: colType,
+        isInteger,
+        isPk,
+        notNull,
+      });
+    }
+
     if (!verifiedCols.has("quantity") || !verifiedCols.has("unit_price")) {
       throw new Error("[db][FATAL] La verificación post-migración falló: order_items carece de columnas obligatorias.");
     }

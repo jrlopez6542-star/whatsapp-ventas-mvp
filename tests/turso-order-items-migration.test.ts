@@ -344,4 +344,102 @@ test("Migración Turso: Reintento de createOrder ante fallo transitorio no dupli
   }
 });
 
+test("Migración Turso: Regresión SQLITE_MISMATCH — createOrder soporta order_items con id INTEGER PRIMARY KEY AUTOINCREMENT sin fallo de tipo", async () => {
+  const oldDbUrl = process.env.TURSO_DATABASE_URL;
+  const oldDbToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-prod-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const client = createClient({ url: ":memory:" });
+  setTursoClientForTesting(client);
+
+  try {
+    // 1. Simular base de datos con el esquema de producción real que disparó el error:
+    // id INTEGER PRIMARY KEY AUTOINCREMENT
+    await client.execute(`
+      CREATE TABLE orders (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        customer_name TEXT,
+        delivery_address TEXT,
+        payment_method TEXT,
+        items_summary TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        total INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `);
+
+    await client.execute(`
+      CREATE TABLE order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT NOT NULL,
+        sku TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_price INTEGER NOT NULL,
+        created_at INTEGER DEFAULT 0
+      );
+    `);
+
+    // 2. Ejecutar ensureTursoReady para que la introspección de columnas detecte id INTEGER
+    resetTursoReadyForTesting();
+    await ensureTursoReady();
+
+    // 3. Crear el pedido exacto que falló en producción (SKU: CBS, quantity: 1, unitPrice: 36000, total: 36000)
+    const order = await createOrder(
+      "whatsapp:+573009991122",
+      [{ sku: "CBS", quantity: 1, unitPrice: 36000 }],
+      36000,
+      {
+        customerName: "Cliente Producción CBS",
+        deliveryAddress: "Carrera 7 # 12-34, Tocancipá",
+        paymentMethod: "Nequi",
+        itemsSummary: "1x Caja Buñuelos Especiales (CBS)",
+      }
+    );
+
+    assert.ok(order.id, "El pedido debe crearse satisfactoriamente sin SQLITE_MISMATCH");
+
+    // 4. Verificar en order_items que el ítem se insertó con su ID autoincremental de SQLite
+    const res = await client.execute({
+      sql: "SELECT * FROM order_items WHERE order_id = ?",
+      args: [order.id],
+    });
+
+    assert.equal(res.rows.length, 1, "Debe existir exactamente 1 ítem insertado");
+    const item: any = res.rows[0];
+    assert.equal(typeof item.id === "number" || !isNaN(Number(item.id)), true, "El id debe ser un número entero autoincremental");
+    assert.ok(Number(item.id) >= 1, "El id autoincremental debe ser >= 1");
+    assert.equal(item.sku, "CBS");
+    assert.equal(Number(item.quantity), 1);
+    assert.equal(Number(item.unit_price), 36000);
+
+    // 5. Verificar inserción múltiple para confirmar asignación secuencial
+    const multiOrder = await createOrder(
+      "whatsapp:+573009991122",
+      [
+        { sku: "CBS", quantity: 2, unitPrice: 36000 },
+        { sku: "BEB_CAFE", quantity: 1, unitPrice: 3500 },
+      ],
+      75500,
+      { customerName: "Cliente Múltiple", paymentMethod: "Efectivo" }
+    );
+
+    const multiRes = await client.execute({
+      sql: "SELECT * FROM order_items WHERE order_id = ? ORDER BY id ASC",
+      args: [multiOrder.id],
+    });
+
+    assert.equal(multiRes.rows.length, 2, "Deben existir 2 ítems insertados");
+    const item1: any = multiRes.rows[0];
+    const item2: any = multiRes.rows[1];
+    assert.ok(Number(item2.id) > Number(item1.id), "Los IDs deben ser crecientes y asignados por SQLite");
+  } finally {
+    setTursoClientForTesting(null);
+    if (oldDbUrl !== undefined) process.env.TURSO_DATABASE_URL = oldDbUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (oldDbToken !== undefined) process.env.TURSO_AUTH_TOKEN = oldDbToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});
+
+
 
