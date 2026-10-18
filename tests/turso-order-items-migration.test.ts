@@ -177,3 +177,58 @@ test("Migración Turso: No silencia errores irrecuperables en ALTER TABLE", asyn
     if (oldDbToken !== undefined) process.env.TURSO_AUTH_TOKEN = oldDbToken; else delete process.env.TURSO_AUTH_TOKEN;
   }
 });
+
+test("Migración Turso: createOrder es compatible con esquemas legados que tenían qty/price con restricción NOT NULL", async () => {
+  const oldDbUrl = process.env.TURSO_DATABASE_URL;
+  const oldDbToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-prod-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const client = createClient({ url: ":memory:" });
+  setTursoClientForTesting(client);
+
+  try {
+    // 1. Crear tabla previa con qty y price con NOT NULL (sin quantity ni unit_price)
+    await client.execute(`
+      CREATE TABLE order_items (
+        id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL,
+        sku TEXT NOT NULL,
+        qty INTEGER NOT NULL,
+        price INTEGER NOT NULL,
+        created_at INTEGER DEFAULT 0
+      );
+    `);
+
+    // 2. Ejecutar migración
+    resetTursoReadyForTesting();
+    await ensureTursoReady();
+
+    // 3. Crear pedido usando createOrder
+    const order = await createOrder(
+      "whatsapp:+573001234567",
+      [{ sku: "C4S", quantity: 3, unitPrice: 15000 }],
+      45000,
+      { customerName: "Cliente Compatible", deliveryAddress: "Calle 1 # 2-3", paymentMethod: "Efectivo" }
+    );
+
+    assert.ok(order.id, "El pedido debe crearse exitosamente");
+
+    // 4. Verificar que el item se guardó correctamente y tanto quantity como qty tienen el valor esperado
+    const res = await client.execute({
+      sql: "SELECT * FROM order_items WHERE order_id = ?",
+      args: [order.id],
+    });
+    assert.equal(res.rows.length, 1, "Debe existir 1 ítem");
+    const item: any = res.rows[0];
+    assert.equal(Number(item.quantity), 3, "quantity debe ser 3");
+    assert.equal(Number(item.qty), 3, "qty heredado debe ser 3");
+    assert.equal(Number(item.unit_price), 15000, "unit_price debe ser 15000");
+    assert.equal(Number(item.price), 15000, "price heredado debe ser 15000");
+  } finally {
+    setTursoClientForTesting(null);
+    if (oldDbUrl !== undefined) process.env.TURSO_DATABASE_URL = oldDbUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (oldDbToken !== undefined) process.env.TURSO_AUTH_TOKEN = oldDbToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});
+

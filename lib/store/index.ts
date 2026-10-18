@@ -1,6 +1,20 @@
 import { randomUUID } from "crypto";
-import { ensureTursoReady, getTursoClient, isTursoConfigured, setTursoClientForTesting, resetTursoReadyForTesting } from "./db";
-export { setTursoClientForTesting, resetTursoReadyForTesting, isTursoConfigured };
+import {
+  ensureTursoReady,
+  getTursoClient,
+  isTursoConfigured,
+  setTursoClientForTesting,
+  resetTursoReadyForTesting,
+  resetTursoReady,
+  getOrderItemsColumns,
+} from "./db";
+export {
+  setTursoClientForTesting,
+  resetTursoReadyForTesting,
+  resetTursoReady,
+  isTursoConfigured,
+  getOrderItemsColumns,
+};
 
 export type ConversationStatus = "bot" | "human" | "closed";
 
@@ -843,17 +857,45 @@ export async function createOrder(
         ],
       };
 
-      const itemBatch = items.map((it) => ({
-        sql: "INSERT INTO order_items (id, order_id, sku, quantity, unit_price) VALUES (?, ?, ?, ?, ?)",
-        args: [randomUUID(), memOrder.id, it.sku, it.quantity, it.unitPrice],
-      }));
+      const buildItemBatch = () => {
+        const knownCols = getOrderItemsColumns();
+        const hasQty = knownCols.has("qty");
+        const hasPrice = knownCols.has("price");
+        const hasCount = knownCols.has("count");
+
+        return items.map((it) => {
+          const cols = ["id", "order_id", "sku", "quantity", "unit_price"];
+          const vals: any[] = [randomUUID(), memOrder.id, it.sku, it.quantity, it.unitPrice];
+          if (hasQty) {
+            cols.push("qty");
+            vals.push(it.quantity);
+          }
+          if (hasPrice) {
+            cols.push("price");
+            vals.push(it.unitPrice);
+          }
+          if (hasCount) {
+            cols.push("count");
+            vals.push(it.quantity);
+          }
+          const placeholders = cols.map(() => "?").join(", ");
+          return {
+            sql: `INSERT INTO order_items (${cols.join(", ")}) VALUES (${placeholders})`,
+            args: vals,
+          };
+        });
+      };
+
+      let itemBatch = buildItemBatch();
 
       try {
         await client.batch([orderStmt, ...itemBatch], "write");
       } catch (batchErr: any) {
         console.warn("[store] Error en batch atómico de orden e items:", batchErr);
         try {
+          resetTursoReady();
           await ensureTursoReady();
+          itemBatch = buildItemBatch();
           await client.batch([orderStmt, ...itemBatch], "write");
         } catch (retryErr) {
           console.error("[store] Inserción atómica de pedido falló definitivamente:", retryErr);

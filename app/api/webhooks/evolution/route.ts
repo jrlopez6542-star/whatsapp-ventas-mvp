@@ -82,10 +82,20 @@ const lastIncomingTimestamp = new Map<string, number>();
  * se procesan asíncronamente en after() para evitar timeouts y ráfagas fragmentadas.
  */
 export async function POST(request: NextRequest) {
-  const secretHeader =
+  const authHeader = request.headers.get("authorization");
+  const bearerToken = authHeader?.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : null;
+
+  const secretCandidate =
     request.headers.get("x-evolution-secret") ||
-    request.headers.get("x-webhook-secret");
-  if (!verifyEvolutionWebhookSecret(secretHeader)) {
+    request.headers.get("x-webhook-secret") ||
+    bearerToken ||
+    request.headers.get("x-api-key") ||
+    request.nextUrl.searchParams.get("secret") ||
+    request.nextUrl.searchParams.get("token");
+
+  if (!verifyEvolutionWebhookSecret(secretCandidate)) {
     console.warn("[evolution] invalid webhook secret");
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
