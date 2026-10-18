@@ -4,6 +4,8 @@ import {
   extractColombianPhone,
   shouldSendTransferQr,
   handleSalesMessage,
+  resolveInvoiceNoticeDetails,
+  isValidContabilidadPublicUrl,
 } from "../lib/agent/sales-agent";
 import {
   shouldInterceptMissingSauces,
@@ -289,4 +291,106 @@ test("10. Sistema Híbrido: Intercepta Caja Surtida sin salsas y recalcula matem
   assert.equal(math.items[0].unitPrice, 34000);
   assert.equal(math.items[1].unitPrice, 3500);
   assert.equal(math.items[2].unitPrice, 6000);
+});
+
+test("11. isValidContabilidadPublicUrl: Valida con new URL(), exige HTTPS y rechaza dominios arbitrarios", () => {
+  // A. URL oficial válida con HTTPS y CUID legítimo
+  const validUrl = "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456";
+  assert.equal(isValidContabilidadPublicUrl(validUrl), true, "Debe aceptar HTTPS del dominio contable oficial");
+
+  // B. Rechaza protocolo HTTP inseguro
+  const httpUrl = "http://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456";
+  assert.equal(isValidContabilidadPublicUrl(httpUrl), false, "Debe rechazar HTTP");
+
+  // C. Rechaza dominios arbitrarios o de terceros
+  const arbitraryDomain = "https://sitio-malicioso.com/api/invoices/public/cm123456";
+  assert.equal(isValidContabilidadPublicUrl(arbitraryDomain), false, "Debe rechazar dominios no autorizados");
+
+  // D. Rechaza URLs sin identificador de factura (evita /public/ vacío)
+  const emptyIdUrl = "https://contabilidad-app-fawn.vercel.app/api/invoices/public/";
+  assert.equal(isValidContabilidadPublicUrl(emptyIdUrl), false, "Debe rechazar ruta /public/ sin ID");
+
+  // E. Rechaza cadenas inválidas que lanzan error en new URL()
+  assert.equal(isValidContabilidadPublicUrl("no-es-una-url"), false);
+  assert.equal(isValidContabilidadPublicUrl(undefined), false);
+  assert.equal(isValidContabilidadPublicUrl(""), false);
+});
+
+test("12. resolveInvoiceNoticeDetails: Trata invoiceNumber e invoiceUrl de forma independiente", () => {
+  // A. Solo invoiceNumber (falta invoiceUrl): muestra el número sin inventar enlace
+  const onlyNumber = resolveInvoiceNoticeDetails("B-0017", undefined, undefined);
+  assert.equal(onlyNumber.formattedNumber, "#B-0017");
+  assert.equal(onlyNumber.publicUrl, undefined);
+  assert.ok(onlyNumber.noticeLine.includes("🧾 *Factura Oficial Registrada:* #B-0017"));
+  assert.ok(!onlyNumber.noticeLine.includes("📄 *Ver tu Factura digital:*"));
+
+  // B. Solo invoiceUrl (falta invoiceNumber): muestra el enlace sin inventar número ni '#' huérfano
+  const onlyUrl = resolveInvoiceNoticeDetails(
+    undefined,
+    "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456"
+  );
+  assert.equal(onlyUrl.formattedNumber, undefined);
+  assert.equal(onlyUrl.publicUrl, "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456");
+  assert.ok(!onlyUrl.noticeLine.includes("Factura Oficial Registrada"));
+  assert.ok(!onlyUrl.noticeLine.includes("#"));
+  assert.ok(onlyUrl.noticeLine.includes("📄 *Ver tu Factura digital:* https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456"));
+
+  // C. Ambos disponibles: muestra ambas líneas
+  const both = resolveInvoiceNoticeDetails(
+    "B-0017",
+    "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456"
+  );
+  assert.equal(both.formattedNumber, "#B-0017");
+  assert.equal(both.publicUrl, "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456");
+  assert.ok(both.noticeLine.includes("🧾 *Factura Oficial Registrada:* #B-0017"));
+  assert.ok(both.noticeLine.includes("📄 *Ver tu Factura digital:* https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456"));
+});
+
+test("13. resolveInvoiceNoticeDetails: Desduplicación contra reply existente", () => {
+  const number = "B-0017";
+  const url = "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456";
+
+  // A. reply ya contiene el número oficial (#B-0017): solo añade el enlace
+  const replyWithNumber = `✅ ¡Pedido Confirmado! Número de factura #B-0017 asignado.`;
+  const resDedupNumber = resolveInvoiceNoticeDetails(number, url, undefined, replyWithNumber);
+  assert.ok(!resDedupNumber.noticeLine.includes("Factura Oficial Registrada:* #B-0017"), "No debe duplicar número");
+  assert.ok(resDedupNumber.noticeLine.includes("📄 *Ver tu Factura digital:* " + url), "Debe incluir enlace faltante");
+
+  // B. reply ya contiene el enlace: solo añade el número
+  const replyWithUrl = `✅ ¡Pedido Confirmado! Consulta tu factura en https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456`;
+  const resDedupUrl = resolveInvoiceNoticeDetails(number, url, undefined, replyWithUrl);
+  assert.ok(resDedupUrl.noticeLine.includes("🧾 *Factura Oficial Registrada:* #B-0017"), "Debe incluir número");
+  assert.ok(!resDedupUrl.noticeLine.includes("📄 *Ver tu Factura digital:*"), "No debe duplicar enlace");
+
+  // C. reply ya contiene ambos: noticeLine queda vacío
+  const replyWithBoth = `✅ ¡Pedido Confirmado! #B-0017 digital: https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456`;
+  const resDedupBoth = resolveInvoiceNoticeDetails(number, url, undefined, replyWithBoth);
+  assert.equal(resDedupBoth.noticeLine, "", "noticeLine debe ser vacío si ambos ya están en reply");
+});
+
+test("14. Evolution API: Propagación de invoiceUrl y blindaje del caption multimedia", () => {
+  const invoiceNumber = "B-0017";
+  const validInvoiceUrl = "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm-oficial-123";
+  const arbitraryUrl = "https://sitio-no-autorizado.com/factura.pdf";
+
+  // Caso 1: Con invoiceUrl válido
+  const formattedNum = invoiceNumber ? `#${invoiceNumber}` : "";
+  const numPart = formattedNum ? ` ${formattedNum}` : "";
+  const urlPartValid = validInvoiceUrl && isValidContabilidadPublicUrl(validInvoiceUrl)
+    ? `\n📄 Ver factura digital: ${validInvoiceUrl}`
+    : "";
+  const captionValid = `🧾 Factura Oficial${numPart}${urlPartValid}\n¡Gracias por tu compra en Buñuelandia! 🥟`;
+
+  assert.ok(captionValid.includes("🧾 Factura Oficial #B-0017"));
+  assert.ok(captionValid.includes("📄 Ver factura digital: https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm-oficial-123"));
+
+  // Caso 2: Con URL arbitraria de tercero: debe ser filtrada y no enviarse al cliente
+  const urlPartArbitrary = arbitraryUrl && isValidContabilidadPublicUrl(arbitraryUrl)
+    ? `\n📄 Ver factura digital: ${arbitraryUrl}`
+    : "";
+  const captionFiltered = `🧾 Factura Oficial${numPart}${urlPartArbitrary}\n¡Gracias por tu compra en Buñuelandia! 🥟`;
+
+  assert.ok(captionFiltered.includes("🧾 Factura Oficial #B-0017"));
+  assert.ok(!captionFiltered.includes("sitio-no-autorizado.com"), "No debe incluir dominios arbitrarios");
+  assert.ok(!captionFiltered.includes("📄 Ver factura digital:"), "No debe mostrar etiqueta si la URL fue descartada");
 });

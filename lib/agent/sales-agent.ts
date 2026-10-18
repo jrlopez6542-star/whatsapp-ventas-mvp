@@ -740,6 +740,117 @@ function buildOpenAIMessages(
   return out;
 }
 
+export const DEFAULT_CONTABILIDAD_ORIGIN = "https://contabilidad-app-fawn.vercel.app";
+
+/**
+ * Valida de forma estricta que una URL pública de factura:
+ * 1. Pueda ser parseada con `new URL()`.
+ * 2. Utilice estrictamente el protocolo HTTPS (`https:`).
+ * 3. Coincida exclusivamente con el hostname contable configurado o el oficial esperado.
+ * 4. Tenga una ruta válida `/api/invoices/public/...`.
+ */
+export function isValidContabilidadPublicUrl(urlStr: string | undefined): boolean {
+  if (!urlStr || typeof urlStr !== "string") return false;
+  try {
+    const parsed = new URL(urlStr.trim());
+    if (parsed.protocol !== "https:") return false;
+
+    const allowedHostnames = new Set<string>();
+
+    try {
+      const defaultUrl = new URL(DEFAULT_CONTABILIDAD_ORIGIN);
+      allowedHostnames.add(defaultUrl.hostname.toLowerCase());
+    } catch {}
+
+    const envApi = process.env.CONTABILIDAD_API_URL?.trim();
+    if (envApi) {
+      try {
+        const envUrl = new URL(envApi);
+        allowedHostnames.add(envUrl.hostname.toLowerCase());
+      } catch {}
+    }
+
+    const envApp = process.env.CONTABILIDAD_APP_URL?.trim();
+    if (envApp) {
+      try {
+        const envUrl = new URL(envApp);
+        allowedHostnames.add(envUrl.hostname.toLowerCase());
+      } catch {}
+    }
+
+    const host = parsed.hostname.toLowerCase();
+    if (!allowedHostnames.has(host)) {
+      return false;
+    }
+
+    return (
+      parsed.pathname.startsWith("/api/invoices/public/") &&
+      parsed.pathname.length > "/api/invoices/public/".length
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resuelve y formatea de forma determinista el aviso oficial de factura para el cliente por WhatsApp.
+ * - Trata invoiceNumber e invoiceUrl de manera independiente: si uno existe y el otro falta, muestra el dato disponible.
+ * - Valida URLs exclusivamente con new URL() y HTTPS hacia el dominio contable oficial o configurado.
+ * - Evita duplicar el número o el enlace si ya aparecen en existingText (por ejemplo en el reply del asistente).
+ */
+export function resolveInvoiceNoticeDetails(
+  invoiceNumber?: string,
+  invoiceUrl?: string,
+  invoiceId?: string,
+  existingText?: string
+): {
+  formattedNumber?: string;
+  publicUrl?: string;
+  noticeLine: string;
+} {
+  const rawNum = (invoiceNumber || "").trim();
+  const formattedNumber = rawNum ? (rawNum.startsWith("#") ? rawNum : `#${rawNum}`) : undefined;
+
+  let publicUrl: string | undefined = undefined;
+  if (invoiceUrl && isValidContabilidadPublicUrl(invoiceUrl)) {
+    publicUrl = invoiceUrl.trim();
+  } else if (
+    invoiceId &&
+    typeof invoiceId === "string" &&
+    invoiceId.trim().length > 0 &&
+    !invoiceId.trim().startsWith("claim_")
+  ) {
+    const candidate = `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${encodeURIComponent(invoiceId.trim())}`;
+    if (isValidContabilidadPublicUrl(candidate)) {
+      publicUrl = candidate;
+    }
+  }
+
+  const lines: string[] = [];
+
+  // 1. Número oficial de factura (independiente y sin duplicar si ya aparece en el texto previo)
+  if (formattedNumber) {
+    const alreadyHasNumber = existingText
+      ? existingText.includes(formattedNumber) || (rawNum.length >= 3 && existingText.includes(rawNum))
+      : false;
+    if (!alreadyHasNumber) {
+      lines.push(`🧾 *Factura Oficial Registrada:* ${formattedNumber}`);
+    }
+  }
+
+  // 2. Enlace digital público (independiente y sin duplicar si ya aparece en el texto previo)
+  if (publicUrl) {
+    const alreadyHasUrl = existingText ? existingText.includes(publicUrl) : false;
+    if (!alreadyHasUrl) {
+      lines.push(`📄 *Ver tu Factura digital:* ${publicUrl}`);
+    }
+  }
+
+  const noticeLine = lines.length > 0 ? `\n` + lines.join("\n") : "";
+
+  return { formattedNumber, publicUrl, noticeLine };
+}
+
 // Helper: Extraer pedido estructurado si el texto o respuesta contiene confirmación
 async function tryExtractAndRegisterOrder(
   conversationKey: string,
@@ -2046,14 +2157,23 @@ ${sessionItems.length > 0
             reply = "Tuvimos un inconveniente técnico momentáneo al registrar tu pedido ⚠️. Por favor responde con el número 1️⃣ para intentar confirmarlo nuevamente o escribe *asesor* si deseas que una persona te atienda.";
           }
 
-          if (maybeOrder?.invoiceNumber) {
-            const publicUrl = maybeOrder.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${maybeOrder.invoiceId || ""}`;
-            reply = `${reply}\n\n🧾 *Factura Oficial Registrada:* #${maybeOrder.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
-            logSystemEvent("success", "billing", `Factura Oficial #${maybeOrder.invoiceNumber} registrada en Contabilidad`, {
-              orderId: maybeOrder.id,
-              total: maybeOrder.total,
-              publicUrl,
-            });
+          if (maybeOrder?.invoiceNumber || maybeOrder?.invoiceUrl || maybeOrder?.invoiceId) {
+            const { formattedNumber, publicUrl, noticeLine } = resolveInvoiceNoticeDetails(
+              maybeOrder.invoiceNumber,
+              maybeOrder.invoiceUrl,
+              maybeOrder.invoiceId,
+              reply
+            );
+            if (noticeLine) {
+              reply = `${reply}${noticeLine}`;
+            }
+            if (formattedNumber) {
+              logSystemEvent("success", "billing", `Factura Oficial ${formattedNumber} registrada en Contabilidad`, {
+                orderId: maybeOrder.id,
+                total: maybeOrder.total,
+                publicUrl: publicUrl || null,
+              });
+            }
           }
 
           await appendMessage(conversationKey, "assistant", reply);
@@ -2068,11 +2188,17 @@ ${sessionItems.length > 0
               )
           );
 
+          const resolvedPublicUrl = maybeOrder?.invoiceUrl && isValidContabilidadPublicUrl(maybeOrder.invoiceUrl)
+            ? maybeOrder.invoiceUrl
+            : (maybeOrder?.invoiceId && isValidContabilidadPublicUrl(`${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}`)
+                ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}`
+                : undefined);
+
           return {
             reply,
             mode: maybeOrder ? "order_created" : "ai",
             mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
-            invoiceUrl: maybeOrder?.invoiceUrl,
+            invoiceUrl: resolvedPublicUrl,
             invoicePdfUrl: maybeOrder?.invoicePdfUrl,
             invoiceNumber: maybeOrder?.invoiceNumber,
           };
@@ -2132,9 +2258,16 @@ ${sessionItems.length > 0
         reply = "Tuvimos un inconveniente técnico momentáneo al registrar tu pedido ⚠️. Por favor responde con el número 1️⃣ para intentar confirmarlo nuevamente o escribe *asesor* si deseas que una persona te atienda.";
       }
 
-      if (maybeOrder?.invoiceNumber) {
-        const publicUrl = maybeOrder.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${maybeOrder.invoiceId || ""}`;
-        reply = `${reply}\n\n🧾 *Factura Oficial Registrada:* #${maybeOrder.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
+      if (maybeOrder?.invoiceNumber || maybeOrder?.invoiceUrl || maybeOrder?.invoiceId) {
+        const { noticeLine } = resolveInvoiceNoticeDetails(
+          maybeOrder.invoiceNumber,
+          maybeOrder.invoiceUrl,
+          maybeOrder.invoiceId,
+          reply
+        );
+        if (noticeLine) {
+          reply = `${reply}${noticeLine}`;
+        }
       }
 
       await appendMessage(conversationKey, "assistant", reply);
@@ -2149,11 +2282,17 @@ ${sessionItems.length > 0
           )
       );
 
+      const resolvedOpenAiPublicUrl = maybeOrder?.invoiceUrl && isValidContabilidadPublicUrl(maybeOrder.invoiceUrl)
+        ? maybeOrder.invoiceUrl
+        : (maybeOrder?.invoiceId && isValidContabilidadPublicUrl(`${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}`)
+            ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}`
+            : undefined);
+
       return {
         reply,
         mode: maybeOrder ? "order_created" : "ai",
         mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
-        invoiceUrl: maybeOrder?.invoiceUrl,
+        invoiceUrl: resolvedOpenAiPublicUrl,
         invoicePdfUrl: maybeOrder?.invoicePdfUrl,
         invoiceNumber: maybeOrder?.invoiceNumber,
       };
@@ -2369,10 +2508,10 @@ ${sessionItems.length > 0
             deliveryFee: 0,
             total: finalTotal,
           });
-          if (invRes.ok && invRes.invoiceNumber) {
+          if (invRes.ok && (invRes.invoiceNumber || invRes.invoiceUrl || invRes.invoiceId)) {
             await updateOrderInvoice(
               order.id,
-              invRes.invoiceNumber,
+              invRes.invoiceNumber || "",
               invRes.invoiceId,
               invRes.invoiceUrl,
               invRes.invoicePdfUrl
@@ -2382,10 +2521,14 @@ ${sessionItems.length > 0
             order.invoiceUrl = invRes.invoiceUrl;
             order.invoicePdfUrl = invRes.invoicePdfUrl;
             createdInvoiceNumber = invRes.invoiceNumber;
-            createdInvoiceUrl = invRes.invoiceUrl;
             createdInvoicePdfUrl = invRes.invoicePdfUrl;
-            const publicUrl = invRes.invoiceUrl || `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${invRes.invoiceId || ""}`;
-            invoiceNotice = `\n🧾 *Factura Oficial Registrada:* #${invRes.invoiceNumber}\n📄 *Ver tu Factura digital:* ${publicUrl}`;
+            const { noticeLine, publicUrl } = resolveInvoiceNoticeDetails(
+              invRes.invoiceNumber,
+              invRes.invoiceUrl,
+              invRes.invoiceId
+            );
+            invoiceNotice = noticeLine;
+            createdInvoiceUrl = publicUrl || (invRes.invoiceUrl && isValidContabilidadPublicUrl(invRes.invoiceUrl) ? invRes.invoiceUrl : undefined);
           }
         } catch (invErr) {
           console.warn("[sales-agent] Error generando factura en fallback:", invErr);

@@ -21,7 +21,7 @@ import {
   failWebhookEvent,
 } from "@/lib/webhook-dedupe";
 import { isPhoneWhitelisted, logWhitelistRejection } from "@/lib/security-whitelist";
-import { handleSalesMessage } from "@/lib/agent/sales-agent";
+import { handleSalesMessage, isValidContabilidadPublicUrl } from "@/lib/agent/sales-agent";
 import { verifyReceiptWithGemini } from "@/lib/agent/receipt-verifier";
 import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { pickRandomVariation } from "@/lib/anti-ban";
@@ -620,7 +620,7 @@ export async function POST(request: NextRequest) {
         }
 
         const effectiveName = parsed.pushName || conv.customerName;
-        const { reply, mode, mediaUrl, invoicePdfUrl, invoiceNumber } = await handleSalesMessage(fromKey, currentText, effectiveName);
+        const { reply, mode, mediaUrl, invoiceUrl, invoicePdfUrl, invoiceNumber } = await handleSalesMessage(fromKey, currentText, effectiveName);
         console.log("[evolution reply processed in after]", {
           from: fromKey,
           replyTo,
@@ -673,10 +673,19 @@ export async function POST(request: NextRequest) {
             const pdfDelay = 2200 + Math.floor(Math.random() * 1600);
             await new Promise((r) => setTimeout(r, pdfDelay));
 
+            const formattedNum = invoiceNumber
+              ? (invoiceNumber.startsWith("#") ? invoiceNumber : `#${invoiceNumber}`)
+              : "";
+            const numPart = formattedNum ? ` ${formattedNum}` : "";
+            const urlPart =
+              invoiceUrl && isValidContabilidadPublicUrl(invoiceUrl)
+                ? `\n📄 Ver factura digital: ${invoiceUrl}`
+                : "";
+
             const invoiceCaption = pickRandomVariation([
-              `🧾 Factura Oficial #${invoiceNumber || ""} - ¡Gracias por tu compra en Buñuelandia! 🥟`,
-              `🧾 Aquí tienes tu Factura Oficial #${invoiceNumber || ""}. ¡Tus buñuelos van en preparación con todo el amor! 👨‍🍳🔥`,
-              `🧾 Adjuntamos la Factura Oficial #${invoiceNumber || ""} de tu pedido. ¡Muchas gracias por preferirnos! ✨`,
+              `🧾 Factura Oficial${numPart}${urlPart}\n¡Gracias por tu compra en Buñuelandia! 🥟`,
+              `🧾 Aquí tienes tu Factura Oficial${numPart}.${urlPart}\n¡Tus buñuelos van en preparación con todo el amor! 👨‍🍳🔥`,
+              `🧾 Adjuntamos la Factura Oficial${numPart} de tu pedido.${urlPart}\n¡Muchas gracias por preferirnos! ✨`,
             ]);
 
             await sendOutboundWhatsAppMedia(
