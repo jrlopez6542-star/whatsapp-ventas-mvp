@@ -202,6 +202,33 @@ const SEED_PRODUCTS: Product[] = [
   },
 ];
 
+export function resolveItemName(sku: string, providedName?: string): string {
+  if (providedName && typeof providedName === "string" && providedName.trim()) {
+    return providedName.trim();
+  }
+  const cleanSku = String(sku || "").trim().toUpperCase();
+
+  // 1. Buscar en memoria / productos de catálogo
+  try {
+    const memProducts = getMemoryStore().getProducts(false);
+    const foundMem = memProducts.find((p) => p.sku.toUpperCase() === cleanSku);
+    if (foundMem && foundMem.name) {
+      return foundMem.name;
+    }
+  } catch {}
+
+  // 2. Buscar en semillas oficiales
+  const foundSeed = SEED_PRODUCTS.find((p) => p.sku.toUpperCase() === cleanSku);
+  if (foundSeed && foundSeed.name) {
+    return foundSeed.name;
+  }
+
+  // 3. Mapeos de alias comunes del catálogo
+  if (cleanSku === "CBS") return "CAJA x8 Surtida";
+  if (cleanSku === "CBT") return "CAJA x8 Tradicional";
+
+  return cleanSku || "Producto";
+}
 
 // --- In-Memory Store Fallback ---
 class MemoryStore {
@@ -867,43 +894,72 @@ export async function createOrder(
         // Si no existe la columna id, también se omite para evitar error de columna inexistente.
         const includeUuidId = knownCols.size === 0 ? true : Boolean(knownCols.has("id") && !isIdInteger);
 
+        const hasName = knownCols.size === 0 ? true : knownCols.has("name");
         const hasQty = knownCols.has("qty");
         const hasPrice = knownCols.has("price");
         const hasCount = knownCols.has("count");
         const hasCreatedAt = knownCols.has("created_at");
+        const hasTotal = knownCols.has("total");
+        const hasSubtotal = knownCols.has("subtotal");
 
         return items.map((it) => {
           const cols: string[] = [];
           const vals: any[] = [];
+          const addedCols = new Set<string>();
+
+          const addCol = (colName: string, val: any) => {
+            cols.push(colName);
+            vals.push(val);
+            addedCols.add(colName.toLowerCase());
+          };
 
           if (includeUuidId) {
-            cols.push("id");
-            vals.push(randomUUID());
+            addCol("id", randomUUID());
           }
 
-          cols.push("order_id", "sku", "quantity", "unit_price");
-          vals.push(
-            memOrder.id,
-            String(it.sku),
-            Number(it.quantity) || 1,
-            Number(it.unitPrice) || 0
-          );
+          addCol("order_id", memOrder.id);
+          addCol("sku", String(it.sku));
+
+          const itemName = resolveItemName(it.sku, it.name);
+          if (hasName) {
+            addCol("name", itemName);
+          }
+
+          addCol("quantity", Number(it.quantity) || 1);
+          addCol("unit_price", Number(it.unitPrice) || 0);
 
           if (hasQty) {
-            cols.push("qty");
-            vals.push(Number(it.quantity) || 1);
+            addCol("qty", Number(it.quantity) || 1);
           }
           if (hasPrice) {
-            cols.push("price");
-            vals.push(Number(it.unitPrice) || 0);
+            addCol("price", Number(it.unitPrice) || 0);
           }
           if (hasCount) {
-            cols.push("count");
-            vals.push(Number(it.quantity) || 1);
+            addCol("count", Number(it.quantity) || 1);
           }
           if (hasCreatedAt) {
-            cols.push("created_at");
-            vals.push(Number(memOrder.createdAt) || Date.now());
+            addCol("created_at", Number(memOrder.createdAt) || Date.now());
+          }
+          if (hasTotal) {
+            addCol("total", (Number(it.quantity) || 1) * (Number(it.unitPrice) || 0));
+          }
+          if (hasSubtotal) {
+            addCol("subtotal", (Number(it.quantity) || 1) * (Number(it.unitPrice) || 0));
+          }
+
+          // Blindaje determinista: Cualquier columna NOT NULL sin DEFAULT se satisface con valor válido
+          for (const [colKey, meta] of knownCols.entries()) {
+            if (meta.notNull && !meta.hasDefault && !meta.isPk) {
+              if (!addedCols.has(colKey.toLowerCase())) {
+                if (colKey === "name") {
+                  addCol("name", itemName);
+                } else if (meta.isInteger) {
+                  addCol(meta.name, 0);
+                } else {
+                  addCol(meta.name, "");
+                }
+              }
+            }
           }
 
           const placeholders = cols.map(() => "?").join(", ");

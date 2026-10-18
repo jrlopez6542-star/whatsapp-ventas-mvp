@@ -803,8 +803,9 @@ async function tryExtractAndRegisterOrder(
       category: ((p as { category?: string }).category as "boxes" | "singles" | "drinks") || "boxes",
     }))
   );
-  const orderItems: Array<{ sku: string; quantity: number; unitPrice: number }> = mathCalc.items.map((it) => ({
+  const orderItems: Array<{ sku: string; quantity: number; unitPrice: number; name?: string }> = mathCalc.items.map((it) => ({
     sku: it.sku,
+    name: it.name,
     quantity: it.quantity,
     unitPrice: it.unitPrice,
   }));
@@ -2323,7 +2324,7 @@ ${sessionItems.length > 0
       try {
         order = await createOrder(
           conversationKey,
-          finalItems.map((it) => ({ sku: it.sku, quantity: it.quantity, unitPrice: it.unitPrice })),
+          finalItems.map((it) => ({ sku: it.sku, name: it.name, quantity: it.quantity, unitPrice: it.unitPrice })),
           finalTotal,
           {
             customerName: clientName,

@@ -152,6 +152,8 @@ export interface ColumnMeta {
   isInteger: boolean;
   isPk: boolean;
   notNull: boolean;
+  hasDefault: boolean;
+  defaultValue?: any;
 }
 
 let cachedOrderItemsCols: Map<string, ColumnMeta> = new Map();
@@ -228,6 +230,7 @@ export async function ensureTursoReady(): Promise<void> {
           id TEXT PRIMARY KEY,
           order_id TEXT NOT NULL,
           sku TEXT NOT NULL,
+          name TEXT NOT NULL DEFAULT '',
           quantity INTEGER NOT NULL,
           unit_price INTEGER NOT NULL,
           created_at INTEGER DEFAULT 0
@@ -317,6 +320,7 @@ export async function ensureTursoReady(): Promise<void> {
     const requiredOrderItemsCols = [
       { name: "order_id", ddl: "order_id TEXT" },
       { name: "sku", ddl: "sku TEXT" },
+      { name: "name", ddl: "name TEXT DEFAULT ''" },
       { name: "quantity", ddl: "quantity INTEGER DEFAULT 1" },
       { name: "unit_price", ddl: "unit_price INTEGER DEFAULT 0" },
       { name: "created_at", ddl: "created_at INTEGER DEFAULT 0" },
@@ -363,21 +367,31 @@ export async function ensureTursoReady(): Promise<void> {
       );
     }
 
+    if (existingCols.has("name")) {
+      try {
+        await client.execute("UPDATE order_items SET name = sku WHERE name IS NULL OR name = '';");
+      } catch {}
+    }
+
     // 3. Verificación estricta post-migración: confirmar que quantity y unit_price existen
     const postCheck = await client.execute("PRAGMA table_info(order_items);");
     const verifiedCols = new Map<string, ColumnMeta>();
     for (const r of postCheck.rows || []) {
-      const colName = String(r.name || r[1] || "").toLowerCase();
-      const colType = String(r.type || r[2] || "").toUpperCase();
-      const isPk = Boolean(r.pk || r[5]);
-      const notNull = Boolean(r.notnull || r[3]);
+      const colName = String(r.name ?? r[1] ?? "").toLowerCase();
+      const colType = String(r.type ?? r[2] ?? "").toUpperCase();
+      const isPk = Boolean(r.pk ?? r[5]);
+      const notNull = Boolean(r.notnull ?? r[3]);
       const isInteger = colType.includes("INT");
+      const dflt = r.dflt_value !== undefined ? r.dflt_value : r[4];
+      const hasDefault = dflt !== null && dflt !== undefined;
       verifiedCols.set(colName, {
         name: colName,
         type: colType,
         isInteger,
         isPk,
         notNull,
+        hasDefault,
+        defaultValue: dflt,
       });
     }
 

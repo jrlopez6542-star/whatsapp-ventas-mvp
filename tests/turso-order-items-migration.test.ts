@@ -441,5 +441,179 @@ test("Migración Turso: Regresión SQLITE_MISMATCH — createOrder soporta order
   }
 });
 
+test("Migración Turso: Regresión NOT NULL constraint — createOrder soporta order_items con name TEXT NOT NULL y id INTEGER PRIMARY KEY AUTOINCREMENT", async () => {
+  const oldDbUrl = process.env.TURSO_DATABASE_URL;
+  const oldDbToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-prod-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const client = createClient({ url: ":memory:" });
+  setTursoClientForTesting(client);
+
+  try {
+    // 1. Simular base de datos con el esquema histórico exacto que provocó:
+    // "SQLITE_CONSTRAINT: NOT NULL constraint failed: order_items.name"
+    await client.execute(`
+      CREATE TABLE orders (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        customer_name TEXT,
+        delivery_address TEXT,
+        payment_method TEXT,
+        items_summary TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        total INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `);
+
+    await client.execute(`
+      CREATE TABLE order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT NOT NULL,
+        sku TEXT NOT NULL,
+        name TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_price INTEGER NOT NULL,
+        created_at INTEGER DEFAULT 0
+      );
+    `);
+
+    resetTursoReadyForTesting();
+    await ensureTursoReady();
+
+    // 2. Crear pedido con SKU CBS sin proveer name explícito en el ítem (debe resolverse del catálogo existente)
+    const order = await createOrder(
+      "whatsapp:+573005554433",
+      [{ sku: "CBS", quantity: 1, unitPrice: 36000 }],
+      36000,
+      {
+        customerName: "Cliente Producción CBS",
+        deliveryAddress: "Calle 10 # 5-20",
+        paymentMethod: "Nequi",
+      }
+    );
+
+    assert.ok(order.id, "El pedido debe crearse exitosamente sin error NOT NULL en order_items.name");
+
+    const res = await client.execute({
+      sql: "SELECT * FROM order_items WHERE order_id = ?",
+      args: [order.id],
+    });
+
+    assert.equal(res.rows.length, 1, "Debe existir 1 ítem en order_items");
+    const item: any = res.rows[0];
+    assert.equal(typeof item.id === "number" || !isNaN(Number(item.id)), true, "El id debe ser autoincrementado");
+    assert.ok(Number(item.id) >= 1);
+    assert.equal(item.sku, "CBS");
+    assert.ok(item.name && item.name.length > 0, "order_items.name no debe ser nulo ni vacío");
+    assert.equal(item.name, "CAJA x8 Surtida", "El nombre debe corresponder al catálogo oficial para CBS");
+    assert.equal(Number(item.quantity), 1);
+    assert.equal(Number(item.unit_price), 36000);
+
+    // 3. Crear pedido con name explícito provisto
+    const orderWithCustomName = await createOrder(
+      "whatsapp:+573005554433",
+      [{ sku: "CBS", name: "Caja Especial Buñuelos Surtidos", quantity: 2, unitPrice: 36000 }],
+      72000,
+      { customerName: "Cliente Con Nombre", paymentMethod: "Efectivo" }
+    );
+
+    const resCustom = await client.execute({
+      sql: "SELECT * FROM order_items WHERE order_id = ?",
+      args: [orderWithCustomName.id],
+    });
+    const itemCustom: any = resCustom.rows[0];
+    assert.equal(itemCustom.name, "Caja Especial Buñuelos Surtidos", "Debe respetar el nombre provisto");
+
+    // 4. Probar con productos de bebidas y tradicionales del catálogo
+    const multiOrder = await createOrder(
+      "whatsapp:+573005554433",
+      [
+        { sku: "C4T", quantity: 1, unitPrice: 16000 },
+        { sku: "BEB_CAFE", quantity: 2, unitPrice: 3500 },
+      ],
+      23000,
+      { customerName: "Cliente Café", paymentMethod: "Efectivo" }
+    );
+
+    const multiRes = await client.execute({
+      sql: "SELECT * FROM order_items WHERE order_id = ? ORDER BY sku ASC",
+      args: [multiOrder.id],
+    });
+    assert.equal(multiRes.rows.length, 2);
+    const cafeItem: any = multiRes.rows.find((r: any) => r.sku === "BEB_CAFE");
+    const c4tItem: any = multiRes.rows.find((r: any) => r.sku === "C4T");
+    assert.equal(cafeItem.name, "Café Campesino");
+    assert.equal(c4tItem.name, "CAJA x4 Tradicional");
+  } finally {
+    setTursoClientForTesting(null);
+    if (oldDbUrl !== undefined) process.env.TURSO_DATABASE_URL = oldDbUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (oldDbToken !== undefined) process.env.TURSO_AUTH_TOKEN = oldDbToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});
+
+test("Migración Turso: Blindaje contra columnas NOT NULL adicionales en esquemas históricos", async () => {
+  const oldDbUrl = process.env.TURSO_DATABASE_URL;
+  const oldDbToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-prod-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const client = createClient({ url: ":memory:" });
+  setTursoClientForTesting(client);
+
+  try {
+    // Esquema con columnas NOT NULL arbitrarias (subtotal, notes)
+    await client.execute(`
+      CREATE TABLE orders (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        total INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+    `);
+
+    await client.execute(`
+      CREATE TABLE order_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        order_id TEXT NOT NULL,
+        sku TEXT NOT NULL,
+        name TEXT NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_price INTEGER NOT NULL,
+        subtotal INTEGER NOT NULL,
+        notes TEXT NOT NULL,
+        created_at INTEGER DEFAULT 0
+      );
+    `);
+
+    resetTursoReadyForTesting();
+    await ensureTursoReady();
+
+    const order = await createOrder(
+      "whatsapp:+573001112233",
+      [{ sku: "C8T", quantity: 2, unitPrice: 32000 }],
+      64000
+    );
+
+    assert.ok(order.id, "El pedido debe crearse sin violar restricciones NOT NULL de columnas adicionales");
+
+    const res = await client.execute({
+      sql: "SELECT * FROM order_items WHERE order_id = ?",
+      args: [order.id],
+    });
+    assert.equal(res.rows.length, 1);
+    const item: any = res.rows[0];
+    assert.equal(Number(item.subtotal), 64000, "El subtotal debe calcularse correctamente");
+    assert.equal(typeof item.notes, "string", "notes debe ser una cadena no nula");
+  } finally {
+    setTursoClientForTesting(null);
+    if (oldDbUrl !== undefined) process.env.TURSO_DATABASE_URL = oldDbUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (oldDbToken !== undefined) process.env.TURSO_AUTH_TOKEN = oldDbToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});
+
+
 
 
