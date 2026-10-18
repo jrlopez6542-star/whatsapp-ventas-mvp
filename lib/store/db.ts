@@ -148,6 +148,11 @@ export function getTursoClient(): any {
 
 export function setTursoClientForTesting(client: any): void {
   cachedClient = client;
+  initializedPromise = null;
+}
+
+export function resetTursoReadyForTesting(): void {
+  initializedPromise = null;
 }
 
 export async function ensureTursoReady(): Promise<void> {
@@ -285,52 +290,67 @@ export async function ensureTursoReady(): Promise<void> {
       }
     }
 
-    const alterOrderItems = [
-      "order_id TEXT",
-      "sku TEXT",
-      "quantity INTEGER DEFAULT 1",
-      "unit_price INTEGER DEFAULT 0",
-      "created_at INTEGER DEFAULT 0",
+    // 1. Inspeccionar el esquema real de order_items antes de modificarlo
+    const tableInfo = await client.execute("PRAGMA table_info(order_items);");
+    const existingCols = new Set(
+      (tableInfo.rows || []).map((r: any) => String(r.name || r[1] || "").toLowerCase())
+    );
+
+    const requiredOrderItemsCols = [
+      { name: "order_id", ddl: "order_id TEXT" },
+      { name: "sku", ddl: "sku TEXT" },
+      { name: "quantity", ddl: "quantity INTEGER DEFAULT 1" },
+      { name: "unit_price", ddl: "unit_price INTEGER DEFAULT 0" },
+      { name: "created_at", ddl: "created_at INTEGER DEFAULT 0" },
     ];
-    for (const col of alterOrderItems) {
-      try {
-        await client.execute(`ALTER TABLE order_items ADD COLUMN ${col};`);
-      } catch {
-        // Ignored if column already exists
+
+    const newlyAddedCols = new Set<string>();
+
+    for (const col of requiredOrderItemsCols) {
+      if (!existingCols.has(col.name)) {
+        try {
+          await client.execute(`ALTER TABLE order_items ADD COLUMN ${col.ddl};`);
+          existingCols.add(col.name);
+          newlyAddedCols.add(col.name);
+        } catch (err: any) {
+          const errMsg = String(err?.message || err || "").toLowerCase();
+          if (errMsg.includes("duplicate column name")) {
+            existingCols.add(col.name);
+          } else {
+            console.error(`[db][FATAL] Falló migración al añadir columna '${col.name}' a order_items:`, err);
+            throw err;
+          }
+        }
       }
     }
-    // Safely migrate any legacy column names if present by detecting them via PRAGMA
-    try {
-      const tableInfo = await client.execute("PRAGMA table_info(order_items);");
-      const existingCols = new Set(
-        (tableInfo.rows || []).map((r: any) => String(r.name || r[1] || "").toLowerCase())
-      );
+
+    // 2. Homologación segura de columnas legadas únicamente si la columna fue recién añadida,
+    // preservando registros históricos sin sobreescrituras arbitrarias
+    if (newlyAddedCols.has("quantity")) {
       if (existingCols.has("qty")) {
         await client.execute(
-          "UPDATE order_items SET quantity = qty WHERE (quantity IS NULL OR quantity = 1) AND qty IS NOT NULL;"
+          "UPDATE order_items SET quantity = qty WHERE (quantity IS NULL OR quantity = 1) AND qty IS NOT NULL AND qty != 1;"
         );
-      }
-      if (existingCols.has("count")) {
+      } else if (existingCols.has("count")) {
         await client.execute(
-          "UPDATE order_items SET quantity = count WHERE (quantity IS NULL OR quantity = 1) AND count IS NOT NULL;"
+          "UPDATE order_items SET quantity = count WHERE (quantity IS NULL OR quantity = 1) AND count IS NOT NULL AND count != 1;"
         );
       }
-      if (existingCols.has("price")) {
-        await client.execute(
-          "UPDATE order_items SET unit_price = price WHERE (unit_price IS NULL OR unit_price = 0) AND price IS NOT NULL;"
-        );
-      }
-    } catch {
-      // Fallback seguro si PRAGMA no está disponible
-      try {
-        await client.execute("UPDATE order_items SET quantity = qty WHERE (quantity IS NULL OR quantity = 1) AND qty IS NOT NULL;");
-      } catch {}
-      try {
-        await client.execute("UPDATE order_items SET quantity = count WHERE (quantity IS NULL OR quantity = 1) AND count IS NOT NULL;");
-      } catch {}
-      try {
-        await client.execute("UPDATE order_items SET unit_price = price WHERE (unit_price IS NULL OR unit_price = 0) AND price IS NOT NULL;");
-      } catch {}
+    }
+
+    if (newlyAddedCols.has("unit_price") && existingCols.has("price")) {
+      await client.execute(
+        "UPDATE order_items SET unit_price = price WHERE (unit_price IS NULL OR unit_price = 0) AND price IS NOT NULL AND price > 0;"
+      );
+    }
+
+    // 3. Verificación estricta post-migración: confirmar que quantity y unit_price existen
+    const postCheck = await client.execute("PRAGMA table_info(order_items);");
+    const verifiedCols = new Set(
+      (postCheck.rows || []).map((r: any) => String(r.name || r[1] || "").toLowerCase())
+    );
+    if (!verifiedCols.has("quantity") || !verifiedCols.has("unit_price")) {
+      throw new Error("[db][FATAL] La verificación post-migración falló: order_items carece de columnas obligatorias.");
     }
 
     const alterConversations = [

@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
-import { ensureTursoReady, getTursoClient, isTursoConfigured, setTursoClientForTesting } from "./db";
-export { setTursoClientForTesting, isTursoConfigured };
+import { ensureTursoReady, getTursoClient, isTursoConfigured, setTursoClientForTesting, resetTursoReadyForTesting } from "./db";
+export { setTursoClientForTesting, resetTursoReadyForTesting, isTursoConfigured };
 
 export type ConversationStatus = "bot" | "human" | "closed";
 
@@ -851,10 +851,9 @@ export async function createOrder(
       try {
         await client.batch([orderStmt, ...itemBatch], "write");
       } catch (batchErr: any) {
-        console.warn("[store] Error en batch atómico de orden e items, intentando auto-reparación de esquema:", batchErr);
+        console.warn("[store] Error en batch atómico de orden e items:", batchErr);
         try {
-          await client.execute("ALTER TABLE order_items ADD COLUMN quantity INTEGER DEFAULT 1;").catch(() => {});
-          await client.execute("ALTER TABLE order_items ADD COLUMN unit_price INTEGER DEFAULT 0;").catch(() => {});
+          await ensureTursoReady();
           await client.batch([orderStmt, ...itemBatch], "write");
         } catch (retryErr) {
           console.error("[store] Inserción atómica de pedido falló definitivamente:", retryErr);
