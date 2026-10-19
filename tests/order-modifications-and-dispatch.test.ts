@@ -138,12 +138,11 @@ test("Test C: Confirmación de pedido despacha notificación formateada al domic
   };
 
   const formattedMsg = formatDeliveryDriverMessage(testOrder);
-  assert.ok(formattedMsg.includes("NUEVO DOMICILIO ASIGNADO"), "Encabezado debe indicar nuevo domicilio asignado");
+  assert.ok(formattedMsg.includes("PEDIDO"), "Encabezado debe indicar el pedido");
   assert.ok(formattedMsg.includes("ord-test"), "Debe incluir ID de la orden");
   assert.ok(formattedMsg.includes("Mariana Rojas"), "Debe incluir nombre del cliente");
   assert.ok(formattedMsg.includes("Carrera 4 # 8-15 Apto 302"), "Debe incluir dirección de entrega");
   assert.ok(formattedMsg.includes("32.000"), "Debe incluir el total exacto de $32.000");
-  assert.ok(formattedMsg.includes("GRATIS") || formattedMsg.includes("$0"), "Debe especificar domicilio gratis");
   assert.ok(formattedMsg.includes("311 222 3344"), "Debe formatear el teléfono de contacto");
 });
 
@@ -649,9 +648,9 @@ test("Test L: Extracción limpia de dirección desacoplada de medios de pago y c
 
   // 4. Verificar impacto real en la ficha generada para el domiciliario
   const driverCard = formatDeliveryDriverMessage(savedOrder);
-  assert.ok(driverCard.includes("👉 Calle 7 # 11-20 conjunto El Portal"), "La ficha del domiciliario debe recibir la dirección limpia");
+  assert.ok(driverCard.includes("Dirección: Calle 7 # 11-20 conjunto El Portal"), "La ficha del domiciliario debe recibir la dirección limpia");
   assert.ok(!driverCard.includes("conjunto El Portal y pago"), "La ficha del domiciliario no debe tener el texto de pago en la dirección");
-  assert.ok(driverCard.includes("💵 *Paga con:* Billete de $50.000"), "La ficha del domiciliario debe llevar la línea de cambio");
+  assert.ok(driverCard.includes("Paga con: Billete de $50.000") && driverCard.includes("Cambio: $18.000"), "La ficha del domiciliario debe llevar la línea de cambio");
 });
 
 test("Test M: Mensaje de confirmación post-registro no afirma «Tus buñuelos van en camino» cuando el domiciliario está pendiente", async () => {

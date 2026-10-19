@@ -230,3 +230,183 @@ export function getOutOfCoverageMessage(
 ): string {
   return `¡Hola! Te cuento que en *BUÑUELANDIA* nuestros buñuelos recién hechos se hornean y despachan exclusivamente desde *${businessCity}* (cobertura: ${coverageArea}). Actualmente no tenemos cobertura directa de domicilio hasta ${detectedCity}. Te he comunicado con un asesor humano para evaluar opciones o pedidos especiales. 🥟🛵`;
 }
+
+function formatCopInternal(amount: number): string {
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+export interface CashAmountInfo {
+  amount: number;
+  rawText: string;
+  isExact?: boolean;
+}
+
+/**
+ * Parsea importes de efectivo en pesos colombianos a partir de texto libre.
+ * Soporta montos numéricos ("40000", "$40.000", "40.000 pesos"), denominaciones ("billete de 50"),
+ * sufijos ("40k", "40 mil") y pagos exactos ("monto exacto", "exacto").
+ * Protege contra números de teléfono (10 dígitos que inician con 3), direcciones y cantidades de producto.
+ */
+export function parseCashAmount(text: string): CashAmountInfo | null {
+  if (!text) return null;
+  const clean = text.replace(/[*_~`]/g, " ").trim();
+
+  // Descartar si es un teléfono colombiano de 10 dígitos (ej: 3228964947)
+  const digitsOnly = clean.replace(/\D/g, "");
+  if (digitsOnly.length === 10 && digitsOnly.startsWith("3")) {
+    return null;
+  }
+
+  // 1. Pago exacto
+  if (
+    /\b(?:monto\s+exacto|pago\s+exacto|dinero\s+exacto|valor\s+exacto|^exacto$|no\s+necesito\s+cambio|sin\s+cambio|justo)\b/i.test(
+      clean
+    )
+  ) {
+    return { amount: 0, rawText: "Monto exacto", isExact: true };
+  }
+
+  // 2. Denominación con billete: "billete de 50", "billete de 50 mil", "billete de 50000"
+  const billMatch = clean.match(
+    /\b(?:(?:con|tengo|llevo)\s+)?(?:billete\s+de|paga\s+con|pago\s+con|cambio\s+(?:de|para)|vueltas\s+(?:de|para))\s*(?:billete\s+de\s*)?\$?\s*(\d[\d.,]*(?:\s*mil|\s*k)?)/i
+  );
+  if (billMatch && billMatch[1]) {
+    const raw = billMatch[1].replace(/[\$\s]/g, "");
+    if (/^\d+$/.test(raw)) {
+      const num = parseInt(raw, 10);
+      if (num === 20 || num === 50 || num === 100) {
+        return { amount: num * 1000, rawText: `Billete de $${num}.000` };
+      }
+      if (num >= 1000 && num <= 1000000) {
+        return { amount: num, rawText: `Billete de $${num.toLocaleString("es-CO")}` };
+      }
+    } else if (raw.toLowerCase().endsWith("mil") || raw.toLowerCase().endsWith("k")) {
+      const numPart = parseInt(raw.replace(/(?:mil|k)/i, ""), 10);
+      if (!isNaN(numPart) && numPart >= 1 && numPart <= 1000) {
+        const val = numPart * 1000;
+        return { amount: val, rawText: `Billete de $${val.toLocaleString("es-CO")}` };
+      }
+    } else if (/^\d{1,3}(?:\.\d{3})+$/.test(raw)) {
+      const val = parseInt(raw.replace(/\./g, ""), 10);
+      return { amount: val, rawText: `Billete de $${raw}` };
+    }
+  }
+
+  // 3. Monto con "mil" o "k": "40 mil", "40k", "con 40 mil", "pago con 40k"
+  const milMatch = clean.match(
+    /\b(?:(?:con|pago\s+con|paga\s+con|tengo)\s+)?\$?\s*(\d{1,3})\s*(?:mil|k)(?:\s*pesos|\s*cop)?\b/i
+  );
+  if (milMatch && milMatch[1]) {
+    const num = parseInt(milMatch[1], 10);
+    if (!isNaN(num) && num >= 1 && num <= 1000) {
+      const val = num * 1000;
+      return { amount: val, rawText: `$${val.toLocaleString("es-CO")}` };
+    }
+  }
+
+  // 4. Monto numérico explícito: "40000", "$40.000", "40.000", "40.000 pesos", "con 40000"
+  // Descartar si el texto tiene indicadores claros de dirección urbana
+  const isAddress = /\b(?:calle|carrera|cra|cll|diagonal|diag|transversal|trans|manzana|mz|lote|torre|apto|casa|vereda)\s+\d+/i.test(
+    clean
+  );
+  if (!isAddress) {
+    const numMatch = clean.match(
+      /(?:(?:con|pago\s+con|paga\s+con|tengo)\s+)?\$?\s*(\d{1,3}(?:\.\d{3})+|\d{4,6})(?:\s*pesos|\s*cop)?\b/i
+    );
+    if (numMatch && numMatch[1]) {
+      const parsed = parseInt(numMatch[1].replace(/\./g, ""), 10);
+      if (!isNaN(parsed) && parsed >= 1000 && parsed <= 1000000) {
+        return { amount: parsed, rawText: `$${parsed.toLocaleString("es-CO")}` };
+      }
+    }
+  }
+
+  return null;
+}
+
+export interface CashChangeResult {
+  cashAmount: number;
+  change: number;
+  formattedCash: string;
+  formattedChange: string;
+  isExact: boolean;
+  isInsufficient: boolean;
+  rawText?: string;
+}
+
+/**
+ * Calcula determinísticamente el cambio a devolver para un pago en efectivo contra el total oficial del pedido.
+ */
+export function calculateCashChange(
+  cashInput: string | number | undefined | null,
+  total: number
+): CashChangeResult | null {
+  if (cashInput === undefined || cashInput === null || cashInput === "") return null;
+  const parsed =
+    typeof cashInput === "number"
+      ? { amount: cashInput, rawText: `$${cashInput.toLocaleString("es-CO")}` }
+      : parseCashAmount(String(cashInput));
+  if (!parsed) return null;
+
+  if (parsed.isExact) {
+    return {
+      cashAmount: total,
+      change: 0,
+      formattedCash: "Monto exacto",
+      formattedChange: "$0",
+      isExact: true,
+      isInsufficient: false,
+      rawText: parsed.rawText,
+    };
+  }
+
+  const cashAmount = parsed.amount;
+  if (cashAmount <= 0) return null;
+
+  const change = cashAmount - total;
+  const isInsufficient = change < 0;
+
+  return {
+    cashAmount,
+    change: Math.max(0, change),
+    formattedCash: `$${cashAmount.toLocaleString("es-CO")}`,
+    formattedChange: `$${Math.max(0, change).toLocaleString("es-CO")}`,
+    isExact: change === 0,
+    isInsufficient,
+    rawText: parsed.rawText,
+  };
+}
+
+/**
+ * Formatea la línea de efectivo y cambio para la ficha del domiciliario.
+ */
+export function formatCashPaymentForDriver(
+  changeAmount: string | undefined | null,
+  total: number
+): string {
+  const rawChange = (changeAmount || "").trim();
+  if (
+    !rawChange ||
+    rawChange.toLowerCase().includes("por confirmar") ||
+    rawChange === "Paga con:"
+  ) {
+    return "💵 *Paga con:* Efectivo por confirmar (Llevar cambio surtido)\n";
+  }
+
+  const calc = calculateCashChange(rawChange, total);
+  if (calc) {
+    if (calc.isExact) {
+      return `💵 *Paga con:* Monto exacto (${formatCopInternal(total)}, no requiere cambio)\n`;
+    }
+    if (!calc.isInsufficient) {
+      const billPrefix = rawChange.toLowerCase().includes("billete") ? "Billete de " : "";
+      return `💵 *Paga con:* ${billPrefix}${calc.formattedCash} (Cambio: ${calc.formattedChange})\n`;
+    }
+  }
+
+  return `💵 *Paga con:* ${rawChange}\n`;
+}

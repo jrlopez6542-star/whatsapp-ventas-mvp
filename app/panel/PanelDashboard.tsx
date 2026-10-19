@@ -88,6 +88,13 @@ const STATUS_CONFIG: Record<
     border: "border-orange-500/20",
     icon: "ph-fire",
   },
+  ready: {
+    label: "Listo para Despacho",
+    bg: "bg-teal-500/10",
+    text: "text-teal-400",
+    border: "border-teal-500/20",
+    icon: "ph-package",
+  },
   delivering: {
     label: "En Camino",
     bg: "bg-indigo-500/10",
@@ -643,8 +650,12 @@ export default function PanelDashboard({ initialUser: _initialUser }: { initialU
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus, notifyCustomer: true }),
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         await loadOrders();
+        if (data.warning) {
+          alert(data.warning);
+        }
       }
     } catch {}
   };
@@ -1324,6 +1335,7 @@ export default function PanelDashboard({ initialUser: _initialUser }: { initialU
                                   <option value="pending">⏳ Pendiente</option>
                                   <option value="confirmed">✅ Confirmado</option>
                                   <option value="preparing">👨‍🍳 En Preparación</option>
+                                  <option value="ready">📦 Listo para Despacho</option>
                                   <option value="delivering">🛵 En Camino</option>
                                   <option value="delivered">🎉 Entregado</option>
                                   <option value="cancelled">❌ Cancelado</option>

@@ -47,7 +47,49 @@ export async function POST(
       });
     }
 
-    const sendRes = await notifyDeliveryDriver(order, message, { force: true });
+    let allowForce = false;
+    try {
+      const urlObj = new URL(request.url);
+      if (urlObj.searchParams.get("force") === "true") {
+        allowForce = true;
+      } else {
+        const body = await request.clone().json().catch(() => ({}));
+        if (body?.force === true) {
+          allowForce = true;
+        }
+      }
+    } catch {}
+
+    // Evitar envíos prematuros si el pedido aún no está listo en cocina.
+    // Los estados 'pending', 'confirmed' y 'preparing' se rechazan SIEMPRE con HTTP 400,
+    // independientemente de si se envía force=true.
+    const isPremature =
+      order.status === "pending" ||
+      order.status === "confirmed" ||
+      order.status === "preparing";
+
+    if (isPremature) {
+      return NextResponse.json(
+        {
+          ok: false,
+          premature: true,
+          error: `El pedido está en estado '${order.status}'. Debe marcarse como 'Listo para despacho' (ready) antes de notificar al domiciliario.`,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (order.status === "cancelled") {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "No se puede notificar al domiciliario sobre un pedido cancelado.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const sendRes = await notifyDeliveryDriver(order, message, { force: allowForce });
     if (!sendRes.ok) {
       return NextResponse.json({
         ok: false,
@@ -55,6 +97,18 @@ export async function POST(
         sentTo: driverPhone,
         message,
         waLink,
+      });
+    }
+
+    if (sendRes.skipped === "duplicate") {
+      return NextResponse.json({
+        ok: true,
+        skipped: "duplicate",
+        alreadyNotified: true,
+        sentTo: driverPhone,
+        message,
+        waLink,
+        notice: "La ficha ya había sido enviada previamente al domiciliario.",
       });
     }
 

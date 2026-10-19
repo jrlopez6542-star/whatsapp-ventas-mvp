@@ -302,6 +302,14 @@ export async function ensureTursoReady(): Promise<void> {
       "customer_phone TEXT",
       "driver_notified TEXT",
       "driver_notified_at INTEGER DEFAULT 0",
+      "invoice_pdf_sent TEXT",
+      "invoice_pdf_sent_at INTEGER DEFAULT 0",
+      "driver_payment_confirmed INTEGER DEFAULT 0",
+      "driver_payment_amount INTEGER DEFAULT 0",
+      "driver_payment_phone TEXT",
+      "driver_payment_confirmed_at INTEGER DEFAULT 0",
+      "accounting_payment_synced INTEGER DEFAULT 0",
+      "accounting_payment_synced_at INTEGER DEFAULT 0",
     ];
     for (const col of alterOrders) {
       try {

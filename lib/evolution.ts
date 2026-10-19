@@ -1136,7 +1136,14 @@ export async function getEvolutionMediaBase64(
   const base = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "");
   const apiKey = process.env.EVOLUTION_API_KEY?.trim();
   const instance = process.env.EVOLUTION_INSTANCE?.trim();
-  if (!base || !apiKey || !instance) return null;
+  if (!base || !apiKey || !instance) {
+    console.warn("[evolution] Media download is not configured", {
+      hasUrl: Boolean(base),
+      hasApiKey: Boolean(apiKey),
+      hasInstance: Boolean(instance),
+    });
+    return null;
+  }
 
   const url = `${base}/chat/getBase64FromMediaMessage/${encodeURIComponent(instance)}`;
   try {
@@ -1153,6 +1160,7 @@ export async function getEvolutionMediaBase64(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(bodyPayload),
+      signal: AbortSignal.timeout(12000),
     });
 
     if (!res.ok) {
@@ -1167,6 +1175,7 @@ export async function getEvolutionMediaBase64(
           message: { key: { id: messageId } },
           convertToMp4: false,
         }),
+        signal: AbortSignal.timeout(12000),
       });
     }
 
@@ -1191,7 +1200,10 @@ export async function getEvolutionMediaBase64(
       };
     }
   } catch (err) {
-    console.warn("[evolution] getEvolutionMediaBase64 error:", err);
+    const errorName = err && typeof err === "object" && "name" in err && typeof err.name === "string"
+      ? err.name.slice(0, 40)
+      : "MediaDownloadError";
+    console.warn("[evolution] getEvolutionMediaBase64 failed", { error: errorName });
   }
   return null;
 }

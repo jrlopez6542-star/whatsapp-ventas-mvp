@@ -4,11 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node --require ./tests/no-public-network.cjs ./node_modules/next/dist/bin/next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test lib/outbound-queue.test.ts lib/whatsapp-fixes.test.ts tests/*.test.ts",
-    "test:bot": "node scripts/test-bot.mjs"
+    "test": "node --require ./tests/no-public-network.cjs --import tsx --test lib/outbound-queue.test.ts lib/whatsapp-fixes.test.ts tests/*.test.ts",
+    "test:bot": "node --require ./tests/no-public-network.cjs scripts/test-bot.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1146.0",

@@ -11,10 +11,14 @@ import {
   parseEvolutionMessageUpdate,
   rejectEvolutionCall,
   resolveMediaRecipient,
+  normalizeEvolutionNumber,
 } from "@/lib/evolution";
-import { transcribeWhatsAppAudio } from "@/lib/agent/audio-transcriber";
+import {
+  dispatchAudioTranscriptionResult,
+  transcribeWhatsAppAudio,
+} from "@/lib/agent/audio-transcriber";
 import { sendDelayedOutboundWhatsApp } from "@/lib/outbound-queue";
-import { sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
+import { sendOutboundWhatsApp, sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
 import {
   claimWebhookEvent,
   claimWebhookEventDetailed,
@@ -22,12 +26,7 @@ import {
   failWebhookEvent,
 } from "@/lib/webhook-dedupe";
 import { isPhoneWhitelisted, logWhitelistRejection } from "@/lib/security-whitelist";
-import {
-  handleSalesMessage,
-  isValidContabilidadPublicUrl,
-  isValidContabilidadPdfUrl,
-  fetchAndValidateInvoicePdf,
-} from "@/lib/agent/sales-agent";
+import { handleSalesMessage } from "@/lib/agent/sales-agent";
 import { verifyReceiptWithGemini } from "@/lib/agent/receipt-verifier";
 import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { pickRandomVariation } from "@/lib/anti-ban";
@@ -45,15 +44,27 @@ import {
   updateOrderStatus,
   getOrgSettings,
   getMessages,
+  findOrderByInvoiceOrRef,
+  markOrderDriverPaymentConfirmed,
+  markOrderAccountingPaymentSynced,
 } from "@/lib/store";
+import { recordPaymentInContabilidad } from "@/lib/contabilidad";
 
 export const runtime = "nodejs";
 /** Delay (≤5.5s) + LLM + Evolution REST; keep room under Vercel hobby/pro caps. */
+
+function safeWebhookErrorName(error: unknown): string {
+  return error && typeof error === "object" && "name" in error && typeof error.name === "string"
+    ? error.name.slice(0, 40)
+    : "WebhookError";
+}
 export const maxDuration = 60;
 
 function jsonOk(extra?: Record<string, unknown>) {
   return NextResponse.json({ ok: true, ...extra }, { status: 200 });
 }
+
+
 
 /**
  * Prefer full @lid replyJid when present (digits may be owner/business number
@@ -288,6 +299,128 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Interceptar comandos del domiciliario autorizado
+    const orgSettings = await getOrgSettings().catch(() => null);
+    const configuredDriverPhone = orgSettings?.deliveryDriverPhone?.trim();
+    const normalizedDriverPhone = normalizeEvolutionNumber(configuredDriverPhone || "");
+    const senderDigits = parsed.digits || normalizeEvolutionNumber(parsed.from);
+    const isAuthorizedDriver = Boolean(normalizedDriverPhone && senderDigits === normalizedDriverPhone);
+
+    const isPagadoCommand = /^PAGADO\b/i.test(text);
+
+    // 1. Si un número NO autorizado intenta enviar el comando PAGADO
+    if (isPagadoCommand && !isAuthorizedDriver) {
+      const replyTarget = replyTargetFromParsed(parsed);
+      const warnMsg = "⚠️ Este número no está autorizado como domiciliario para confirmar cobros de pedidos.";
+      await sendOutboundWhatsApp(replyTarget, warnMsg).catch(() => {});
+      if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
+      return jsonOk({ driverCommand: "unauthorized", senderDigits });
+    }
+
+    // 2. Si es el domiciliario autorizado
+    if (isAuthorizedDriver) {
+      const replyTarget = replyTargetFromParsed(parsed);
+      const match = text.match(/^PAGADO\s+([#A-Za-z0-9\-]+)$/i);
+      if (!match) {
+        const helpMsg = "ℹ️ Hola. Para confirmar el cobro de un pedido en efectivo, escribe:\nPAGADO <número_factura_o_pedido>\nEjemplo: PAGADO B-0014";
+        await sendOutboundWhatsApp(replyTarget, helpMsg).catch(() => {});
+        if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
+        return jsonOk({ driverCommand: "help_sent" });
+      }
+
+      const ref = match[1].replace(/^#/, "").trim();
+      const order = await findOrderByInvoiceOrRef(ref);
+
+      if (!order) {
+        const notFoundMsg = `⚠️ No se encontró ningún pedido con la referencia "${ref}". Por favor verifica el número de factura o pedido.`;
+        await sendOutboundWhatsApp(replyTarget, notFoundMsg).catch(() => {});
+        if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
+        return jsonOk({ driverCommand: "order_not_found", ref });
+      }
+
+      // Validar si ya estaba confirmado previamente
+      if (order.driverPaymentConfirmed) {
+        if (order.status === "delivered" && !order.accountingPaymentSynced) {
+          const retryRes = await recordPaymentInContabilidad({
+            orderId: order.id,
+            invoiceId: order.invoiceId,
+            invoiceNumber: order.invoiceNumber,
+            amount: order.total,
+            confirmedBy: senderDigits,
+          });
+          if (retryRes.ok) {
+            const marked = await markOrderAccountingPaymentSynced(order.id);
+            if (!marked) {
+              console.warn("[driver] pago ya registrado; marcador pendiente de persistir en BOTW", {
+                orderId: order.id,
+              });
+            }
+          }
+        }
+        const alreadyMsg = `ℹ️ El cobro del pedido #${order.invoiceNumber || order.id.slice(0, 8)} ya fue confirmado anteriormente por un valor de $${(order.driverPaymentAmount || order.total).toLocaleString("es-CO")}.`;
+        await sendOutboundWhatsApp(replyTarget, alreadyMsg).catch(() => {});
+        if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
+        return jsonOk({ driverCommand: "already_confirmed", orderId: order.id });
+      }
+
+      // Validar medio de pago en efectivo
+      const pm = (order.paymentMethod || "").toLowerCase();
+      const isCash = pm.includes("efectivo") || pm.includes("contra entrega") || pm.includes("contraentrega");
+      if (!isCash) {
+        const notCashMsg = `⚠️ El pedido #${order.invoiceNumber || order.id.slice(0, 8)} no está registrado como pago en efectivo (Medio: ${order.paymentMethod || "Transferencia"}). No requiere cobro en efectivo.`;
+        await sendOutboundWhatsApp(replyTarget, notCashMsg).catch(() => {});
+        if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
+        return jsonOk({ driverCommand: "not_cash", orderId: order.id });
+      }
+
+      // Registrar confirmación persistente del domiciliario
+      await markOrderDriverPaymentConfirmed(order.id, {
+        amount: order.total,
+        phone: senderDigits,
+      });
+
+      logSystemEvent(
+        "success",
+        "driver",
+        `Domiciliario ${senderDigits} confirmó cobro de $${order.total} para pedido #${order.invoiceNumber || order.id.slice(0, 8)}`,
+        { orderId: order.id, total: order.total }
+      );
+
+      // Si el pedido YA había sido marcado como «Entregado» por el administrador, ahora AMBAS condiciones se cumplen
+      if (order.status === "delivered" && !order.accountingPaymentSynced) {
+        const syncRes = await recordPaymentInContabilidad({
+          orderId: order.id,
+          invoiceId: order.invoiceId,
+          invoiceNumber: order.invoiceNumber,
+          amount: order.total,
+          confirmedBy: senderDigits,
+        });
+        if (syncRes.ok) {
+          const marked = await markOrderAccountingPaymentSynced(order.id);
+          logSystemEvent(
+            marked ? "success" : "warn",
+            "driver",
+            marked
+              ? `Cobro sincronizado en Contabilidad para pedido #${order.invoiceNumber || order.id.slice(0, 8)} tras confirmación del domiciliario`
+              : `Pago ya registrado en Contabilidad; quedó pendiente persistir el marcador de sincronización para pedido #${order.invoiceNumber || order.id.slice(0, 8)}`,
+            { orderId: order.id, invoiceNumber: order.invoiceNumber }
+          );
+        } else {
+          logSystemEvent(
+            "warn",
+            "driver",
+            `Cobro confirmado por domiciliario pero falló sincronización con Contabilidad: ${syncRes.error}`,
+            { orderId: order.id, error: syncRes.error }
+          );
+        }
+      }
+
+      const successMsg = `✅ Cobro de $${order.total.toLocaleString("es-CO")} para el pedido #${order.invoiceNumber || order.id.slice(0, 8)} confirmado exitosamente. ¡Muchas gracias! 🛵💨`;
+      await sendOutboundWhatsApp(replyTarget, successMsg).catch(() => {});
+      if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
+      return jsonOk({ driverCommand: "confirmed", orderId: order.id });
+    }
+
     console.log("[evolution inbound]", {
       id: parsed.messageId,
       from: parsed.from,
@@ -317,7 +450,6 @@ export async function POST(request: NextRequest) {
       : text;
     const savedMsg = await appendMessage(fromKey, "user", userMessageContent);
 
-    const orgSettings = await getOrgSettings().catch(() => null);
     if (orgSettings?.botEnabled === "false") {
       console.log("[evolution] bot is disabled via master switch — skipping auto-reply", { from: fromKey });
       if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
@@ -438,27 +570,34 @@ export async function POST(request: NextRequest) {
           });
 
           if (audioBase64) {
-            const transcribed = await transcribeWhatsAppAudio(audioBase64, audioMime);
-            if (transcribed && transcribed.trim()) {
-              currentText = transcribed.trim();
-              console.log("[evolution] Transcripción exitosa:", currentText);
-              await updateMessageContent(savedMsg.id, `🎤 [Nota de voz]: "${currentText}"`).catch(() => {});
-              console.warn("[evolution] Audio inaudible o no se pudo transcribir");
-              const inaudibleReply = pickRandomVariation([
-                "¡Hola! Recibimos tu nota de voz 🎤 pero no logramos escucharla con claridad. ¿Podrías enviárnosla de nuevo o escribirnos tu pedido por aquí? ¡Con gusto te atendemos! 😊",
-                "¡Hola! Qué pena contigo, el audio no se escucha muy claro 🎤. ¿Nos podrías escribir tu pedido o reenviar la nota de voz? ¡Aquí estamos listos para prepararlo!",
-                "¡Hola! Tuvimos un pequeño inconveniente al escuchar tu nota de voz 🎤. ¿Te queda fácil escribirnos lo que deseas pedir para tomártelo de una? 🥟✨",
-              ]);
-              await appendMessage(fromKey, "assistant", inaudibleReply);
-              try {
-                await sendDelayedOutboundWhatsApp(fromKey, replyTo, inaudibleReply, parsed.messageId);
-              } catch (err) {
-                console.error("[evolution] error sending inaudible reply:", err);
+            const transcription = await transcribeWhatsAppAudio(audioBase64, audioMime);
+            const shouldContinue = await dispatchAudioTranscriptionResult(
+              transcription,
+              async (transcript) => {
+                currentText = transcript;
+                console.log("[evolution] Transcripción exitosa", { characters: transcript.length });
+                await updateMessageContent(savedMsg.id, `🎤 [Nota de voz]: "${transcript}"`).catch(() => {});
+              },
+              async (reason) => {
+                logSystemEvent("warn", "voice", `No se pudo transcribir el audio (${reason})`, {
+                  reason,
+                });
+                const retryReply = reason === "inaudible"
+                  ? "¡Hola! Recibimos tu nota de voz 🎤 pero no logramos entender las palabras. ¿Podrías reenviarla o escribirnos tu pedido? ¡Con gusto te atendemos! 😊"
+                  : "¡Hola! Tuvimos un inconveniente técnico al procesar tu nota de voz 🎤. ¿Podrías reenviarla o escribirnos tu pedido? ¡Con gusto te ayudamos! 😊";
+                await appendMessage(fromKey, "assistant", retryReply);
+                try {
+                  await sendDelayedOutboundWhatsApp(fromKey, replyTo, retryReply, parsed.messageId);
+                } catch (err) {
+                  console.error("[evolution] error sending audio retry reply", { error: safeWebhookErrorName(err) });
+                }
               }
+            );
+            if (!shouldContinue) {
               return;
             }
           } else {
-            console.warn("[evolution] No se pudo obtener el audio en base64");
+            logSystemEvent("warn", "voice", "No se pudo recuperar el archivo de audio para transcripción");
             const noAudioReply = pickRandomVariation([
               "¡Hola! Recibimos tu nota de voz 🎤 pero ocurrió un inconveniente al procesarla. Por favor escríbenos tu pedido por aquí para poder ayudarte de inmediato. 😊",
               "¡Hola! No pudimos descargar tu nota de voz en el sistema 🎤. ¿Nos podrías escribir qué te gustaría pedir hoy para agilizar tu pedido? 🥟",
@@ -508,6 +647,7 @@ export async function POST(request: NextRequest) {
               console.log("[evolution] Pedido en efectivo, no requiere comprobante", { orderId: latestOrder.id });
             } else if (
               latestOrder.status === "preparing" ||
+              latestOrder.status === "ready" ||
               latestOrder.status === "delivering" ||
               latestOrder.status === "delivered"
             ) {
@@ -708,79 +848,12 @@ export async function POST(request: NextRequest) {
             console.error("[evolution] media outbound error", mErr);
           }
         }
-        if (invoicePdfUrl) {
-          try {
-            // Pausa humana antes de enviar factura PDF (2.2s a 3.8s)
-            const pdfDelay = 2200 + Math.floor(Math.random() * 1600);
-            await new Promise((r) => setTimeout(r, pdfDelay));
-
-            const currentConvForPdf = latestAfterSales || (await getConversation(fromKey)) || conv;
-            const allOrdersForPdf = await getOrders().catch(() => []);
-            const lastOrderPhone = allOrdersForPdf.filter((o) => o.conversationId === fromKey).slice(-1)[0]?.customerPhone;
-
-            const isLidPdfConversation = isLidJid(replyTo) || isLidJid(fromKey);
-            const rawLidPdfId = isLidPdfConversation ? replyTo.replace(/@lid.*/i, "").replace(/\D/g, "") : "";
-            const verifiedParsedPdfDigits =
-              parsed.digits && (!isLidPdfConversation || (parsed.digits !== rawLidPdfId && !parsed.digits.includes("lid")))
-                ? parsed.digits
-                : null;
-
-            const pdfTarget = resolveMediaRecipient(replyTo, {
-              convPhone: currentConvForPdf?.phone,
-              orderPhone: lastOrderPhone,
-              parsedDigits: verifiedParsedPdfDigits,
-            });
-
-            if (!pdfTarget) {
-              console.warn("[evolution] no se pudo resolver destinatario telefónico para PDF de factura (omitido)", {
-                fromKey,
-                isLid: isLidJid(replyTo),
-              });
-            } else {
-              const formattedNum = invoiceNumber
-                ? (invoiceNumber.startsWith("#") ? invoiceNumber : `#${invoiceNumber}`)
-                : "";
-              const numPart = formattedNum ? ` ${formattedNum}` : "";
-              const urlPart =
-                invoiceUrl && isValidContabilidadPublicUrl(invoiceUrl)
-                  ? `\n📄 Ver factura digital: ${invoiceUrl}`
-                  : "";
-
-              const invoiceCaption = pickRandomVariation([
-                `🧾 Factura Oficial${numPart}${urlPart}\n¡Gracias por tu compra en Buñuelandia! 🥟`,
-                `🧾 Aquí tienes tu Factura Oficial${numPart}.${urlPart}\n¡Tus buñuelos van en preparación con todo el amor! 👨‍🍳🔥`,
-                `🧾 Adjuntamos la Factura Oficial${numPart} de tu pedido.${urlPart}\n¡Muchas gracias por preferirnos! ✨`,
-              ]);
-
-              const dlRes = await fetchAndValidateInvoicePdf(invoicePdfUrl, 10000);
-              if (!dlRes.ok || !dlRes.base64) {
-                console.error("[evolution] fallo al descargar/validar PDF de factura:", {
-                  error: dlRes.error,
-                  httpStatus: dlRes.httpStatus,
-                });
-              } else {
-                const pdfRes = await sendOutboundWhatsAppMedia(
-                  pdfTarget.to,
-                  dlRes.base64,
-                  invoiceCaption
-                );
-                if (!pdfRes.ok) {
-                  console.error("[evolution] fallo al enviar PDF de factura a WhatsApp:", {
-                    error: pdfRes.error,
-                    channel: pdfRes.channel,
-                  });
-                } else {
-                  console.log("[evolution] PDF de factura enviado con éxito:", {
-                    to: pdfTarget.to.slice(-4),
-                    bytes: dlRes.byteLength,
-                    id: pdfRes.id,
-                  });
-                }
-              }
-            }
-          } catch (pdfErr) {
-            console.error("[evolution] invoice pdf outbound error", pdfErr);
-          }
+        if (invoiceUrl) {
+          console.log("[evolution] Enlace web de factura entregado en mensaje de confirmación (envío automático de PDF omitido):", {
+            from: fromKey,
+            invoiceNumber,
+            invoiceUrl,
+          });
         }
         if (!send.ok) {
           console.error("[evolution] outbound failed", send);
@@ -824,7 +897,7 @@ export async function POST(request: NextRequest) {
       queued: true,
     });
   } catch (err) {
-    console.error("[evolution] webhook error", err);
+    console.error("[evolution] webhook error", { error: safeWebhookErrorName(err) });
     return jsonOk({ error: "logged" });
   }
 }

@@ -6,6 +6,10 @@ import {
 } from "@/lib/store";
 import { sendOutboundWhatsApp } from "@/lib/whatsapp-send";
 import { logSystemEvent } from "@/lib/logger";
+import {
+  formatCashPaymentForDriver,
+  calculateCashChange,
+} from "@/lib/agent/order-validator";
 
 function formatCop(amount: number): string {
   return new Intl.NumberFormat("es-CO", {
@@ -120,87 +124,173 @@ export function resolveCustomerPhoneForDriver(order: Order): CustomerPhoneInfo {
   };
 }
 
+
 /**
- * Genera la ficha de entrega formateada para el domiciliario por WhatsApp
+ * Formatea los productos del pedido en líneas compactas "[Cantidad] x [nombre del producto]"
+ */
+export function formatOrderItemsForDriver(order: Order): string[] {
+  if (order.items && order.items.length > 0) {
+    return order.items.map((it) => `${it.quantity || 1} x ${it.name || it.sku}`);
+  }
+
+  const raw = (order.itemsSummary || "").trim();
+  if (!raw) return ["1 x Pedido"];
+
+  const lines = raw.includes("\n")
+    ? raw.split(/\r?\n/)
+    : raw.split(/,\s*(?=\d+\s*x|[A-Z0-9_]+\s*x)/i);
+
+  const formatted: string[] = [];
+  for (const line of lines) {
+    const cleaned = line.replace(/^[•\-\*\s]+/, "").trim();
+    if (!cleaned) continue;
+
+    const mPrefix = cleaned.match(/^(\d+)\s*(?:x|X|\*)\s*(.+)$/);
+    const mSuffix = cleaned.match(/^([^\d\nxX]+)\s*(?:x|X|\*)\s*(\d+)$/);
+    if (mPrefix) {
+      formatted.push(`${mPrefix[1]} x ${mPrefix[2].trim()}`);
+    } else if (mSuffix) {
+      formatted.push(`${mSuffix[2]} x ${mSuffix[1].trim()}`);
+    } else {
+      formatted.push(cleaned);
+    }
+  }
+
+  return formatted.length > 0 ? formatted : [raw];
+}
+
+/**
+ * Formatea la sección determinista de cobro en efectivo o electrónico
+ */
+function formatCobroSection(order: Order): string[] {
+  const lines: string[] = ["💰 COBRO"];
+  const formattedTotal = `$${(order.total || 0).toLocaleString("es-CO")}`;
+  lines.push(`Total: ${formattedTotal}`);
+
+  const paymentMethod = (order.paymentMethod || "Efectivo").trim();
+  const pmLower = paymentMethod.toLowerCase();
+  const isCash =
+    pmLower.includes("efectivo") ||
+    pmLower.includes("contra entrega") ||
+    pmLower.includes("contraentrega");
+
+  if (isCash) {
+    lines.push("Método: Efectivo");
+    lines.push("⚠️ Cobrar en efectivo al entregar y llevar el cambio listo");
+    const rawChange = (order.changeAmount || "").trim();
+    if (rawChange) {
+      const calc = calculateCashChange(rawChange, order.total || 0);
+      if (calc) {
+        if (calc.isExact) {
+          lines.push("Paga con: Monto exacto");
+          lines.push("Cambio: $0");
+        } else if (!calc.isInsufficient) {
+          const billPrefix = rawChange.toLowerCase().includes("billete") ? "Billete de " : "";
+          lines.push(`Paga con: ${billPrefix}${calc.formattedCash}`);
+          lines.push(`Cambio: ${calc.formattedChange}`);
+        } else {
+          lines.push(`Paga con: ${rawChange}`);
+        }
+      } else if (
+        !rawChange.toLowerCase().includes("por confirmar") &&
+        rawChange !== "Paga con:"
+      ) {
+        lines.push(`Paga con: ${rawChange}`);
+      }
+    }
+  } else {
+    const isVerified =
+      order.status === "preparing" ||
+      order.status === "ready" ||
+      order.status === "delivering" ||
+      order.status === "delivered";
+
+    if (isVerified) {
+      lines.push(`Método: ${paymentMethod} (✅ TRANSFERENCIA VERIFICADA: Pago confirmado exitosamente. No cobrar al cliente.)`);
+    } else {
+      lines.push(`Método: ${paymentMethod} (⏳ *PAGO POR TRANSFERENCIA (PENDIENTE VERIFICAR COMPROBANTE):* Confirmar validación de pago antes de entregar.)`);
+    }
+  }
+
+  return lines;
+}
+
+/**
+ * Genera la ficha de entrega compacta formateada para el domiciliario por WhatsApp (FASE 2)
  */
 export function formatDeliveryDriverMessage(
   order: Order,
   settings?: { name?: string }
 ): string {
-  const businessName = settings?.name || "BUÑUELANDIA";
+  const ref = (order.invoiceNumber ? order.invoiceNumber.replace(/^#/, "") : order.id.slice(0, 8)).trim();
+  const sections: string[] = [];
+
+  // 1. Encabezado
+  sections.push(`🚚 PEDIDO ${ref}`);
+
+  // 2. CLIENTE
+  const clientLines: string[] = ["CLIENTE"];
+  if (order.customerName && order.customerName.trim() && order.customerName.trim().toLowerCase() !== "cliente") {
+    clientLines.push(`Nombre: ${order.customerName.trim()}`);
+  }
   const phoneInfo = resolveCustomerPhoneForDriver(order);
-
-  let phoneBlock = "";
   if (phoneInfo.isLidWithoutPhone) {
-    phoneBlock =
-      `📱 *Celular:* ⚠️ No registrado (Cuenta privada de WhatsApp)\n` +
-      `💬 *WhatsApp:* Responder por el chat del panel de ventas\n\n`;
-  } else if (phoneInfo.waUrl) {
-    phoneBlock =
-      `📱 *Celular:* ${phoneInfo.displayPhone}\n` +
-      `💬 *WhatsApp:* ${phoneInfo.waUrl}\n\n`;
-  } else {
-    phoneBlock =
-      `📱 *Celular:* ${phoneInfo.displayPhone}\n\n`;
+    clientLines.push("Teléfono: No registrado (cuenta privada)");
+  } else if (phoneInfo.displayPhone && phoneInfo.displayPhone !== "No disponible") {
+    const phoneStr = phoneInfo.waUrl
+      ? `${phoneInfo.displayPhone} (${phoneInfo.waUrl})`
+      : phoneInfo.displayPhone;
+    clientLines.push(`Teléfono: ${phoneStr}`);
+  }
+  if (clientLines.length > 1) {
+    sections.push(clientLines.join("\n"));
   }
 
-  const paymentMethod = order.paymentMethod || "Por confirmar";
-  const isCash =
-    paymentMethod.toLowerCase().includes("efectivo") ||
-    paymentMethod.toLowerCase().includes("contra entrega") ||
-    paymentMethod.toLowerCase().includes("contraentrega");
-
-  let paymentNotice = "";
-  if (isCash) {
-    paymentNotice = "⚠️ *ATENCIÓN:* Cobrar en efectivo al entregar y llevar el cambio listo 💵";
-  } else {
-    const isVerified =
-      order.status === "preparing" ||
-      order.status === "delivering" ||
-      order.status === "delivered";
-
-    if (isVerified) {
-      paymentNotice = "✅ *TRANSFERENCIA VERIFICADA:* Pago confirmado exitosamente. No cobrar al cliente.";
-    } else {
-      paymentNotice = "⏳ *PAGO POR TRANSFERENCIA (PENDIENTE VERIFICAR COMPROBANTE):* Confirmar validación de pago antes de entregar.";
-    }
-  }
-
-  const invoiceLine = order.invoiceNumber
-    ? `🧾 *Factura Oficial:* #${order.invoiceNumber}\n`
-    : "";
-
-  const notesLine = order.deliveryNotes
-    ? `🏢 *Notas / Portería:* ${order.deliveryNotes}\n`
-    : "";
-
-  const changeLine = order.changeAmount
-    ? `💵 *Paga con:* ${order.changeAmount}\n`
-    : "";
-
-  const address = order.deliveryAddress || "Dirección por confirmar";
+  // 3. 📍 ENTREGA
+  const deliveryLines: string[] = ["📍 ENTREGA"];
+  const address = (order.deliveryAddress || "").trim();
   const mapsMatch = address.match(/(https?:\/\/(?:maps\.google\.com|maps\.app\.goo\.gl|goo\.gl\/maps)[^\s\]]+)/i);
   const gpsLine = mapsMatch ? `\n🗺️ *Ruta GPS:* ${mapsMatch[1]}` : "";
+  deliveryLines.push(`Dirección: ${address || "Por confirmar"}${gpsLine}`);
+  if (order.deliveryNotes && order.deliveryNotes.trim()) {
+    deliveryLines.push(`Referencia: ${order.deliveryNotes.trim()}`);
+  }
+  sections.push(deliveryLines.join("\n"));
 
-  return (
-    `🛵 *¡NUEVO DOMICILIO ASIGNADO! - ${businessName}* 🥟🔥\n\n` +
-    `📋 *Pedido:* #${order.id.slice(0, 8)}\n` +
-    invoiceLine +
-    `👤 *Cliente:* ${order.customerName || "Cliente"}\n` +
-    phoneBlock +
-    `📍 *Dirección de Entrega:*\n` +
-    `👉 ${address}${gpsLine}\n` +
-    notesLine +
-    `\n🛒 *Detalle del Pedido:*\n` +
-    `${order.itemsSummary || "Productos ordenados"}\n\n` +
-    `💰 *TOTAL A COBRAR / PAGADO:*\n` +
-    `💵 *${formatCop(order.total || 0)}*\n` +
-    `🛵 *Domicilio:* ¡GRATIS! ($0)\n` +
-    `💳 *Medio de Pago:* ${paymentMethod}\n` +
-    changeLine +
-    `\n${paymentNotice}\n\n` +
-    `¡Buen viaje y maneja con precaución! 🛵💨`
-  );
+  // 4. 🛍️ PEDIDO
+  const items = formatOrderItemsForDriver(order);
+  const pedidoLines: string[] = ["🛍️ PEDIDO", ...items];
+  const obs = (order as any).observation || (order as any).orderNotes;
+  if (obs && typeof obs === "string" && obs.trim()) {
+    pedidoLines.push(`Observación: ${obs.trim()}`);
+  }
+  sections.push(pedidoLines.join("\n"));
+
+  // 5. 💰 COBRO
+  const cobroLines = formatCobroSection(order);
+  sections.push(cobroLines.join("\n"));
+
+  // 6. 🧾 FACTURA (enlace oficial existente una sola vez)
+  const invoiceUrl =
+    order.invoiceUrl ||
+    (order.invoiceId
+      ? `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${order.invoiceId}`
+      : undefined);
+  if (invoiceUrl) {
+    sections.push(`🧾 FACTURA\n${invoiceUrl}`);
+  }
+
+  // 7. ✅ AL CONFIRMAR
+  const pmLower = (order.paymentMethod || "Efectivo").toLowerCase();
+  const isCash =
+    pmLower.includes("efectivo") ||
+    pmLower.includes("contra entrega") ||
+    pmLower.includes("contraentrega");
+  if (isCash) {
+    sections.push(`✅ AL CONFIRMAR\nEnvía: "PAGADO ${ref}"`);
+  }
+
+  return sections.join("\n\n");
 }
 
 // Deduplication cache: key = `${order.id}:${kind}` -> timestamp

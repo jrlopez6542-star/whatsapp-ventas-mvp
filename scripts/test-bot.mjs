@@ -2,6 +2,11 @@
 import dotenv from "dotenv";
 import { createClient } from "@libsql/client";
 
+console.error(
+  "[test:bot] Bloqueado: este E2E resetea datos, usa un destino remoto por defecto y puede disparar mensajes por Evolution. No ejecutar desde el checkout local."
+);
+process.exit(1);
+
 // Cargar variables de entorno desde .env.local y .env
 dotenv.config({ path: ".env.local" });
 dotenv.config();

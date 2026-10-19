@@ -46,6 +46,13 @@ const STATUS_CONFIG: Record<
     border: "border-orange-500/20",
     icon: "ph-fire",
   },
+  ready: {
+    label: "Listo para Despacho",
+    bg: "bg-teal-500/10",
+    text: "text-teal-400",
+    border: "border-teal-500/20",
+    icon: "ph-package",
+  },
   delivering: {
     label: "En Camino",
     bg: "bg-indigo-500/10",
@@ -85,6 +92,19 @@ export function OrdersView({
   const [notifyingDriverId, setNotifyingDriverId] = useState<string | null>(null);
 
   const handleNotifyDriver = async (order: OrderItemView) => {
+    // Verificación preventiva: pedidos en pending, confirmed o preparing no deben notificarse
+    const isPremature =
+      order.status === "pending" ||
+      order.status === "confirmed" ||
+      order.status === "preparing";
+
+    if (isPremature) {
+      alert(
+        `⚠️ El pedido #${order.id.slice(0, 8)} está en estado '${STATUS_CONFIG[order.status]?.label || order.status}'. Debe marcarse como 'Listo para despacho' (ready) antes de notificar al domiciliario.`
+      );
+      return;
+    }
+
     setNotifyingDriverId(order.id);
     try {
       const res = await fetch(`/api/panel/orders/${order.id}/notify-driver`, {
@@ -92,7 +112,27 @@ export function OrdersView({
       });
       const data = await res.json();
       if (data.ok) {
-        alert(`¡Ficha de entrega enviada con éxito al WhatsApp del domiciliario (${data.sentTo})! 🛵💨`);
+        if (data.skipped === "duplicate") {
+          if (
+            confirm(
+              "ℹ️ La ficha de entrega ya fue enviada previamente al domiciliario.\n\n¿Deseas reenviarla forzosamente como reintento?"
+            )
+          ) {
+            const retryRes = await fetch(`/api/panel/orders/${order.id}/notify-driver?force=true`, {
+              method: "POST",
+            });
+            const retryData = await retryRes.json();
+            if (retryData.ok) {
+              alert(`¡Ficha de entrega reenviada exitosamente (${retryData.sentTo})! 🛵💨`);
+            } else {
+              alert("Error en reenvío: " + (retryData.error || "Error desconocido"));
+            }
+          }
+        } else {
+          alert(`¡Ficha de entrega enviada con éxito al WhatsApp del domiciliario (${data.sentTo})! 🛵💨`);
+        }
+      } else if (data.premature) {
+        alert(`⚠️ ${data.error}`);
       } else if (data.noPhoneConfigured) {
         if (
           confirm(
@@ -135,13 +175,17 @@ export function OrdersView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus, notifyCustomer: true }),
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         if (onOrdersChange) onOrdersChange();
         if (selectedOrder && selectedOrder.id === id) {
           setSelectedOrder((prev) => (prev ? { ...prev, status: newStatus } : null));
         }
+        if (data.warning) {
+          alert(data.warning);
+        }
       } else {
-        alert("No se pudo actualizar el estado del pedido.");
+        alert(data.error || "No se pudo actualizar el estado del pedido.");
       }
     } catch {
       alert("Error de conexión al actualizar el estado.");
@@ -290,6 +334,9 @@ export function OrdersView({
                             <option value="preparing" className="bg-[#121b22] text-orange-400">
                               👨‍🍳 En Preparación
                             </option>
+                            <option value="ready" className="bg-[#121b22] text-teal-400">
+                              📦 Listo para Despacho
+                            </option>
                             <option value="delivering" className="bg-[#121b22] text-indigo-400">
                               🛵 En Camino
                             </option>
@@ -368,7 +415,8 @@ export function OrdersView({
                     <option value="pending">⏳ Pendiente</option>
                     <option value="confirmed">👍 Confirmado</option>
                     <option value="preparing">👨‍🍳 En Preparación (Notifica al cliente)</option>
-                    <option value="delivering">🛵 En Camino (Notifica al domiciliario/cliente)</option>
+                    <option value="ready">📦 Listo para Despacho (Notifica al domiciliario)</option>
+                    <option value="delivering">🛵 En Camino (Notifica al cliente)</option>
                     <option value="delivered">✅ Entregado (Mensaje de buen provecho)</option>
                     <option value="cancelled">❌ Cancelado (Aviso de cancelación)</option>
                   </select>

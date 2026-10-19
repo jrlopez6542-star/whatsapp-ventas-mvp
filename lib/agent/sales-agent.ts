@@ -17,7 +17,6 @@ import {
   type Order,
 } from "@/lib/store";
 import { createInvoiceInContabilidad } from "@/lib/contabilidad";
-import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { logSystemEvent } from "@/lib/logger";
 import { pickRandomVariation } from "@/lib/anti-ban";
 import {
@@ -95,44 +94,181 @@ export function cleanAddressCandidate(cand: string): string | null {
   return clean.length >= 4 ? clean : null;
 }
 
-// Extrae instrucciones de cambio de efectivo o denominación de billete
-export function extractChangeInstructions(text: string): string | null {
+export interface CashAmountInfo {
+  amount: number;
+  rawText: string;
+  isExact?: boolean;
+}
+
+/**
+ * Parsea importes de efectivo en pesos colombianos a partir de texto libre.
+ * Soporta montos numéricos ("40000", "$40.000", "40.000 pesos"), denominaciones ("billete de 50"),
+ * sufijos ("40k", "40 mil") y pagos exactos ("monto exacto", "exacto").
+ * Protege contra números de teléfono (10 dígitos que inician con 3), direcciones y cantidades de producto.
+ */
+export function parseCashAmount(text: string): CashAmountInfo | null {
   if (!text) return null;
   const clean = text.replace(/[*_~`]/g, " ").trim();
 
-  // 1. Denominación específica (ej: "con billete de 50", "billete de 50 mil", "billete de 50000", "pago con 50 mil", "cambio para 50")
+  // Descartar si es un teléfono colombiano de 10 dígitos (ej: 3228964947)
+  const digitsOnly = clean.replace(/\D/g, "");
+  if (digitsOnly.length === 10 && digitsOnly.startsWith("3")) {
+    return null;
+  }
+
+  // 1. Pago exacto
+  if (
+    /\b(?:monto\s+exacto|pago\s+exacto|dinero\s+exacto|valor\s+exacto|^exacto$|no\s+necesito\s+cambio|sin\s+cambio|justo)\b/i.test(
+      clean
+    )
+  ) {
+    return { amount: 0, rawText: "Monto exacto", isExact: true };
+  }
+
+  // 2. Denominación con billete: "billete de 50", "billete de 50 mil", "billete de 50000"
   const billMatch = clean.match(
-    /\b(?:(?:con|tengo|llevo)\s+)?(?:billete\s+de|paga\s+con|pago\s+con|cambio\s+(?:de|para)|vueltas\s+(?:de|para))\s*(?:billete\s+de\s*)?(\$?\s*\d[\d.,]*(?:\s*mil|\s*k)?)/i
+    /\b(?:(?:con|tengo|llevo)\s+)?(?:billete\s+de|paga\s+con|pago\s+con|cambio\s+(?:de|para)|vueltas\s+(?:de|para))\s*(?:billete\s+de\s*)?\$?\s*(\d[\d.,]*(?:\s*mil|\s*k)?)/i
   );
   if (billMatch && billMatch[1]) {
     const raw = billMatch[1].replace(/[\$\s]/g, "");
     if (/^\d+$/.test(raw)) {
       const num = parseInt(raw, 10);
       if (num === 20 || num === 50 || num === 100) {
-        return `Billete de $${num}.000`;
+        return { amount: num * 1000, rawText: `Billete de $${num}.000` };
       }
-      if (num >= 1000) {
-        return `Billete de $${num.toLocaleString("es-CO")}`;
+      if (num >= 1000 && num <= 1000000) {
+        return { amount: num, rawText: `Billete de $${num.toLocaleString("es-CO")}` };
       }
     } else if (raw.toLowerCase().endsWith("mil") || raw.toLowerCase().endsWith("k")) {
       const numPart = parseInt(raw.replace(/(?:mil|k)/i, ""), 10);
-      if (!isNaN(numPart)) {
-        return `Billete de $${(numPart * 1000).toLocaleString("es-CO")}`;
+      if (!isNaN(numPart) && numPart >= 1 && numPart <= 1000) {
+        const val = numPart * 1000;
+        return { amount: val, rawText: `Billete de $${val.toLocaleString("es-CO")}` };
       }
     } else if (/^\d{1,3}(?:\.\d{3})+$/.test(raw)) {
-      return `Billete de $${raw}`;
+      const val = parseInt(raw.replace(/\./g, ""), 10);
+      return { amount: val, rawText: `Billete de $${raw}` };
     }
-    return `Billete de ${billMatch[1].trim()}`;
   }
 
-  // 2. Línea explícita de cambio: "Paga con: Billete de 50" o "Cambio: 50.000"
+  // 3. Monto con "mil" o "k": "40 mil", "40k", "con 40 mil", "pago con 40k"
+  const milMatch = clean.match(
+    /\b(?:(?:con|pago\s+con|paga\s+con|tengo)\s+)?\$?\s*(\d{1,3})\s*(?:mil|k)(?:\s*pesos|\s*cop)?\b/i
+  );
+  if (milMatch && milMatch[1]) {
+    const num = parseInt(milMatch[1], 10);
+    if (!isNaN(num) && num >= 1 && num <= 1000) {
+      const val = num * 1000;
+      return { amount: val, rawText: `$${val.toLocaleString("es-CO")}` };
+    }
+  }
+
+  // 4. Monto numérico explícito: "40000", "$40.000", "40.000", "40.000 pesos", "con 40000"
+  // Descartar si el texto tiene indicadores claros de dirección urbana
+  const isAddress = /\b(?:calle|carrera|cra|cll|diagonal|diag|transversal|trans|manzana|mz|lote|torre|apto|casa|vereda)\s+\d+/i.test(
+    clean
+  );
+  if (!isAddress) {
+    const numMatch = clean.match(
+      /(?:(?:con|pago\s+con|paga\s+con|tengo)\s+)?\$?\s*(\d{1,3}(?:\.\d{3})+|\d{4,6})(?:\s*pesos|\s*cop)?\b/i
+    );
+    if (numMatch && numMatch[1]) {
+      const parsed = parseInt(numMatch[1].replace(/\./g, ""), 10);
+      if (!isNaN(parsed) && parsed >= 1000 && parsed <= 1000000) {
+        return { amount: parsed, rawText: `$${parsed.toLocaleString("es-CO")}` };
+      }
+    }
+  }
+
+  return null;
+}
+
+export interface CashChangeResult {
+  cashAmount: number;
+  change: number;
+  formattedCash: string;
+  formattedChange: string;
+  isExact: boolean;
+  isInsufficient: boolean;
+  rawText?: string;
+}
+
+/**
+ * Calcula determinísticamente el cambio a devolver para un pago en efectivo contra el total oficial del pedido.
+ */
+export function calculateCashChange(
+  cashInput: string | number | undefined | null,
+  total: number
+): CashChangeResult | null {
+  if (cashInput === undefined || cashInput === null || cashInput === "") return null;
+  const parsed =
+    typeof cashInput === "number"
+      ? { amount: cashInput, rawText: `$${cashInput.toLocaleString("es-CO")}` }
+      : parseCashAmount(String(cashInput));
+  if (!parsed) return null;
+
+  if (parsed.isExact) {
+    return {
+      cashAmount: total,
+      change: 0,
+      formattedCash: "Monto exacto",
+      formattedChange: "$0",
+      isExact: true,
+      isInsufficient: false,
+      rawText: parsed.rawText,
+    };
+  }
+
+  const cashAmount = parsed.amount;
+  if (cashAmount <= 0) return null;
+
+  const change = cashAmount - total;
+  const isInsufficient = change < 0;
+
+  return {
+    cashAmount,
+    change: Math.max(0, change),
+    formattedCash: `$${cashAmount.toLocaleString("es-CO")}`,
+    formattedChange: `$${Math.max(0, change).toLocaleString("es-CO")}`,
+    isExact: change === 0,
+    isInsufficient,
+    rawText: parsed.rawText,
+  };
+}
+
+// Extrae instrucciones de cambio de efectivo o denominación de billete
+export function extractChangeInstructions(text: string): string | null {
+  if (!text) return null;
+  const parsed = parseCashAmount(text);
+  if (parsed) {
+    return parsed.rawText;
+  }
+
+  const clean = text.replace(/[*_~`]/g, " ").trim();
+  // Línea explícita de cambio: "Paga con: Billete de 50" o "Cambio: 50.000"
   const labeledChange = clean.match(
     /(?:(?:billete|paga con|cambio|vueltas)[^:\n*]*[:\s]+)([^\n\r*]+)/i
   );
   if (labeledChange && labeledChange[1]) {
     const cand = labeledChange[1].trim();
-    if (cand.length > 1 && !cand.toLowerCase().includes("ningun") && !cand.toLowerCase().includes("no")) {
+    if (
+      cand.length > 1 &&
+      !cand.toLowerCase().includes("ningun") &&
+      !cand.toLowerCase().includes("no") &&
+      !cand.toLowerCase().includes("por confirmar")
+    ) {
       return cand;
+    }
+  }
+
+  // Si es un texto multilínea, analizar cada línea en orden inverso (el mensaje más reciente primero)
+  if (text.includes("\n")) {
+    const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean).reverse();
+    for (const line of lines) {
+      const lineParsed = parseCashAmount(line);
+      if (lineParsed) {
+        return lineParsed.rawText;
+      }
     }
   }
 
@@ -1016,6 +1152,7 @@ export function resolveInvoiceNoticeDetails(
     const alreadyHasUrl = existingText ? existingText.includes(publicUrl) : false;
     if (!alreadyHasUrl) {
       lines.push(`📄 *Ver tu Factura digital:* ${publicUrl}`);
+      lines.push(`(Puedes abrir el enlace para consultar los detalles y descargar el PDF oficial).`);
     }
   }
 
@@ -1260,16 +1397,61 @@ async function tryExtractAndRegisterOrder(
     }
   }
 
-  // 8. Extraer información de cambio / billete
+  // 8. Extraer información de cambio / billete con prioridad absoluta a datos del usuario
   let detectedChange: string | undefined = undefined;
-  const changeMatch = assistantReply.match(/(?:(?:billete|paga con|cambio|vueltas)[^:\n*]*[:\s]+)([^\n\r*]+)/i);
-  if (changeMatch && changeMatch[1]) {
-    detectedChange = changeMatch[1].trim();
+  let userChange = extractChangeInstructions(userText);
+  if (!userChange) {
+    try {
+      const history = await getMessages(conversationKey);
+      const userMsgs = history.filter((m) => m.role === "user").reverse();
+      for (const m of userMsgs) {
+        const found = extractChangeInstructions(m.content);
+        if (found) {
+          userChange = found;
+          break;
+        }
+      }
+    } catch {}
   }
-  if (!detectedChange) {
-    const fromUser = extractChangeInstructions(userText) || extractChangeInstructions(combined);
-    if (fromUser) {
-      detectedChange = fromUser;
+  if (!userChange) {
+    userChange = extractChangeInstructions(combined);
+  }
+
+  if (userChange) {
+    // Si el usuario indicó explícitamente efectivo/cambio, tiene prioridad total sobre cualquier texto del asistente
+    detectedChange = userChange;
+  } else {
+    // Solo si el usuario nunca indicó denominación, buscar si el asistente registró alguna instrucción no vacía
+    const changeMatch = assistantReply.match(
+      /(?:(?:billete|paga con|cambio|vueltas)[^:\n*]*[:\s]+)([^\n\r*]+)/i
+    );
+    if (changeMatch && changeMatch[1]) {
+      const cand = changeMatch[1].trim();
+      if (
+        cand.length > 1 &&
+        !cand.toLowerCase().includes("ningun") &&
+        !cand.toLowerCase().includes("no") &&
+        !cand.toLowerCase().includes("por confirmar")
+      ) {
+        detectedChange = cand;
+      }
+    }
+  }
+
+  // Validación de efectivo suficiente contra el total matemático
+  const isCashPayment =
+    !paymentMethod ||
+    paymentMethod.toLowerCase().includes("efectivo") ||
+    paymentMethod.toLowerCase().includes("contra entrega");
+
+  if (isCashPayment && detectedChange && detectedTotal > 0) {
+    const changeCalc = calculateCashChange(detectedChange, detectedTotal);
+    if (changeCalc?.isInsufficient) {
+      console.warn(
+        `[sales-agent] Efectivo insuficiente detectado: cliente indicó ${changeCalc.cashAmount} pero total es ${detectedTotal}`
+      );
+      // No crear orden con efectivo insuficiente
+      return null;
     }
   }
 
@@ -1361,6 +1543,8 @@ async function tryExtractAndRegisterOrder(
       deliveryAddress: address,
       deliveryNotes: detectedNotes,
       paymentMethod,
+      paymentStatus: isCashPayment ? "issued" : "paid",
+      isCashOnDelivery: isCashPayment,
       changeAmount: detectedChange,
       items: orderItems.map((it) => {
         const prod = products.find((p) => p.sku === it.sku);
@@ -1392,16 +1576,8 @@ async function tryExtractAndRegisterOrder(
     console.error("[sales-agent] Error generando factura automática:", invErr);
   }
 
-  // Notificar automáticamente al domiciliario asignado por WhatsApp
-  try {
-    const driverRes = await notifyDeliveryDriver(order);
-    if (!driverRes.ok) {
-      console.warn(`[sales-agent] Notificación al domiciliario no enviada para pedido #${order.id.slice(0, 8)}:`, driverRes.error);
-    }
-  } catch (dErr) {
-    console.warn("[sales-agent] Error notificando al domiciliario:", dErr);
-  }
-
+  // FASE 8: Confirmar un pedido no envía la ficha al domiciliario.
+  // La ficha se envía exclusivamente cuando el pedido esté listo para despacho (delivering).
   return order;
 }
 
@@ -1629,6 +1805,12 @@ export async function handleSalesMessage(
       await appendMessage(conversationKey, "assistant", reply);
       return { reply, mode: "keyword" };
     }
+    if (latestOrder.status === "ready") {
+      const reply =
+        "¡Con todo el gusto! 📦 Tus buñuelos ya están empacados y listos en nuestro punto. El domiciliario saldrá en breve hacia tu dirección. 🥟✨";
+      await appendMessage(conversationKey, "assistant", reply);
+      return { reply, mode: "keyword" };
+    }
     if (latestOrder.status === "preparing") {
       const reply =
         "¡Con todo el gusto! 👨‍🍳 En cocina estamos dorando tus buñuelos para que te lleguen frescos, crujientes y calienticos. ¡Te avisamos apenas salgan! 🥟🔥";
@@ -1645,6 +1827,7 @@ export async function handleSalesMessage(
     (latestOrder.status === "pending" ||
      latestOrder.status === "confirmed" ||
      latestOrder.status === "preparing" ||
+     latestOrder.status === "ready" ||
      latestOrder.status === "delivering");
 
   const isAskingStatus =
@@ -1760,6 +1943,8 @@ export async function handleSalesMessage(
     const statusText =
       latestOrder.status === "delivering"
         ? "en camino con el domiciliario 🛵"
+        : latestOrder.status === "ready"
+        ? "empacado y listo para despacho 📦✨"
         : latestOrder.status === "preparing"
         ? "en preparación en cocina 👨‍🍳🔥"
         : latestOrder.status === "confirmed"
@@ -2171,7 +2356,8 @@ ${sessionItems.length > 0
        Confirma amablemente el medio de pago seleccionado (ej: «¡Listo! Pago por Nequi 📲») y avanza DIRECTAMENTE al Paso 6 (Resumen Previo).
        🚨 REGLA ESTRICTA: NO envíes el código QR ni el bloque largo de cuentas bancarias en este paso. Se enviarán únicamente en la confirmación final del Paso 7.
      - SI ELIGE EFECTIVO:
-       Pregúntale: «¿Con qué billete vas a pagar? (ej: billete de $50.000 o monto exacto) para que el domiciliario te lleve el cambio listo 💵»
+       Pregúntale: «¿Con qué billete vas a pagar o si tienes el monto exacto para que el domiciliario te lleve el cambio listo? 💵»
+       🚨 REGLA ESTRICTA DE EFECTIVO: NUNCA inventes ni asumas que el cliente pagará con $50.000 ni con ninguna cifra específica. Registra con fidelidad matemática exacta la cantidad o denominación que el cliente informe.
   6. RESUMEN PREVIO (PRE-CONFIRMACIÓN):
      🚨 REGLA ESTRICTA DE CONTINUIDAD (¡CERO AMNESIA DE PRODUCTOS!):
      - Revisa SIEMPRE todo el historial de la conversación. Si el cliente ya eligió sus productos o caja de buñuelos en cualquier mensaje previo (texto o nota de voz), JAMÁS vuelvas a preguntarle qué caja desea ni digas "parece que aún no elegiste tus buñuelos".
@@ -2325,7 +2511,20 @@ ${sessionItems.length > 0
             reply.toLowerCase().includes("pedido registrado") ||
             reply.toLowerCase().includes("hemos registrado tu pedido");
 
-          if (replyHasConfirmation && !maybeOrder) {
+          // Validación de efectivo suficiente
+          const userCashCheck = extractChangeInstructions(text);
+          const currentTotal = sessionItems.reduce((sum, it) => sum + (it.unitPrice || 0) * (it.quantity || 1), 0);
+          const hasInsufficientCash = Boolean(
+            userCashCheck &&
+            sessionItems.length > 0 &&
+            currentTotal > 0 &&
+            calculateCashChange(userCashCheck, currentTotal)?.isInsufficient
+          );
+
+          if (hasInsufficientCash) {
+            const cashCalc = calculateCashChange(userCashCheck, currentTotal);
+            reply = `El monto indicado (${cashCalc?.formattedCash}) no alcanza para cubrir el total de tu pedido (${formatCop(currentTotal)}) 🥟💵. Por favor indícanos con qué billete pagarás o si deseas ajustar las cantidades de tu pedido.`;
+          } else if (replyHasConfirmation && !maybeOrder) {
             console.error("[sales-agent] Fail-Closed: Confirmación generada pero persistencia de pedido falló en Gemini.");
             reply = "Tuvimos un inconveniente técnico momentáneo al registrar tu pedido ⚠️. Por favor responde con el número 1️⃣ para intentar confirmarlo nuevamente o escribe *asesor* si deseas que una persona te atienda.";
           }
@@ -2432,7 +2631,20 @@ ${sessionItems.length > 0
         reply.toLowerCase().includes("pedido registrado") ||
         reply.toLowerCase().includes("hemos registrado tu pedido");
 
-      if (replyHasConfirmation && !maybeOrder) {
+      // Validación de efectivo suficiente
+      const userCashCheck = extractChangeInstructions(text);
+      const currentTotal = sessionItems.reduce((sum, it) => sum + (it.unitPrice || 0) * (it.quantity || 1), 0);
+      const hasInsufficientCash = Boolean(
+        userCashCheck &&
+        sessionItems.length > 0 &&
+        currentTotal > 0 &&
+        calculateCashChange(userCashCheck, currentTotal)?.isInsufficient
+      );
+
+      if (hasInsufficientCash) {
+        const cashCalc = calculateCashChange(userCashCheck, currentTotal);
+        reply = `El monto indicado (${cashCalc?.formattedCash}) no alcanza para cubrir el total de tu pedido (${formatCop(currentTotal)}) 🥟💵. Por favor indícanos con qué billete pagarás o si deseas ajustar las cantidades de tu pedido.`;
+      } else if (replyHasConfirmation && !maybeOrder) {
         console.error("[sales-agent] Fail-Closed: Confirmación generada pero persistencia de pedido falló en OpenAI.");
         reply = "Tuvimos un inconveniente técnico momentáneo al registrar tu pedido ⚠️. Por favor responde con el número 1️⃣ para intentar confirmarlo nuevamente o escribe *asesor* si deseas que una persona te atienda.";
       }
@@ -2558,7 +2770,21 @@ ${sessionItems.length > 0
   }
 
   const foundPayment = extractPaymentMethod(text) || (previous.length > 0 ? extractPaymentMethod(userChatText) : null);
-  const foundChange = extractChangeInstructions(text) || (previous.length > 0 ? extractChangeInstructions(userChatText) : null);
+  let foundChange = extractChangeInstructions(text);
+  if (!foundChange && previous.length > 0) {
+    for (const m of [...previous].reverse()) {
+      if (m.role === "user") {
+        const c = extractChangeInstructions(m.content);
+        if (c) {
+          foundChange = c;
+          break;
+        }
+      }
+    }
+  }
+  if (!foundChange) {
+    foundChange = extractChangeInstructions(userChatText);
+  }
   const { items: extractedItems, total: extractedTotal } = extractProductsFromText(userChatText, products);
 
   if (isGreeting || isNewOrderIntent) {
@@ -2608,22 +2834,7 @@ ${sessionItems.length > 0
 
     if (isPreviousPreConfirmation && isUserModifying) {
       reply = `¡Claro que sí! 🥟✏️ Cuéntanos qué dato te gustaría modificar: ¿los productos, la dirección de entrega o el medio de pago?`;
-    } else if (!isPreviousPreConfirmation && !isUserConfirming) {
-      // PASO 6: RESUMEN PREVIO (Pre-confirmación)
-      const itemsListText = finalItems.map((it) => {
-        let nameWithBreakdown = it.name;
-        if (it.sku === "C8S") {
-          const bd = extractFlavorBreakdown(userChatText, 8);
-          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
-        } else if (it.sku === "C4S") {
-          const bd = extractFlavorBreakdown(userChatText, 4);
-          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
-        }
-        return `• ${nameWithBreakdown} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`;
-      }).join("\n");
-      const changeSummaryLine = foundChange ? `\n💵 *Paga con:* ${foundChange} _(llevaremos tu cambio listo)_` : "";
-      reply = `📋 *Resumen de tu Pedido:*\n${itemsListText}\n\n📦 *Subtotal productos:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n💰 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}${changeSummaryLine}\n\n¿Todo está correcto? Elige una opción:\n1️⃣ ✅ Confirmar pedido\n2️⃣ ✏️ Modificar algún dato`;
-    } else {
+    } else if (isUserConfirming) {
       // PASO 7: CONFIRMACIÓN OFICIAL Y FACTURACIÓN (Solo tras responder 1 o confirmar)
       const summaryItems = finalItems.map((it) => {
         if (it.sku === "C8S") {
@@ -2677,6 +2888,10 @@ ${sessionItems.length > 0
         }
 
         let invoiceNotice = "";
+        const isCashFallback =
+          finalPayment.toLowerCase().includes("efectivo") ||
+          finalPayment.toLowerCase().includes("contra entrega");
+
         try {
           const invRes = await createInvoiceInContabilidad({
             orderId: order.id,
@@ -2684,6 +2899,9 @@ ${sessionItems.length > 0
             phone: detectedPhone ? `+57${detectedPhone}` : conversationKey.replace(/^whatsapp:/i, ""),
             deliveryAddress: finalAddress,
             paymentMethod: finalPayment,
+            paymentStatus: isCashFallback ? "issued" : "paid",
+            isCashOnDelivery: isCashFallback,
+            changeAmount: foundChange || undefined,
             items: finalItems.map((it) => ({
               sku: it.sku,
               name: it.name,
@@ -2724,16 +2942,8 @@ ${sessionItems.length > 0
           console.warn("[sales-agent] Error generando factura en fallback:", invErr);
         }
 
-        // Notificar automáticamente al domiciliario asignado por WhatsApp
-        try {
-          const driverRes = await notifyDeliveryDriver(order);
-          if (!driverRes.ok) {
-            console.warn(`[sales-agent] Notificación al domiciliario no enviada en fallback para pedido #${order.id.slice(0, 8)}:`, driverRes.error);
-          }
-        } catch (dErr) {
-          console.warn("[sales-agent] Error notificando al domiciliario en fallback:", dErr);
-        }
-
+        // FASE 8: Confirmar un pedido no envía la ficha al domiciliario.
+        // La ficha se envía cuando el pedido pase a listo para despacho (delivering).
         const itemsListText = finalItems.map((it) => {
           let nameWithBreakdown = it.name;
           if (it.sku === "C8S") {
@@ -2746,11 +2956,63 @@ ${sessionItems.length > 0
           return `- ${nameWithBreakdown} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`;
         }).join("\n");
 
-        const changeConfirmLine = order.changeAmount ? `\n💵 *Paga con:* ${order.changeAmount} _(llevaremos tu cambio preparado)_` : "";
+        let changeConfirmLine = "";
+        if (order.changeAmount) {
+          const cashCalc = calculateCashChange(order.changeAmount, finalTotal);
+          if (cashCalc && !cashCalc.isInsufficient) {
+            if (cashCalc.isExact) {
+              changeConfirmLine = `\n💵 *Paga con:* Monto exacto _(no requiere cambio)_`;
+            } else {
+              const billPrefix = order.changeAmount.toLowerCase().includes("billete") ? "Billete de " : "";
+              changeConfirmLine = `\n💵 *Paga con:* ${billPrefix}${cashCalc.formattedCash} (Cambio: ${cashCalc.formattedChange}) _(llevaremos tu cambio preparado)_`;
+            }
+          } else {
+            changeConfirmLine = `\n💵 *Paga con:* ${order.changeAmount} _(llevaremos tu cambio preparado)_`;
+          }
+        }
 
         reply = `✅ *¡Pedido Confirmado y Registrado en BUÑUELANDIA!* 🥟\n\nNúmero de pedido: *#${order.id.slice(0, 8)}*${invoiceNotice}\n\n📋 *Detalle del Pedido:*\n${itemsListText}\n\n💵 *Total a pagar:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}${changeConfirmLine}\n👤 *Cliente:* ${clientName}\n\n👨‍🍳 *Tu pedido está registrado y entra en preparación.* 🥟🔥\n🛵 *Estado del domicilio:* Pendiente de asignación y despacho. Te notificaremos apenas vaya en camino. ¡Muchas gracias por preferirnos!`;
         mode = "order_created";
       }
+    } else {
+      // PASO 6: RESUMEN PREVIO (Pre-confirmación)
+      const itemsListText = finalItems.map((it) => {
+        let nameWithBreakdown = it.name;
+        if (it.sku === "C8S") {
+          const bd = extractFlavorBreakdown(userChatText, 8);
+          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
+        } else if (it.sku === "C4S") {
+          const bd = extractFlavorBreakdown(userChatText, 4);
+          if (bd) nameWithBreakdown = `${it.name} (${bd})`;
+        }
+        return `• ${nameWithBreakdown} x${it.quantity}: ${formatCop(it.unitPrice * it.quantity)}`;
+      }).join("\n");
+
+      // Validación de efectivo suficiente en paso 6
+      if (foundChange && finalTotal > 0 && finalPayment.toLowerCase().includes("efectivo")) {
+        const cashCalc = calculateCashChange(foundChange, finalTotal);
+        if (cashCalc?.isInsufficient) {
+          reply = `El monto indicado (${cashCalc.formattedCash}) no alcanza para cubrir el total de tu pedido (${formatCop(finalTotal)}) 🥟💵. Por favor indícanos con qué billete pagarás o si deseas ajustar las cantidades de tu pedido.`;
+          await appendMessage(conversationKey, "assistant", reply);
+          return { reply, mode: "keyword" };
+        }
+      }
+
+      let changeSummaryLine = "";
+      if (foundChange) {
+        const cashCalc = calculateCashChange(foundChange, finalTotal);
+        if (cashCalc && !cashCalc.isInsufficient) {
+          if (cashCalc.isExact) {
+            changeSummaryLine = `\n💵 *Paga con:* Monto exacto _(no requiere cambio)_`;
+          } else {
+            const billPrefix = foundChange.toLowerCase().includes("billete") ? "Billete de " : "";
+            changeSummaryLine = `\n💵 *Paga con:* ${billPrefix}${cashCalc.formattedCash} (Cambio: ${cashCalc.formattedChange}) _(llevaremos tu cambio listo)_`;
+          }
+        } else {
+          changeSummaryLine = `\n💵 *Paga con:* ${foundChange} _(llevaremos tu cambio listo)_`;
+        }
+      }
+      reply = `📋 *Resumen de tu Pedido:*\n${itemsListText}\n\n📦 *Subtotal productos:* ${formatCop(finalTotal)}\n🛵 *Domicilio:* ¡GRATIS!\n💰 *Total a pagar:* ${formatCop(finalTotal)}\n📍 *Dirección de entrega:* ${finalAddress}\n💳 *Medio de pago:* ${finalPayment}${changeSummaryLine}\n\n¿Todo está correcto? Elige una opción:\n1️⃣ ✅ Confirmar pedido\n2️⃣ ✏️ Modificar algún dato`;
     }
   } else if (extractedItems.length > 0) {
     const chosenProduct = extractedItems[0];

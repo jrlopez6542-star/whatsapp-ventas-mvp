@@ -59,7 +59,7 @@ export interface OrderItem {
   name?: string;
 }
 
-export type OrderStatus = "pending" | "confirmed" | "preparing" | "delivering" | "delivered" | "cancelled";
+export type OrderStatus = "pending" | "confirmed" | "preparing" | "ready" | "delivering" | "delivered" | "cancelled";
 
 export interface Order {
   id: string;
@@ -81,6 +81,14 @@ export interface Order {
   invoicePdfUrl?: string;
   driverNotified?: string;
   driverNotifiedAt?: number;
+  invoicePdfSent?: string;
+  invoicePdfSentAt?: number;
+  driverPaymentConfirmed?: boolean | number;
+  driverPaymentAmount?: number;
+  driverPaymentPhone?: string;
+  driverPaymentConfirmedAt?: number;
+  accountingPaymentSynced?: boolean | number;
+  accountingPaymentSyncedAt?: number;
   createdAt: number;
 }
 
@@ -1065,6 +1073,14 @@ export async function updateOrderStatus(id: string, status: OrderStatus): Promis
           invoiceUrl: r.invoice_url ? String(r.invoice_url) : undefined,
           driverNotified: r.driver_notified ? String(r.driver_notified) : undefined,
           driverNotifiedAt: r.driver_notified_at ? parseTimestamp(r.driver_notified_at) : undefined,
+          invoicePdfSent: r.invoice_pdf_sent ? String(r.invoice_pdf_sent) : undefined,
+          invoicePdfSentAt: r.invoice_pdf_sent_at ? parseTimestamp(r.invoice_pdf_sent_at) : undefined,
+          driverPaymentConfirmed: r.driver_payment_confirmed ? Number(r.driver_payment_confirmed) : 0,
+          driverPaymentAmount: r.driver_payment_amount != null ? Number(r.driver_payment_amount) : undefined,
+          driverPaymentPhone: r.driver_payment_phone ? String(r.driver_payment_phone) : undefined,
+          driverPaymentConfirmedAt: r.driver_payment_confirmed_at ? parseTimestamp(r.driver_payment_confirmed_at) : undefined,
+          accountingPaymentSynced: r.accounting_payment_synced ? Number(r.accounting_payment_synced) : 0,
+          accountingPaymentSyncedAt: r.accounting_payment_synced_at ? parseTimestamp(r.accounting_payment_synced_at) : undefined,
           createdAt: parseTimestamp(r.created_at),
         };
       }
@@ -1290,6 +1306,232 @@ export async function updateOrderInvoice(
   }
 }
 
+/**
+ * Reclamo atómico en dos fases para el envío de factura PDF por WhatsApp.
+ * Evita envíos duplicados entre ejecuciones concurrentes de funciones serverless
+ * y sobrevive a reinicios en frío (cold restarts) persistiendo en Turso.
+ */
+export async function claimOrderInvoicePdf(id: string): Promise<boolean> {
+  const now = Date.now();
+  const staleThreshold = now - 2 * 60 * 1000; // 2 minutos para considerar expirado un envío colgado
+  const mem = getMemoryStore();
+  const memOrder = mem.orders.get(id);
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      const sql = `UPDATE orders
+         SET invoice_pdf_sent = 'sending', invoice_pdf_sent_at = ?
+         WHERE id = ?
+           AND (
+             invoice_pdf_sent IS NULL
+             OR invoice_pdf_sent = ''
+             OR invoice_pdf_sent = 'none'
+             OR invoice_pdf_sent = 'failed'
+             OR (invoice_pdf_sent = 'sending' AND (invoice_pdf_sent_at IS NULL OR invoice_pdf_sent_at = 0 OR invoice_pdf_sent_at < ?))
+           )`;
+
+      const res = await client.execute({ sql, args: [now, id, staleThreshold] });
+      const claimed = (res.rowsAffected || 0) > 0;
+      if (claimed) {
+        if (memOrder) {
+          memOrder.invoicePdfSent = "sending";
+          memOrder.invoicePdfSentAt = now;
+        }
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error("[store] claimOrderInvoicePdf error de persistencia en Turso:", err);
+      // Fail-closed
+      return false;
+    }
+  }
+
+  // Almacén en memoria exclusivo para pruebas o entornos sin Turso configurado
+  if (memOrder) {
+    if (
+      !memOrder.invoicePdfSent ||
+      memOrder.invoicePdfSent === "" ||
+      memOrder.invoicePdfSent === "none" ||
+      memOrder.invoicePdfSent === "failed" ||
+      (memOrder.invoicePdfSent === "sending" && (!memOrder.invoicePdfSentAt || memOrder.invoicePdfSentAt < staleThreshold))
+    ) {
+      memOrder.invoicePdfSent = "sending";
+      memOrder.invoicePdfSentAt = now;
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Libera o confirma el reclamo del envío del PDF de la factura.
+ * En caso de éxito, marca 'sent' definitivamente.
+ * En caso de fallo, marca 'failed' para permitir reintentos futuros controlados.
+ */
+export async function releaseOrderInvoicePdf(
+  id: string,
+  success: boolean
+): Promise<void> {
+  const now = Date.now();
+  const mem = getMemoryStore();
+  const memOrder = mem.orders.get(id);
+  const finalState = success ? "sent" : "failed";
+  const finalTime = success ? now : 0;
+
+  if (memOrder) {
+    memOrder.invoicePdfSent = finalState;
+    memOrder.invoicePdfSentAt = finalTime;
+  }
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: "UPDATE orders SET invoice_pdf_sent = ?, invoice_pdf_sent_at = ? WHERE id = ?",
+        args: [finalState, finalTime, id],
+      });
+    } catch (err) {
+      console.warn("[store] releaseOrderInvoicePdf error:", err);
+    }
+  }
+}
+
+export async function markOrderDriverPaymentConfirmed(
+  orderId: string,
+  data: { amount: number; phone: string; confirmedAt?: number }
+): Promise<Order | null> {
+  const now = data.confirmedAt || Date.now();
+  const mem = getMemoryStore();
+  const memOrder = mem.orders.get(orderId);
+  if (memOrder) {
+    memOrder.driverPaymentConfirmed = 1;
+    memOrder.driverPaymentAmount = data.amount;
+    memOrder.driverPaymentPhone = data.phone;
+    memOrder.driverPaymentConfirmedAt = now;
+  }
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      await client.execute({
+        sql: `UPDATE orders
+              SET driver_payment_confirmed = 1,
+                  driver_payment_amount = ?,
+                  driver_payment_phone = ?,
+                  driver_payment_confirmed_at = ?
+              WHERE id = ?`,
+        args: [data.amount, data.phone, now, orderId],
+      });
+      const rows = await client.execute({
+        sql: "SELECT * FROM orders WHERE id = ? LIMIT 1",
+        args: [orderId],
+      });
+      if (rows.rows.length > 0) {
+        const r = rows.rows[0];
+        return {
+          ...memOrder,
+          id: orderId,
+          conversationId: String(r.conversation_id || memOrder?.conversationId || ""),
+          status: (r.status as OrderStatus) || memOrder?.status || "confirmed",
+          total: Number(r.total ?? memOrder?.total ?? 0),
+          customerName: r.customer_name ? String(r.customer_name) : memOrder?.customerName,
+          customerPhone: r.customer_phone ? String(r.customer_phone) : memOrder?.customerPhone,
+          deliveryAddress: r.delivery_address ? String(r.delivery_address) : memOrder?.deliveryAddress,
+          paymentMethod: r.payment_method ? String(r.payment_method) : memOrder?.paymentMethod,
+          invoiceNumber: r.invoice_number ? String(r.invoice_number) : memOrder?.invoiceNumber,
+          invoiceId: r.invoice_id ? String(r.invoice_id) : memOrder?.invoiceId,
+          invoiceUrl: r.invoice_url ? String(r.invoice_url) : memOrder?.invoiceUrl,
+          driverPaymentConfirmed: 1,
+          driverPaymentAmount: data.amount,
+          driverPaymentPhone: data.phone,
+          driverPaymentConfirmedAt: now,
+          accountingPaymentSynced: r.accounting_payment_synced ? Number(r.accounting_payment_synced) : (memOrder?.accountingPaymentSynced || 0),
+          accountingPaymentSyncedAt: r.accounting_payment_synced_at ? parseTimestamp(r.accounting_payment_synced_at) : memOrder?.accountingPaymentSyncedAt,
+          createdAt: parseTimestamp(r.created_at ?? memOrder?.createdAt),
+        } as Order;
+      }
+    } catch (err) {
+      console.error("[store] markOrderDriverPaymentConfirmed error:", err);
+    }
+  }
+
+  return memOrder || null;
+}
+
+export async function markOrderAccountingPaymentSynced(
+  orderId: string,
+  syncedAt?: number
+): Promise<boolean> {
+  const now = syncedAt || Date.now();
+  const mem = getMemoryStore();
+  const memOrder = mem.orders.get(orderId);
+
+  if (isTursoConfigured()) {
+    try {
+      await ensureTursoReady();
+      const client = getTursoClient();
+      const result = await client.execute({
+        sql: `UPDATE orders
+              SET accounting_payment_synced = 1,
+                  accounting_payment_synced_at = ?
+              WHERE id = ?`,
+        args: [now, orderId],
+      });
+      if (result.rowsAffected < 1) return false;
+    } catch (err) {
+      console.error("[store] markOrderAccountingPaymentSynced error:", err);
+      return false;
+    }
+  } else if (!memOrder) {
+    return false;
+  }
+
+  if (memOrder) {
+    memOrder.accountingPaymentSynced = 1;
+    memOrder.accountingPaymentSyncedAt = now;
+  }
+
+  return true;
+}
+
+export async function findOrderByInvoiceOrRef(ref: string): Promise<Order | null> {
+  const clean = (ref || "").trim().replace(/^#/, "");
+  if (!clean) return null;
+
+  const allOrders = await getOrders().catch(() => []);
+  const memOrders = getMemoryStore().getOrders();
+  const pool = [...allOrders];
+  for (const mo of memOrders) {
+    if (!pool.some((po) => po.id === mo.id)) {
+      pool.push(mo);
+    }
+  }
+
+  // 1. Coincidencia por invoiceNumber (ej. B-0014)
+  const byInvoice = pool.find(
+    (o) => o.invoiceNumber && o.invoiceNumber.toLowerCase() === clean.toLowerCase()
+  );
+  if (byInvoice) return byInvoice;
+
+  // 2. Coincidencia exacta por ID de pedido
+  const byId = pool.find((o) => o.id === clean);
+  if (byId) return byId;
+
+  // 3. Coincidencia por prefijo del ID de pedido (mínimo 6 caracteres)
+  if (clean.length >= 6) {
+    const byPrefix = pool.find((o) => o.id.toLowerCase().startsWith(clean.toLowerCase()));
+    if (byPrefix) return byPrefix;
+  }
+
+  return null;
+}
+
 export async function updateOrderAddress(id: string, newAddress: string): Promise<boolean> {
   const mem = getMemoryStore();
   const memOrder = mem.orders.get(id);
@@ -1342,6 +1584,14 @@ export async function getOrders(): Promise<Order[]> {
       invoiceUrl: r.invoice_url ? String(r.invoice_url) : undefined,
       driverNotified: r.driver_notified ? String(r.driver_notified) : undefined,
       driverNotifiedAt: r.driver_notified_at ? parseTimestamp(r.driver_notified_at) : undefined,
+      invoicePdfSent: r.invoice_pdf_sent ? String(r.invoice_pdf_sent) : undefined,
+      invoicePdfSentAt: r.invoice_pdf_sent_at ? parseTimestamp(r.invoice_pdf_sent_at) : undefined,
+      driverPaymentConfirmed: r.driver_payment_confirmed ? Number(r.driver_payment_confirmed) : 0,
+      driverPaymentAmount: r.driver_payment_amount != null ? Number(r.driver_payment_amount) : undefined,
+      driverPaymentPhone: r.driver_payment_phone ? String(r.driver_payment_phone) : undefined,
+      driverPaymentConfirmedAt: r.driver_payment_confirmed_at ? parseTimestamp(r.driver_payment_confirmed_at) : undefined,
+      accountingPaymentSynced: r.accounting_payment_synced ? Number(r.accounting_payment_synced) : 0,
+      accountingPaymentSyncedAt: r.accounting_payment_synced_at ? parseTimestamp(r.accounting_payment_synced_at) : undefined,
       createdAt: parseTimestamp(r.created_at),
     }));
   } catch (err) {
