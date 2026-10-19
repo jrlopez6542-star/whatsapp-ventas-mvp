@@ -2,9 +2,6 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { validateSession, isTokenRevoked, canonicalTokenHash, verifySignedToken } from "@/lib/auth/session";
 import PanelDashboard from "./PanelDashboard";
-import { formatDateDisplay } from "@/lib/date-utils";
-
-export { formatDateDisplay };
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

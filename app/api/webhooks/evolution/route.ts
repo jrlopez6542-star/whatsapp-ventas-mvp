@@ -11,7 +11,11 @@ import {
   parseEvolutionMessageUpdate,
   rejectEvolutionCall,
 } from "@/lib/evolution";
-import { transcribeWhatsAppAudio } from "@/lib/agent/audio-transcriber";
+import {
+  dispatchAudioTranscriptionResult,
+  getAudioTranscriptionFailureReply,
+  transcribeWhatsAppAudio,
+} from "@/lib/agent/audio-transcriber";
 import { sendDelayedOutboundWhatsApp } from "@/lib/outbound-queue";
 import { sendOutboundWhatsAppMedia } from "@/lib/whatsapp-send";
 import {
@@ -47,6 +51,12 @@ export const maxDuration = 60;
 
 function jsonOk(extra?: Record<string, unknown>) {
   return NextResponse.json({ ok: true, ...extra }, { status: 200 });
+}
+
+function safeWebhookErrorName(error: unknown): string {
+  return error && typeof error === "object" && "name" in error && typeof error.name === "string"
+    ? error.name.slice(0, 40)
+    : "WebhookError";
 }
 
 /**
@@ -425,27 +435,32 @@ export async function POST(request: NextRequest) {
           });
 
           if (audioBase64) {
-            const transcribed = await transcribeWhatsAppAudio(audioBase64, audioMime);
-            if (transcribed && transcribed.trim()) {
-              currentText = transcribed.trim();
-              console.log("[evolution] Transcripción exitosa:", currentText);
-              await updateMessageContent(savedMsg.id, `🎤 [Nota de voz]: "${currentText}"`).catch(() => {});
-              console.warn("[evolution] Audio inaudible o no se pudo transcribir");
-              const inaudibleReply = pickRandomVariation([
-                "¡Hola! Recibimos tu nota de voz 🎤 pero no logramos escucharla con claridad. ¿Podrías enviárnosla de nuevo o escribirnos tu pedido por aquí? ¡Con gusto te atendemos! 😊",
-                "¡Hola! Qué pena contigo, el audio no se escucha muy claro 🎤. ¿Nos podrías escribir tu pedido o reenviar la nota de voz? ¡Aquí estamos listos para prepararlo!",
-                "¡Hola! Tuvimos un pequeño inconveniente al escuchar tu nota de voz 🎤. ¿Te queda fácil escribirnos lo que deseas pedir para tomártelo de una? 🥟✨",
-              ]);
-              await appendMessage(fromKey, "assistant", inaudibleReply);
-              try {
-                await sendDelayedOutboundWhatsApp(fromKey, replyTo, inaudibleReply, parsed.messageId);
-              } catch (err) {
-                console.error("[evolution] error sending inaudible reply:", err);
+            const transcription = await transcribeWhatsAppAudio(audioBase64, audioMime);
+            const shouldContinue = await dispatchAudioTranscriptionResult(
+              transcription,
+              async (transcript) => {
+                currentText = transcript;
+                console.log("[evolution] Transcripción exitosa", { characters: transcript.length });
+                await updateMessageContent(savedMsg.id, `🎤 [Nota de voz]: "${transcript}"`).catch(() => {});
+              },
+              async (reason) => {
+                logSystemEvent("warn", "voice", `No se pudo transcribir el audio (${reason})`, {
+                  reason,
+                });
+                const retryReply = getAudioTranscriptionFailureReply(reason);
+                await appendMessage(fromKey, "assistant", retryReply);
+                try {
+                  await sendDelayedOutboundWhatsApp(fromKey, replyTo, retryReply, parsed.messageId);
+                } catch (err) {
+                  console.error("[evolution] error sending audio retry reply", { error: safeWebhookErrorName(err) });
+                }
               }
+            );
+            if (!shouldContinue) {
               return;
             }
           } else {
-            console.warn("[evolution] No se pudo obtener el audio en base64");
+            logSystemEvent("warn", "voice", "No se pudo recuperar el archivo de audio para transcripción");
             const noAudioReply = pickRandomVariation([
               "¡Hola! Recibimos tu nota de voz 🎤 pero ocurrió un inconveniente al procesarla. Por favor escríbenos tu pedido por aquí para poder ayudarte de inmediato. 😊",
               "¡Hola! No pudimos descargar tu nota de voz en el sistema 🎤. ¿Nos podrías escribir qué te gustaría pedir hoy para agilizar tu pedido? 🥟",

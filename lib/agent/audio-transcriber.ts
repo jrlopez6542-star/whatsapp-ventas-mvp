@@ -14,9 +14,9 @@ const WHISPER_PROMPT =
 export async function transcribeWhatsAppAudio(
   base64Audio: string,
   mimeType = "audio/ogg"
-): Promise<string | null> {
+): Promise<AudioTranscriptionResult> {
   if (!base64Audio || typeof base64Audio !== "string") {
-    return null;
+    return { ok: false, reason: "invalid_audio" };
   }
 
   // 1. Extraer MIME type real si viene embebido en data URI
@@ -37,27 +37,29 @@ export async function transcribeWhatsAppAudio(
     .replace(/\s+/g, "")
     .trim();
 
-  if (!pureBase64) return null;
+  if (!pureBase64 || !/^[A-Za-z0-9+/_-]*={0,2}$/.test(pureBase64) || pureBase64.length % 4 === 1) {
+    return { ok: false, reason: "invalid_audio" };
+  }
 
   const audioBuffer = Buffer.from(pureBase64, "base64");
   if (audioBuffer.length === 0) {
     console.warn("[audio-transcriber] Buffer de audio vacío tras decodificar Base64");
-    return null;
+    return { ok: false, reason: "invalid_audio" };
   }
 
   logSystemEvent("info", "voice", `Nota de voz recibida (${audioBuffer.length} bytes, ${cleanMime})`);
 
   // 3. INTENTO CON GOOGLE GEMINI (@google/genai)
   const geminiKey = process.env.GEMINI_API_KEY?.trim();
+  const openaiKey = process.env.OPENAI_API_KEY?.trim();
+  let providerAttempted = false;
   if (geminiKey) {
+    providerAttempted = true;
     try {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
 
       // 3a. INTENTO ESPECIALIZADO: gemini-3.5-transcribe (Speech-to-Text nativo de Google)
       try {
-        const timeoutTranscribe = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("Timeout")), 10000)
-        );
         const transcribePromise = ai.models.generateContent({
           model: "gemini-3.5-transcribe",
           contents: [
@@ -77,21 +79,26 @@ export async function transcribeWhatsAppAudio(
             audioTranscriptionConfig: {
               mode: "SMART" as any,
             },
+            abortSignal: AbortSignal.timeout(10000),
           },
         });
 
-        const transcribeRes = await Promise.race([transcribePromise, timeoutTranscribe]);
+        const transcribeRes = await raceWithTimeout(transcribePromise, 10000);
         const transcribeText = transcribeRes.text?.trim() || "";
         const lower = transcribeText.toLowerCase();
 
         if (transcribeText && !lower.includes("vacio") && !lower.includes("vacío")) {
           const cleaned = transcribeText.replace(/^["'«“]+|["'»”]+$/g, "").trim();
-          console.log("[audio-transcriber] gemini-3.5-transcribe transcribió con éxito:", cleaned);
-          logSystemEvent("success", "voice", `Audio transcrito con éxito (gemini-3.5-transcribe): "${cleaned}"`);
-          return cleaned;
+          console.log("[audio-transcriber] gemini-3.5-transcribe transcribió con éxito", { characters: cleaned.length });
+          logSystemEvent("success", "voice", "Audio transcrito con éxito (gemini-3.5-transcribe)", { characters: cleaned.length });
+          return { ok: true, text: cleaned };
+        }
+        if (lower === "vacio" || lower === "vacío") {
+          logSystemEvent("warn", "voice", "Audio clasificado como silencio o inaudible");
+          return { ok: false, reason: "inaudible" };
         }
       } catch (sttErr: any) {
-        console.warn("[audio-transcriber] gemini-3.5-transcribe falló, pasando a modelos multimodales:", sttErr?.message || sttErr);
+        console.warn("[audio-transcriber] gemini-3.5-transcribe falló, pasando a modelos multimodales", { error: safeErrorName(sttErr) });
       }
 
       // 3b. INTENTO MULTIMODAL CON PROMPT (gemini-flash-lite-latest, gemini-3.5-flash-lite, gemini-3.8-flash, gemini-flash-latest)
@@ -109,10 +116,6 @@ export async function transcribeWhatsAppAudio(
 
       for (const model of candidateModels) {
         try {
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Timeout")), 9000)
-          );
-
           const genPromise = ai.models.generateContent({
             model,
             contents: [
@@ -131,35 +134,36 @@ export async function transcribeWhatsAppAudio(
             ],
             config: {
               temperature: 0.1,
+              abortSignal: AbortSignal.timeout(9000),
             },
           });
 
-          const response = await Promise.race([genPromise, timeoutPromise]);
+          const response = await raceWithTimeout(genPromise, 9000);
           const resultText = response.text?.trim() || "";
           const lower = resultText.toLowerCase();
 
           if (resultText && !lower.includes("vacio") && !lower.includes("vacío")) {
             const cleaned = resultText.replace(/^["'«“]+|["'»”]+$/g, "").trim();
-            console.log(`[audio-transcriber] Gemini (${model}) transcribió con éxito:`, cleaned);
-            logSystemEvent("success", "voice", `Audio transcrito con éxito (${model}): "${cleaned}"`);
-            return cleaned;
+            console.log(`[audio-transcriber] Gemini (${model}) transcribió con éxito`, { characters: cleaned.length });
+            logSystemEvent("success", "voice", `Audio transcrito con éxito (${model})`, { characters: cleaned.length });
+            return { ok: true, text: cleaned };
           }
           if (lower === "vacio" || lower === "vacío") {
             logSystemEvent("warn", "voice", `Audio inaudible o silencio (${model})`);
-            return null;
+            return { ok: false, reason: "inaudible" };
           }
         } catch (modelErr: any) {
-          console.warn(`[audio-transcriber] Gemini modelo ${model} falló para audio:`, modelErr?.message || modelErr);
+          console.warn(`[audio-transcriber] Gemini modelo ${model} falló para audio`, { error: safeErrorName(modelErr) });
         }
       }
     } catch (geminiErr) {
-      console.warn("[audio-transcriber] Error conectando con Gemini para audio:", geminiErr);
+      console.warn("[audio-transcriber] Error conectando con Gemini para audio", { error: safeErrorName(geminiErr) });
     }
   }
 
   // 4. FALLBACK CON OPENAI WHISPER-1 (Si tiene créditos disponibles)
-  const openaiKey = process.env.OPENAI_API_KEY?.trim();
   if (openaiKey) {
+    providerAttempted = true;
     try {
       const ext =
         cleanMime.includes("mp4") || cleanMime.includes("m4a")
@@ -186,6 +190,7 @@ export async function transcribeWhatsAppAudio(
           Authorization: `Bearer ${openaiKey}`,
         },
         body: formData,
+        signal: AbortSignal.timeout(15000),
       });
 
       if (res.ok) {
@@ -193,20 +198,80 @@ export async function transcribeWhatsAppAudio(
         const text = data?.text?.trim();
         if (text) {
           const cleaned = text.replace(/^["'«“]+|["'»”]+$/g, "").trim();
-          console.log("[audio-transcriber] Whisper-1 transcribió con éxito:", cleaned);
-          logSystemEvent("success", "voice", `Audio transcrito con éxito (Whisper-1): "${cleaned}"`);
-          return cleaned;
+          console.log("[audio-transcriber] Whisper-1 transcribió con éxito", { characters: cleaned.length });
+          logSystemEvent("success", "voice", "Audio transcrito con éxito (Whisper-1)", { characters: cleaned.length });
+          return { ok: true, text: cleaned };
+        }
+        if (res.ok) {
+          logSystemEvent("warn", "voice", "Whisper respondió sin transcripción");
+          return { ok: false, reason: "inaudible" };
         }
       } else {
-        const errText = await res.text().catch(() => "");
-        console.warn(`[audio-transcriber] Whisper HTTP ${res.status}:`, errText);
-        logSystemEvent("warn", "voice", `Whisper HTTP ${res.status}: ${errText.slice(0, 100)}`);
+        console.warn(`[audio-transcriber] Whisper devolvió HTTP ${res.status}`);
+        logSystemEvent("warn", "voice", `Whisper devolvió HTTP ${res.status}`);
       }
     } catch (whisperErr: any) {
-      console.warn("[audio-transcriber] Error en llamada REST a Whisper:", whisperErr?.message || whisperErr);
+      console.warn("[audio-transcriber] Error en llamada REST a Whisper", { error: safeErrorName(whisperErr) });
     }
   }
 
   logSystemEvent("warn", "voice", "No se pudo transcribir la nota de voz");
-  return null;
+  return {
+    ok: false,
+    reason: providerAttempted ? "transcription_failed" : "provider_unavailable",
+  };
+}
+
+export type AudioTranscriptionResult =
+  | { ok: true; text: string }
+  | { ok: false; reason: "invalid_audio" | "inaudible" | "provider_unavailable" | "transcription_failed" };
+
+export type AudioTranscriptionFailure = Extract<AudioTranscriptionResult, { ok: false }>["reason"];
+
+export async function dispatchAudioTranscriptionResult(
+  result: AudioTranscriptionResult,
+  onTranscript: (text: string) => Promise<void>,
+  onFailure: (reason: AudioTranscriptionFailure) => Promise<void>
+): Promise<boolean> {
+  if (!result.ok) {
+    await onFailure(result.reason);
+    return false;
+  }
+
+  const text = result.text.trim();
+  if (!text) {
+    await onFailure("transcription_failed");
+    return false;
+  }
+
+  await onTranscript(text);
+  return true;
+}
+
+/**
+ * Mensaje oficial para el cliente según el motivo del fallo de transcripción de audio.
+ */
+export function getAudioTranscriptionFailureReply(reason: AudioTranscriptionFailure): string {
+  return reason === "inaudible"
+    ? "¡Hola! Recibimos tu nota de voz 🎤 pero no logramos entender las palabras. ¿Podrías reenviarla o escribirnos tu pedido? ¡Con gusto te atendemos! 😊"
+    : "¡Hola! Tuvimos un inconveniente técnico al procesar tu nota de voz 🎤. ¿Podrías reenviarla o escribirnos tu pedido? ¡Con gusto te ayudamos! 😊";
+}
+
+function safeErrorName(error: unknown): string {
+  if (error && typeof error === "object" && "name" in error && typeof error.name === "string") {
+    return error.name.slice(0, 40);
+  }
+  return "ProviderError";
+}
+
+export function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Timeout")), timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
