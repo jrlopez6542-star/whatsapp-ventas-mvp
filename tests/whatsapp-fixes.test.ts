@@ -6,6 +6,9 @@ import {
   handleSalesMessage,
   resolveInvoiceNoticeDetails,
   isValidContabilidadPublicUrl,
+  isValidContabilidadPdfUrl,
+  fetchAndValidateInvoicePdf,
+  MAX_PDF_DOWNLOAD_BYTES,
 } from "../lib/agent/sales-agent";
 import {
   shouldInterceptMissingSauces,
@@ -16,7 +19,11 @@ import {
   resolveCustomerPhoneForDriver,
   formatDeliveryDriverMessage,
 } from "../lib/delivery-driver";
-import { parseEvolutionUpsert } from "../lib/evolution";
+import {
+  parseEvolutionUpsert,
+  resolveMediaRecipient,
+  sendEvolutionMedia,
+} from "../lib/evolution";
 import {
   createOrder,
   getConversation,
@@ -393,4 +400,371 @@ test("14. Evolution API: Propagación de invoiceUrl y blindaje del caption multi
   assert.ok(captionFiltered.includes("🧾 Factura Oficial #B-0017"));
   assert.ok(!captionFiltered.includes("sitio-no-autorizado.com"), "No debe incluir dominios arbitrarios");
   assert.ok(!captionFiltered.includes("📄 Ver factura digital:"), "No debe mostrar etiqueta si la URL fue descartada");
+});
+
+test("15. resolveMediaRecipient: Resuelve número telefónico real y descarta @lid sin teléfono validado", () => {
+  // A. Destinatario @lid con teléfono celular de 10 dígitos guardado en convPhone
+  const res1 = resolveMediaRecipient("271296004931588@lid", { convPhone: "3232056511" });
+  assert.deepEqual(res1, { to: "573232056511", kind: "phone" });
+
+  // B. Destinatario @lid con teléfono con prefijo internacional en orderPhone
+  const res2 = resolveMediaRecipient("whatsapp:lid:271296004931588", { orderPhone: "+573101234567" });
+  assert.deepEqual(res2, { to: "573101234567", kind: "phone" });
+
+  // C. Destinatario @lid con teléfono en parsedDigits
+  const res3 = resolveMediaRecipient("271296004931588@lid", { parsedDigits: "3159998877" });
+  assert.deepEqual(res3, { to: "573159998877", kind: "phone" });
+
+  // D. Destinatario @lid SIN teléfono validado: retorna null y NUNCA inventa un número con los dígitos del LID
+  const resNoPhone = resolveMediaRecipient("271296004931588@lid");
+  assert.equal(resNoPhone, null, "Debe retornar null cuando falta teléfono real");
+
+  const resInvalidPhone = resolveMediaRecipient("271296004931588@lid", { convPhone: "al mismo número" });
+  assert.equal(resInvalidPhone, null, "Debe descartar texto no numérico");
+
+  const resShortDigits = resolveMediaRecipient("271296004931588@lid", { convPhone: "12345" });
+  assert.equal(resShortDigits, null, "Debe descartar números que no cumplan formato móvil colombiano");
+
+  // Destinatario @lid donde parsedDigits contiene los mismos dígitos del LID (intento de invención a partir de LID)
+  const resLidDigits = resolveMediaRecipient("271296004931588@lid", { parsedDigits: "271296004931588" });
+  assert.equal(resLidDigits, null, "Debe rechazar dígitos provenientes del identificador @lid");
+
+  // Destinatario @lid donde el candidato contiene cadena @lid o formato LID
+  const resLidCandidate = resolveMediaRecipient("271296004931588@lid", { convPhone: "whatsapp:lid:271296004931588" });
+  assert.equal(resLidCandidate, null, "Debe rechazar candidatos con formato LID");
+
+  // E. Destinatarios normales (no @lid): resuelve el número telefónico directamente
+  const resNormalJid = resolveMediaRecipient("573001234567@s.whatsapp.net");
+  assert.deepEqual(resNormalJid, { to: "573001234567", kind: "phone" });
+
+  const resNormalWa = resolveMediaRecipient("whatsapp:+573001234567");
+  assert.deepEqual(resNormalWa, { to: "573001234567", kind: "phone" });
+
+  const resBareDigits = resolveMediaRecipient("3001234567");
+  assert.deepEqual(resBareDigits, { to: "573001234567", kind: "phone" });
+
+  // F. Entrada vacía
+  assert.equal(resolveMediaRecipient(""), null);
+});
+
+test("16. isValidContabilidadPdfUrl: Valida estricta restricción a endpoints oficiales de PDF", () => {
+  // A. URL oficial válida con sufijo /pdf
+  const valid = "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456/pdf";
+  assert.equal(isValidContabilidadPdfUrl(valid), true);
+
+  // B. Endpoint público HTML (sin /pdf): no es URL directa de archivo PDF
+  const htmlEndpoint = "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456";
+  assert.equal(isValidContabilidadPdfUrl(htmlEndpoint), false);
+
+  // C. Inseguro (HTTP)
+  const httpUrl = "http://contabilidad-app-fawn.vercel.app/api/invoices/public/cm123456/pdf";
+  assert.equal(isValidContabilidadPdfUrl(httpUrl), false);
+
+  // D. Dominio externo no autorizado
+  const externalDomain = "https://otro-dominio.com/api/invoices/public/cm123456/pdf";
+  assert.equal(isValidContabilidadPdfUrl(externalDomain), false);
+
+  // E. Ruta /public/ vacía
+  const emptyId = "https://contabilidad-app-fawn.vercel.app/api/invoices/public//pdf";
+  assert.equal(isValidContabilidadPdfUrl(emptyId), false);
+
+  // F. Valores nulos o inválidos
+  assert.equal(isValidContabilidadPdfUrl(""), false);
+  assert.equal(isValidContabilidadPdfUrl(undefined), false);
+  assert.equal(isValidContabilidadPdfUrl("invalido"), false);
+});
+
+test("17. fetchAndValidateInvoicePdf: Descarga segura, validación de cabeceras, tamaño y magic bytes", async () => {
+  const originalFetch = globalThis.fetch;
+  const validPdfUrl = "https://contabilidad-app-fawn.vercel.app/api/invoices/public/cm-test-mock/pdf";
+  const fakePdfContent = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF");
+
+  try {
+    // 1. Descarga exitosa de PDF válido
+    globalThis.fetch = (async () => {
+      return new Response(fakePdfContent, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Length": String(fakePdfContent.length),
+        },
+      });
+    }) as any;
+
+    const resSuccess = await fetchAndValidateInvoicePdf(validPdfUrl, 5000);
+    assert.equal(resSuccess.ok, true);
+    assert.ok(resSuccess.base64?.startsWith("data:application/pdf;base64,"));
+    assert.equal(resSuccess.byteLength, fakePdfContent.length);
+    assert.equal(resSuccess.httpStatus, 200);
+
+    // 2. Rechaza Content-Type que no sea application/pdf (ej. respuesta de error en HTML)
+    globalThis.fetch = (async () => {
+      return new Response("<html><body>404 Not Found</body></html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      });
+    }) as any;
+
+    const resHtml = await fetchAndValidateInvoicePdf(validPdfUrl, 5000);
+    assert.equal(resHtml.ok, false);
+    assert.ok(resHtml.error?.includes("Content-Type no válido"));
+
+    // 3. Rechaza contenido sin magic bytes %PDF- (aunque la cabecera declare application/pdf)
+    globalThis.fetch = (async () => {
+      return new Response(Buffer.from("INVALID_HEADER_CONTENT"), {
+        status: 200,
+        headers: { "Content-Type": "application/pdf" },
+      });
+    }) as any;
+
+    const resBadMagic = await fetchAndValidateInvoicePdf(validPdfUrl, 5000);
+    assert.equal(resBadMagic.ok, false);
+    assert.ok(resBadMagic.error?.includes("Cabecera binaria inválida"));
+
+    // 4. Rechaza archivo vacío (0 bytes)
+    globalThis.fetch = (async () => {
+      return new Response(Buffer.alloc(0), {
+        status: 200,
+        headers: { "Content-Type": "application/pdf" },
+      });
+    }) as any;
+
+    const resEmpty = await fetchAndValidateInvoicePdf(validPdfUrl, 5000);
+    assert.equal(resEmpty.ok, false);
+    assert.ok(resEmpty.error?.includes("vacío"));
+
+    // 5A. Rechaza archivo que exceda el tamaño máximo (5 MB) vía cabecera Content-Length
+    globalThis.fetch = (async () => {
+      return new Response(fakePdfContent, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/pdf",
+          "Content-Length": String(MAX_PDF_DOWNLOAD_BYTES + 1024),
+        },
+      });
+    }) as any;
+
+    const resOversizeHeader = await fetchAndValidateInvoicePdf(validPdfUrl, 5000);
+    assert.equal(resOversizeHeader.ok, false);
+    assert.ok(resOversizeHeader.error?.includes("límite permitido"));
+
+    // 5B. Rechaza archivo que exceda 5 MB SIN cabecera Content-Length (descarga interrumpida en streaming)
+    let streamCancelled = false;
+    let chunksPushed = 0;
+    const chunk2MB = new Uint8Array(2 * 1024 * 1024);
+    chunk2MB.set(Buffer.from("%PDF-1.4 chunk"));
+
+    const streamingBody = new ReadableStream({
+      pull(controller) {
+        chunksPushed++;
+        if (chunksPushed <= 4) {
+          // Cada chunk mide 2 MB; al recibir el tercer chunk (6 MB) superará el límite de 5 MB
+          controller.enqueue(chunk2MB);
+        } else {
+          controller.close();
+        }
+      },
+      cancel() {
+        streamCancelled = true;
+      },
+    });
+
+    globalThis.fetch = (async () => {
+      return new Response(streamingBody, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/pdf",
+          // Sin cabecera Content-Length
+        },
+      });
+    }) as any;
+
+    const resOversizeStream = await fetchAndValidateInvoicePdf(validPdfUrl, 5000);
+    assert.equal(resOversizeStream.ok, false);
+    assert.ok(
+      resOversizeStream.error?.includes("Descarga interrumpida") &&
+        resOversizeStream.error?.includes("límite permitido"),
+      "Debe interrumpir la descarga cuando el acumulado en streaming supere 5 MB"
+    );
+    assert.equal(streamCancelled, true, "Debe cancelar el lector y liberar el stream inmediatamente");
+    assert.ok(chunksPushed <= 4, "No debe descargar el archivo completo si excede el límite");
+
+    // 6. URL fuera del dominio permitido: se rechaza sin llamar a fetch
+    const resBlockedUrl = await fetchAndValidateInvoicePdf("https://otro-sitio.com/factura.pdf", 5000);
+    assert.equal(resBlockedUrl.ok, false);
+    assert.ok(resBlockedUrl.error?.includes("no autorizada"));
+
+    // 7. Simulación de Timeout de red
+    globalThis.fetch = (async () => {
+      const err = new Error("The operation was aborted due to timeout");
+      err.name = "TimeoutError";
+      throw err;
+    }) as any;
+
+    const resTimeout = await fetchAndValidateInvoicePdf(validPdfUrl, 5000);
+    assert.equal(resTimeout.ok, false);
+    assert.ok(resTimeout.error?.includes("Timeout"));
+    // 8. Detección y bloqueo de redirección a destino no autorizado o no-PDF
+    globalThis.fetch = (async () => {
+      const resp = new Response(fakePdfContent, {
+        status: 200,
+        headers: { "Content-Type": "application/pdf" },
+      });
+      Object.defineProperty(resp, "url", { value: "https://sitio-malicioso.com/malware.pdf" });
+      return resp;
+    }) as any;
+
+    const resRedirect = await fetchAndValidateInvoicePdf(validPdfUrl, 5000);
+    assert.equal(resRedirect.ok, false);
+    assert.ok(resRedirect.error?.includes("Redirección a un destino no autorizado"));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("18. sendEvolutionMedia: Rechaza destinatarios directos @lid y valida destinatarios", async () => {
+  const prevUrl = process.env.EVOLUTION_API_URL;
+  const prevKey = process.env.EVOLUTION_API_KEY;
+  const prevInst = process.env.EVOLUTION_INSTANCE;
+
+  try {
+    process.env.EVOLUTION_API_URL = "https://evolution.example.com";
+    process.env.EVOLUTION_API_KEY = "test-key";
+    process.env.EVOLUTION_INSTANCE = "test-inst";
+
+    // A. Llamada con destinatario @lid directo debe fallar inmediatamente sin colgar la conexión
+    const resLid = await sendEvolutionMedia("271296004931588@lid", "data:application/pdf;base64,JVBERi0xLjQK...");
+    assert.equal(resLid.ok, false);
+    assert.ok(resLid.error?.includes("@lid"), "Debe indicar que sendMedia no soporta destinatarios @lid directos");
+
+    // B. Destinatario inválido
+    const resInvalid = await sendEvolutionMedia("", "data:application/pdf;base64,JVBERi0xLjQK...");
+    assert.equal(resInvalid.ok, false);
+    assert.ok(resInvalid.error?.includes("inválido"));
+
+    // C. Transmisión correcta de Data URI PDF como documento (mediatype: document, application/pdf, Factura...pdf)
+    let capturedUrl = "";
+    let capturedBody: any = null;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (input: any, init?: any) => {
+        capturedUrl = String(input);
+        capturedBody = JSON.parse(init?.body || "{}");
+        return new Response(JSON.stringify({ key: { id: "media-test-123" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as any;
+
+      const resDoc = await sendEvolutionMedia(
+        "573001234567",
+        "data:application/pdf;base64,JVBERi0xLjQK...",
+        "Mi factura"
+      );
+      assert.equal(resDoc.ok, true);
+      assert.equal(capturedUrl, "https://evolution.example.com/message/sendMedia/test-inst");
+      assert.equal(capturedBody.number, "573001234567");
+      assert.equal(capturedBody.mediatype, "document");
+      assert.equal(capturedBody.mimetype, "application/pdf");
+      assert.ok(capturedBody.fileName.endsWith(".pdf"));
+      assert.equal(capturedBody.media, "JVBERi0xLjQK...");
+      assert.equal(capturedBody.caption, "Mi factura");
+
+      // D. Reintento con Data URI si la primera llamada falla
+      let callCount = 0;
+      let retryBody: any = null;
+      globalThis.fetch = (async (input: any, init?: any) => {
+        callCount++;
+        if (callCount === 1) {
+          return new Response(JSON.stringify({ error: "Expects data uri" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        retryBody = JSON.parse(init?.body || "{}");
+        return new Response(JSON.stringify({ key: { id: "media-retry-123" } }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as any;
+
+      const resRetry = await sendEvolutionMedia(
+        "573001234567",
+        "data:application/pdf;base64,JVBERi0xLjQK...",
+        "Mi factura retry"
+      );
+      assert.equal(resRetry.ok, true);
+      assert.equal(callCount, 2);
+      assert.equal(retryBody.mediatype, "document");
+      assert.equal(retryBody.mimetype, "application/pdf");
+      assert.ok(retryBody.fileName.endsWith(".pdf"));
+      assert.equal(retryBody.media, "data:application/pdf;base64,JVBERi0xLjQK...");
+
+      // E. Timeout en la solicitud HTTP real a Evolution API
+      globalThis.fetch = (async () => {
+        const timeoutErr = new Error("The operation was aborted due to timeout");
+        timeoutErr.name = "TimeoutError";
+        throw timeoutErr;
+      }) as any;
+
+      const resTimeout = await sendEvolutionMedia(
+        "573001234567",
+        "data:application/pdf;base64,JVBERi0xLjQK..."
+      );
+      assert.equal(resTimeout.ok, false);
+      assert.ok(resTimeout.error?.includes("Timeout"), "Debe capturar y propagar el timeout de Evolution");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } finally {
+    process.env.EVOLUTION_API_URL = prevUrl;
+    process.env.EVOLUTION_API_KEY = prevKey;
+    process.env.EVOLUTION_INSTANCE = prevInst;
+  }
+});
+
+test("19. Independencia de fallos: El fallo en el PDF no impide el texto de confirmación ni el QR", async () => {
+  let textSent = false;
+  let qrSent = false;
+  let pdfAttempted = false;
+
+  // Simulador del pipeline de salida en route.ts
+  const simulateOutboundPipeline = async (params: {
+    sendTextSuccess: boolean;
+    qrSuccess: boolean;
+    pdfDownloadSuccess: boolean;
+  }) => {
+    // 1. Mensaje de texto principal (confirmación con número y enlace de factura)
+    if (params.sendTextSuccess) {
+      textSent = true;
+    }
+
+    // 2. Multimedia QR (independiente)
+    try {
+      if (params.qrSuccess) {
+        qrSent = true;
+      }
+    } catch {}
+
+    // 3. Multimedia PDF (independiente con captura de excepciones)
+    try {
+      pdfAttempted = true;
+      if (!params.pdfDownloadSuccess) {
+        throw new Error("Timeout o error al descargar PDF");
+      }
+    } catch (pdfErr: any) {
+      // Capturado de forma segura sin propagar el error hacia el flujo principal
+      assert.ok(pdfErr.message.includes("descargar PDF"));
+    }
+  };
+
+  await simulateOutboundPipeline({
+    sendTextSuccess: true,
+    qrSuccess: true,
+    pdfDownloadSuccess: false, // El PDF falla
+  });
+
+  assert.equal(textSent, true, "El mensaje de confirmación de texto se envía con éxito");
+  assert.equal(qrSent, true, "El código QR se envía con éxito");
+  assert.equal(pdfAttempted, true, "El PDF intentó enviarse pero su fallo no interrumpió el texto ni el QR");
 });

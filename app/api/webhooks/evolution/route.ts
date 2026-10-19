@@ -10,6 +10,7 @@ import {
   parseEvolutionCall,
   parseEvolutionMessageUpdate,
   rejectEvolutionCall,
+  resolveMediaRecipient,
 } from "@/lib/evolution";
 import { transcribeWhatsAppAudio } from "@/lib/agent/audio-transcriber";
 import { sendDelayedOutboundWhatsApp } from "@/lib/outbound-queue";
@@ -21,7 +22,12 @@ import {
   failWebhookEvent,
 } from "@/lib/webhook-dedupe";
 import { isPhoneWhitelisted, logWhitelistRejection } from "@/lib/security-whitelist";
-import { handleSalesMessage, isValidContabilidadPublicUrl } from "@/lib/agent/sales-agent";
+import {
+  handleSalesMessage,
+  isValidContabilidadPublicUrl,
+  isValidContabilidadPdfUrl,
+  fetchAndValidateInvoicePdf,
+} from "@/lib/agent/sales-agent";
 import { verifyReceiptWithGemini } from "@/lib/agent/receipt-verifier";
 import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { pickRandomVariation } from "@/lib/anti-ban";
@@ -658,11 +664,46 @@ export async function POST(request: NextRequest) {
               "📲 Aquí tienes el código QR para tu transferencia bancaria. Apenas esté listo, envíanos el pantallazo para pasarlo a cocina de inmediato. 🥟✨",
             ]);
 
-            await sendOutboundWhatsAppMedia(
-              replyTo,
-              mediaUrl,
-              qrCaption
-            );
+            const currentConvForMedia = latestAfterSales || (await getConversation(fromKey)) || conv;
+            const allOrdersForMedia = await getOrders().catch(() => []);
+            const lastOrderPhone = allOrdersForMedia.filter((o) => o.conversationId === fromKey).slice(-1)[0]?.customerPhone;
+
+            const isLidConversation = isLidJid(replyTo) || isLidJid(fromKey);
+            const rawLidId = isLidConversation ? replyTo.replace(/@lid.*/i, "").replace(/\D/g, "") : "";
+            const verifiedParsedDigits =
+              parsed.digits && (!isLidConversation || (parsed.digits !== rawLidId && !parsed.digits.includes("lid")))
+                ? parsed.digits
+                : null;
+
+            const qrTarget = resolveMediaRecipient(replyTo, {
+              convPhone: currentConvForMedia?.phone,
+              orderPhone: lastOrderPhone,
+              parsedDigits: verifiedParsedDigits,
+            });
+
+            if (!qrTarget) {
+              console.warn("[evolution] no se pudo resolver destinatario telefónico para código QR (omitido)", {
+                fromKey,
+                isLid: isLidJid(replyTo),
+              });
+            } else {
+              const qrRes = await sendOutboundWhatsAppMedia(
+                qrTarget.to,
+                mediaUrl,
+                qrCaption
+              );
+              if (!qrRes.ok) {
+                console.warn("[evolution] fallo al enviar código QR:", {
+                  error: qrRes.error,
+                  channel: qrRes.channel,
+                });
+              } else {
+                console.log("[evolution] código QR enviado con éxito:", {
+                  to: qrTarget.to.slice(-4),
+                  id: qrRes.id,
+                });
+              }
+            }
           } catch (mErr) {
             console.error("[evolution] media outbound error", mErr);
           }
@@ -673,26 +714,70 @@ export async function POST(request: NextRequest) {
             const pdfDelay = 2200 + Math.floor(Math.random() * 1600);
             await new Promise((r) => setTimeout(r, pdfDelay));
 
-            const formattedNum = invoiceNumber
-              ? (invoiceNumber.startsWith("#") ? invoiceNumber : `#${invoiceNumber}`)
-              : "";
-            const numPart = formattedNum ? ` ${formattedNum}` : "";
-            const urlPart =
-              invoiceUrl && isValidContabilidadPublicUrl(invoiceUrl)
-                ? `\n📄 Ver factura digital: ${invoiceUrl}`
+            const currentConvForPdf = latestAfterSales || (await getConversation(fromKey)) || conv;
+            const allOrdersForPdf = await getOrders().catch(() => []);
+            const lastOrderPhone = allOrdersForPdf.filter((o) => o.conversationId === fromKey).slice(-1)[0]?.customerPhone;
+
+            const isLidPdfConversation = isLidJid(replyTo) || isLidJid(fromKey);
+            const rawLidPdfId = isLidPdfConversation ? replyTo.replace(/@lid.*/i, "").replace(/\D/g, "") : "";
+            const verifiedParsedPdfDigits =
+              parsed.digits && (!isLidPdfConversation || (parsed.digits !== rawLidPdfId && !parsed.digits.includes("lid")))
+                ? parsed.digits
+                : null;
+
+            const pdfTarget = resolveMediaRecipient(replyTo, {
+              convPhone: currentConvForPdf?.phone,
+              orderPhone: lastOrderPhone,
+              parsedDigits: verifiedParsedPdfDigits,
+            });
+
+            if (!pdfTarget) {
+              console.warn("[evolution] no se pudo resolver destinatario telefónico para PDF de factura (omitido)", {
+                fromKey,
+                isLid: isLidJid(replyTo),
+              });
+            } else {
+              const formattedNum = invoiceNumber
+                ? (invoiceNumber.startsWith("#") ? invoiceNumber : `#${invoiceNumber}`)
                 : "";
+              const numPart = formattedNum ? ` ${formattedNum}` : "";
+              const urlPart =
+                invoiceUrl && isValidContabilidadPublicUrl(invoiceUrl)
+                  ? `\n📄 Ver factura digital: ${invoiceUrl}`
+                  : "";
 
-            const invoiceCaption = pickRandomVariation([
-              `🧾 Factura Oficial${numPart}${urlPart}\n¡Gracias por tu compra en Buñuelandia! 🥟`,
-              `🧾 Aquí tienes tu Factura Oficial${numPart}.${urlPart}\n¡Tus buñuelos van en preparación con todo el amor! 👨‍🍳🔥`,
-              `🧾 Adjuntamos la Factura Oficial${numPart} de tu pedido.${urlPart}\n¡Muchas gracias por preferirnos! ✨`,
-            ]);
+              const invoiceCaption = pickRandomVariation([
+                `🧾 Factura Oficial${numPart}${urlPart}\n¡Gracias por tu compra en Buñuelandia! 🥟`,
+                `🧾 Aquí tienes tu Factura Oficial${numPart}.${urlPart}\n¡Tus buñuelos van en preparación con todo el amor! 👨‍🍳🔥`,
+                `🧾 Adjuntamos la Factura Oficial${numPart} de tu pedido.${urlPart}\n¡Muchas gracias por preferirnos! ✨`,
+              ]);
 
-            await sendOutboundWhatsAppMedia(
-              replyTo,
-              invoicePdfUrl,
-              invoiceCaption
-            );
+              const dlRes = await fetchAndValidateInvoicePdf(invoicePdfUrl, 10000);
+              if (!dlRes.ok || !dlRes.base64) {
+                console.error("[evolution] fallo al descargar/validar PDF de factura:", {
+                  error: dlRes.error,
+                  httpStatus: dlRes.httpStatus,
+                });
+              } else {
+                const pdfRes = await sendOutboundWhatsAppMedia(
+                  pdfTarget.to,
+                  dlRes.base64,
+                  invoiceCaption
+                );
+                if (!pdfRes.ok) {
+                  console.error("[evolution] fallo al enviar PDF de factura a WhatsApp:", {
+                    error: pdfRes.error,
+                    channel: pdfRes.channel,
+                  });
+                } else {
+                  console.log("[evolution] PDF de factura enviado con éxito:", {
+                    to: pdfTarget.to.slice(-4),
+                    bytes: dlRes.byteLength,
+                    id: pdfRes.id,
+                  });
+                }
+              }
+            }
           } catch (pdfErr) {
             console.error("[evolution] invoice pdf outbound error", pdfErr);
           }

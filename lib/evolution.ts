@@ -181,6 +181,58 @@ export function resolveEvolutionSendNumber(to: string): {
   return { number: `${digits}@lid`, kind: "lid" };
 }
 
+/**
+ * Resuelve el destinatario telefónico real para envíos multimedia (sendMedia).
+ * - En WhatsApp Baileys / Evolution API, sendMedia NO soporta identificadores @lid directos.
+ * - Si el destinatario es @lid, busca un número telefónico móvil colombiano validado (10 dígitos).
+ * - NUNCA convierte ni inventa números a partir de los dígitos de un @lid.
+ * - Si no hay un teléfono real validado, retorna null para evitar envíos incorrectos o bloqueos.
+ */
+export function resolveMediaRecipient(
+  replyTo: string,
+  options?: { convPhone?: string | null; parsedDigits?: string | null; orderPhone?: string | null }
+): { to: string; kind: "phone" } | null {
+  const raw = (replyTo || "").trim();
+  if (!raw) return null;
+
+  const isLid = isLidJid(raw) || /^whatsapp:lid:/i.test(raw) || /@lid$/i.test(raw);
+
+  if (!isLid) {
+    const resolved = resolveEvolutionSendNumber(raw);
+    if (resolved.kind === "phone" && resolved.number) {
+      return { to: resolved.number, kind: "phone" };
+    }
+  }
+
+  // Si es @lid, extraer los dígitos del identificador para evitar cualquier colisión o invención
+  const lidIdDigits = isLid ? raw.replace(/^whatsapp:lid:/i, "").replace(/@lid$/i, "").replace(/\D/g, "") : "";
+
+  // Si es @lid, requerimos un teléfono real validado
+  const candidates = [options?.convPhone, options?.orderPhone, options?.parsedDigits].filter(Boolean) as string[];
+  for (const cand of candidates) {
+    // Descartar si el candidato contiene indicadores de LID
+    if (isLidJid(cand) || /^whatsapp:lid:/i.test(cand) || /@lid$/i.test(cand) || cand.toLowerCase().includes("lid")) {
+      continue;
+    }
+
+    const digits = cand.replace(/\D/g, "");
+
+    // Si los dígitos coinciden con el identificador @lid, no es un teléfono real
+    if (lidIdDigits && digits === lidIdDigits) {
+      continue;
+    }
+
+    if (digits.length === 10 && digits.startsWith("3")) {
+      return { to: `57${digits}`, kind: "phone" };
+    }
+    if (digits.length === 12 && digits.startsWith("573")) {
+      return { to: digits, kind: "phone" };
+    }
+  }
+
+  return null;
+}
+
 export function isDeployedEnvironment(): boolean {
   return (
     process.env.NODE_ENV === "production" ||
@@ -983,6 +1035,12 @@ export async function sendEvolutionMedia(
   if (resolved.kind === "invalid" || !resolved.number) {
     return { ok: false, error: "Número inválido para Evolution" };
   }
+  if (resolved.kind === "lid") {
+    return {
+      ok: false,
+      error: "Evolution sendMedia no soporta destinatarios @lid directos sin número telefónico real",
+    };
+  }
 
   const url = `${base}/message/sendMedia/${encodeURIComponent(instance)}`;
 
@@ -1013,6 +1071,7 @@ export async function sendEvolutionMedia(
         "apikey": apiKey,
         "Content-Type": "application/json",
       },
+      signal: AbortSignal.timeout(15000),
       body: JSON.stringify({
         number: resolved.number,
         mediatype,
@@ -1031,11 +1090,12 @@ export async function sendEvolutionMedia(
           "apikey": apiKey,
           "Content-Type": "application/json",
         },
+        signal: AbortSignal.timeout(15000),
         body: JSON.stringify({
           number: resolved.number,
-          mediatype: "image",
+          mediatype,
           mimetype,
-          fileName: mimetype.includes("png") ? "qr_pago.png" : "qr_pago.jpg",
+          fileName,
           media: mediaUrlOrBase64,
           caption: caption || "",
         }),
@@ -1050,7 +1110,18 @@ export async function sendEvolutionMedia(
     const data = await res.json().catch(() => ({}));
     return { ok: true, id: data?.key?.id || "media" };
   } catch (err: any) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    const isTimeout =
+      err?.name === "TimeoutError" ||
+      err?.name === "AbortError" ||
+      String(err?.message || "").includes("timed out");
+    return {
+      ok: false,
+      error: isTimeout
+        ? "Timeout llamando a Evolution sendMedia (15s)"
+        : err instanceof Error
+        ? err.message
+        : String(err),
+    };
   }
 }
 

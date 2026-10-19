@@ -793,6 +793,179 @@ export function isValidContabilidadPublicUrl(urlStr: string | undefined): boolea
 }
 
 /**
+ * Valida que una URL apunte específicamente a un archivo PDF en el endpoint público oficial de Contabilidad.
+ * Exige HTTPS, dominio autorizado en lista blanca y sufijo de ruta '/pdf'.
+ */
+export function isValidContabilidadPdfUrl(candidate?: string): boolean {
+  if (!candidate || typeof candidate !== "string") return false;
+  if (!isValidContabilidadPublicUrl(candidate)) return false;
+  try {
+    const parsed = new URL(candidate.trim());
+    if (!parsed.pathname.endsWith("/pdf")) return false;
+    const prefix = "/api/invoices/public/";
+    const middle = parsed.pathname.slice(prefix.length, -"/pdf".length);
+    return middle.length > 0 && !middle.includes("/");
+  } catch {
+    return false;
+  }
+}
+
+export const MAX_PDF_DOWNLOAD_BYTES = 5 * 1024 * 1024; // 5 MB máximo
+export const DEFAULT_PDF_DOWNLOAD_TIMEOUT_MS = 10_000; // 10 segundos
+
+export interface DownloadPdfResult {
+  ok: boolean;
+  base64?: string;
+  error?: string;
+  httpStatus?: number;
+  byteLength?: number;
+}
+
+/**
+ * Descarga y valida un PDF oficial desde Contabilidad antes de pasarlo a WhatsApp:
+ * - Valida que la URL pertenezca al dominio seguro y autorizado de Contabilidad.
+ * - Aplica timeout controlado (10s por defecto) para no bloquear la ejecución.
+ * - Valida cabeceras HTTP (200 OK, Content-Type: application/pdf).
+ * - Valida límite de tamaño (máx. 5 MB) y magic bytes binarios (%PDF-).
+ * - Retorna el Data URI Base64 ('data:application/pdf;base64,...') listo para Evolution API.
+ */
+export async function fetchAndValidateInvoicePdf(
+  pdfUrl: string,
+  timeoutMs: number = DEFAULT_PDF_DOWNLOAD_TIMEOUT_MS
+): Promise<DownloadPdfResult> {
+  if (!pdfUrl || typeof pdfUrl !== "string") {
+    return { ok: false, error: "URL de PDF vacía o inválida" };
+  }
+
+  if (!isValidContabilidadPdfUrl(pdfUrl)) {
+    return { ok: false, error: "URL de PDF no autorizada o fuera del origen de Contabilidad permitido" };
+  }
+
+  try {
+    const res = await fetch(pdfUrl.trim(), {
+      method: "GET",
+      headers: {
+        Accept: "application/pdf",
+      },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!res.ok) {
+      return {
+        ok: false,
+        httpStatus: res.status,
+        error: `HTTP ${res.status}: ${res.statusText || "Error descargando PDF"}`,
+      };
+    }
+
+    if (res.url && !isValidContabilidadPdfUrl(res.url)) {
+      return {
+        ok: false,
+        error: "Redirección a un destino no autorizado o fuera del dominio oficial de Contabilidad",
+      };
+    }
+
+    const contentType = (res.headers.get("content-type") || "").toLowerCase();
+    if (!contentType.includes("application/pdf")) {
+      return {
+        ok: false,
+        httpStatus: res.status,
+        error: `Content-Type no válido para PDF: ${contentType}`,
+      };
+    }
+
+    const contentLengthHeader = res.headers.get("content-length");
+    if (contentLengthHeader) {
+      const parsedLen = parseInt(contentLengthHeader, 10);
+      if (Number.isFinite(parsedLen) && parsedLen > MAX_PDF_DOWNLOAD_BYTES) {
+        return {
+          ok: false,
+          httpStatus: res.status,
+          error: `Tamaño de PDF excede el límite permitido (${parsedLen} bytes > ${MAX_PDF_DOWNLOAD_BYTES} bytes)`,
+        };
+      }
+    }
+
+    if (!res.body) {
+      return { ok: false, error: "La respuesta HTTP no contiene cuerpo para el PDF" };
+    }
+
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let receivedBytes = 0;
+    let streamExceeded = false;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          receivedBytes += value.length;
+          if (receivedBytes > MAX_PDF_DOWNLOAD_BYTES) {
+            streamExceeded = true;
+            try {
+              await reader.cancel("Tamaño de archivo excedido");
+            } catch {}
+            break;
+          }
+          chunks.push(value);
+        }
+      }
+    } catch (readErr: any) {
+      try {
+        await reader.cancel();
+      } catch {}
+      throw readErr;
+    } finally {
+      try {
+        reader.releaseLock();
+      } catch {}
+    }
+
+    if (streamExceeded) {
+      return {
+        ok: false,
+        httpStatus: res.status,
+        error: `Descarga interrumpida: el tamaño del PDF excede el límite permitido (${receivedBytes} bytes > ${MAX_PDF_DOWNLOAD_BYTES} bytes)`,
+      };
+    }
+
+    if (receivedBytes === 0) {
+      return { ok: false, error: "El archivo PDF descargado está vacío (0 bytes)" };
+    }
+
+    const buffer = Buffer.concat(chunks);
+
+    // Validación de Magic Bytes binarios de PDF (%PDF-)
+    if (buffer.length < 5 || buffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
+      return {
+        ok: false,
+        error: "Cabecera binaria inválida: el contenido descargado no es un documento PDF válido",
+      };
+    }
+
+    const base64Data = buffer.toString("base64");
+    return {
+      ok: true,
+      base64: `data:application/pdf;base64,${base64Data}`,
+      byteLength: buffer.length,
+      httpStatus: res.status,
+    };
+  } catch (err: any) {
+    const isTimeout =
+      err?.name === "TimeoutError" ||
+      err?.name === "AbortError" ||
+      String(err?.message || "").includes("timed out");
+    return {
+      ok: false,
+      error: isTimeout
+        ? `Timeout al descargar el PDF de la factura (${timeoutMs}ms)`
+        : `Fallo de red al descargar el PDF: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+/**
  * Resuelve y formatea de forma determinista el aviso oficial de factura para el cliente por WhatsApp.
  * - Trata invoiceNumber e invoiceUrl de manera independiente: si uno existe y el otro falta, muestra el dato disponible.
  * - Valida URLs exclusivamente con new URL() y HTTPS hacia el dominio contable oficial o configurado.
@@ -2194,12 +2367,18 @@ ${sessionItems.length > 0
                 ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}`
                 : undefined);
 
+          const resolvedPdfUrl = maybeOrder?.invoicePdfUrl && isValidContabilidadPdfUrl(maybeOrder.invoicePdfUrl)
+            ? maybeOrder.invoicePdfUrl
+            : (maybeOrder?.invoiceId && isValidContabilidadPdfUrl(`${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}/pdf`)
+                ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}/pdf`
+                : undefined);
+
           return {
             reply,
             mode: maybeOrder ? "order_created" : "ai",
             mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
             invoiceUrl: resolvedPublicUrl,
-            invoicePdfUrl: maybeOrder?.invoicePdfUrl,
+            invoicePdfUrl: resolvedPdfUrl,
             invoiceNumber: maybeOrder?.invoiceNumber,
           };
         } catch (mErr: any) {
@@ -2288,12 +2467,18 @@ ${sessionItems.length > 0
             ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}`
             : undefined);
 
+      const resolvedOpenAiPdfUrl = maybeOrder?.invoicePdfUrl && isValidContabilidadPdfUrl(maybeOrder.invoicePdfUrl)
+        ? maybeOrder.invoicePdfUrl
+        : (maybeOrder?.invoiceId && isValidContabilidadPdfUrl(`${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}/pdf`)
+            ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}/pdf`
+            : undefined);
+
       return {
         reply,
         mode: maybeOrder ? "order_created" : "ai",
         mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
         invoiceUrl: resolvedOpenAiPublicUrl,
-        invoicePdfUrl: maybeOrder?.invoicePdfUrl,
+        invoicePdfUrl: resolvedOpenAiPdfUrl,
         invoiceNumber: maybeOrder?.invoiceNumber,
       };
     } catch (openaiErr: any) {
@@ -2521,7 +2706,12 @@ ${sessionItems.length > 0
             order.invoiceUrl = invRes.invoiceUrl;
             order.invoicePdfUrl = invRes.invoicePdfUrl;
             createdInvoiceNumber = invRes.invoiceNumber;
-            createdInvoicePdfUrl = invRes.invoicePdfUrl;
+            const resolvedFallbackPdfUrl = invRes.invoicePdfUrl && isValidContabilidadPdfUrl(invRes.invoicePdfUrl)
+              ? invRes.invoicePdfUrl
+              : (invRes.invoiceId && isValidContabilidadPdfUrl(`${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${invRes.invoiceId}/pdf`)
+                  ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${invRes.invoiceId}/pdf`
+                  : undefined);
+            createdInvoicePdfUrl = resolvedFallbackPdfUrl;
             const { noticeLine, publicUrl } = resolveInvoiceNoticeDetails(
               invRes.invoiceNumber,
               invRes.invoiceUrl,
