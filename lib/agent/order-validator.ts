@@ -253,6 +253,16 @@ export interface CashAmountInfo {
  */
 export function parseCashAmount(text: string): CashAmountInfo | null {
   if (!text) return null;
+
+  // Si es un texto multilínea, analizar cada línea en orden inverso (el mensaje más reciente primero)
+  if (text.includes("\n")) {
+    const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean).reverse();
+    for (const line of lines) {
+      const parsed = parseCashAmount(line);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
   const clean = text.replace(/[*_~`]/g, " ").trim();
 
   // Descartar si es un teléfono colombiano de 10 dígitos (ej: 3228964947)

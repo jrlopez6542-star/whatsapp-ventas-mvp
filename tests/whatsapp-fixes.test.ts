@@ -1534,7 +1534,7 @@ test("40. Integridad de facturas: Nunca se crea una segunda factura al cobrar y 
   assert.equal(matchingOrders.length, 1, "Debe existir una única orden y factura para este pedido");
 });
 
-test("41. Ficha compacta completa: Encabezado, cliente, entrega, pedido, cobro y factura única (FASE 2)", () => {
+test("41. Ficha compacta completa: Encabezado, cliente, entrega, pedido, cobro y confirmación sin enlace de factura", () => {
   const fullOrder: Order = {
     id: "ord-test-compact-full",
     conversationId: "whatsapp:+573105556677",
@@ -1584,11 +1584,11 @@ test("41. Ficha compacta completa: Encabezado, cliente, entrega, pedido, cobro y
   assert.ok(card.includes("Paga con: $40.000"), "Paga con exacto");
   assert.ok(card.includes("Cambio: $4.000"), "Cambio matemático determinista");
 
-  // 6. FACTURA (enlace único)
-  assert.ok(card.includes("🧾 FACTURA"), "Debe tener bloque 🧾 FACTURA");
-  assert.ok(card.includes("https://contabilidad-app-fawn.vercel.app/api/invoices/public/inv-uuid-14"));
+  // 6. FACTURA (NO debe incluirse en la ficha del domiciliario - solo información operativa necesaria)
+  assert.ok(!card.includes("🧾 FACTURA"), "No debe tener bloque 🧾 FACTURA en la ficha del domiciliario");
+  assert.ok(!card.includes("https://contabilidad-app-fawn.vercel.app/api/invoices/public/inv-uuid-14"), "No debe incluir enlace de factura en la ficha");
   const countUrls = (card.match(/https:\/\/contabilidad-app-fawn\.vercel\.app\/api\/invoices\/public\/inv-uuid-14/g) || []).length;
-  assert.equal(countUrls, 1, "Enlace de factura debe aparecer exactamente 1 vez");
+  assert.equal(countUrls, 0, "Enlace de factura no debe aparecer en la ficha");
 
   // 7. AL CONFIRMAR
   assert.ok(card.includes("✅ AL CONFIRMAR"), "Debe tener bloque ✅ AL CONFIRMAR");
@@ -1661,7 +1661,7 @@ test("44. Ficha con pago por transferencia: sin cambio de efectivo y sin afirmar
   assert.ok(!card.includes("✅ AL CONFIRMAR"), "Transferencia no pide PAGADO al domiciliario");
 });
 
-test("45. Confirmación de pedido por cliente en WhatsApp envía ficha al domiciliario y no duplica al despachar", async () => {
+test("45. Confirmación de pedido por cliente en WhatsApp NO envía ficha al domiciliario; despacho posterior la envía una vez y no duplica", async () => {
   await updateOrgSettings({
     deliveryDriverPhone: "3109998877",
     deliveryDriverNotifyEnabled: "true",
@@ -1682,14 +1682,32 @@ test("45. Confirmación de pedido por cliente en WhatsApp envía ficha al domici
   const createdOrder = allOrders.find((o) => o.conversationId === convId);
   assert.ok(createdOrder, "La orden debe crearse en BD");
   assert.equal(createdOrder.status, "confirmed", "El estado inicial de la orden debe ser 'confirmed'");
-  assert.ok(
-    createdOrder.driverNotified === "sending_initial" || createdOrder.driverNotified === "initial",
-    "El domiciliario DEBE haber sido notificado o tener reclamo activo tras la confirmación del cliente"
-  );
+  assert.equal(createdOrder.driverNotified || null, null, "Al confirmar el pedido, el domiciliario NO debe ser notificado prematuramente");
 
-  // Transición posterior a despacho: la deduplicación atómica debe evitar el envío duplicado
-  const subsequentDispatch = await notifyDeliveryDriver(createdOrder);
-  assert.equal(subsequentDispatch.skipped, "duplicate", "No debe generar una segunda notificación al pasar a despacho");
+  // Transición posterior a despacho ('ready'): la ficha se envía al domiciliario
+  const readyOrder = await updateOrderStatus(createdOrder.id, "ready");
+  assert.equal(readyOrder?.status, "ready");
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: any) => {
+    const urlStr = String(url);
+    if (urlStr.includes("/message/sendText")) {
+      return new Response(JSON.stringify({ key: { id: "mock-driver-msg-45" } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }) as any;
+
+  try {
+    const dispatchRes = await notifyDeliveryDriver(readyOrder!);
+    assert.equal(dispatchRes.ok, true, "Al pasar a despacho debe enviarse la ficha al domiciliario");
+    assert.equal(dispatchRes.skipped, undefined);
+
+    // Transición posterior a despacho: la deduplicación atómica debe evitar el envío duplicado
+    const subsequentDispatch = await notifyDeliveryDriver(readyOrder!);
+    assert.equal(subsequentDispatch.skipped, "duplicate", "No debe generar una segunda notificación al pasar a despacho");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("46. FASE 8: Transición de estado a 'preparing' (en cocina) NO envía ficha al domiciliario", async () => {
@@ -2210,4 +2228,161 @@ test("56. Resiliencia de notificación: fallo inicial libera reserva, permite re
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("57. Confirmación de pedido envía texto y factura al cliente pero no notifica al domiciliario; despacho posterior notifica una vez con deduplicación persistente", async () => {
+  await updateOrgSettings({
+    deliveryDriverPhone: "3109998877",
+    deliveryDriverNotifyEnabled: "true",
+  });
+
+  let driverEvolutionCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init: any) => {
+    const urlStr = String(url);
+    if (urlStr.includes("/message/sendText")) {
+      const b = JSON.parse(init.body || "{}");
+      if (b.number && b.number.includes("3109998877")) {
+        driverEvolutionCalls++;
+        return new Response(JSON.stringify({ key: { id: `mock-driver-${driverEvolutionCalls}` } }), { status: 200 });
+      }
+    }
+    return new Response(JSON.stringify({ ok: true, id: "mock-ext-1" }), { status: 200 });
+  }) as any;
+
+  try {
+    const convId = "whatsapp:+573211112233";
+    await getOrCreateConversation(convId);
+    await handleSalesMessage(convId, "Quiero una caja tradicional de 8", "Laura Restrepo");
+    await handleSalesMessage(convId, "Carrera 15 # 45-20 apto 301", "Laura Restrepo");
+    await handleSalesMessage(convId, "Pago en efectivo", "Laura Restrepo");
+    await handleSalesMessage(convId, "Pagaré con un billete de 50.000", "Laura Restrepo");
+
+    // Cliente confirma el pedido con 1
+    const confirmRes = await handleSalesMessage(convId, "1", "Laura Restrepo");
+    assert.ok(
+      confirmRes.reply.includes("Pedido Confirmado") || confirmRes.reply.includes("Registrado"),
+      "Debe confirmar el pedido al cliente"
+    );
+    assert.equal(driverEvolutionCalls, 0, "No debe haberse enviado ninguna notificación al domiciliario al confirmar el pedido");
+
+    // Verificar orden en BD
+    const orders = await getOrders();
+    const created = orders.find((o) => o.conversationId === convId);
+    assert.ok(created, "La orden debe existir en BD");
+    assert.equal(created.driverNotified || null, null, "driverNotified debe ser null tras confirmación");
+
+    // Transición a 'ready' (Listo para despacho)
+    const readyOrder = await updateOrderStatus(created.id, "ready");
+    assert.equal(readyOrder?.status, "ready");
+    const dispatchRes = await notifyDeliveryDriver(readyOrder!);
+    assert.equal(dispatchRes.ok, true, "Notificación a despacho debe ser exitosa");
+    assert.equal(driverEvolutionCalls, 1, "Debe haber exactamente 1 notificación al domiciliario");
+
+    // Reintento: deduplicación persistente en BD
+    clearNotifiedDriversCacheForTests();
+    const orderAfterSuccess = await findOrderByInvoiceOrRef(created.id);
+    const retryRes = await notifyDeliveryDriver(orderAfterSuccess!);
+    assert.equal(retryRes.ok, true);
+    assert.equal(retryRes.skipped, "duplicate", "Debe deduplicar contra BD sin llamar a Evolution");
+    assert.equal(driverEvolutionCalls, 1, "Las llamadas de red al domiciliario deben mantenerse en 1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("58. Dos pedidos consecutivos con efectivo diferente ($40.000 vs $50.000): la ficha del pedido A refleja $40.000 y la del pedido B refleja $50.000, sin contaminación cruzada", async () => {
+  const convId = "whatsapp:+573224445566";
+  await getOrCreateConversation(convId);
+
+  // --- PEDIDO 1 ---
+  await handleSalesMessage(convId, "Buenas tardes, quiero una caja tradicional de 8", "Andrés");
+  await handleSalesMessage(convId, "Calle 10 # 5-20 barrio Las Flores", "Andrés");
+  await handleSalesMessage(convId, "Efectivo", "Andrés");
+  await handleSalesMessage(convId, "Tengo un billete de 40.000", "Andrés");
+  const confirmOrder1 = await handleSalesMessage(convId, "1", "Andrés");
+  assert.ok(confirmOrder1.reply.includes("Pedido Confirmado") || confirmOrder1.reply.includes("Registrado"));
+
+  const allOrders1 = await getOrders();
+  const order1 = allOrders1.find((o) => o.conversationId === convId);
+  assert.ok(order1, "El pedido 1 debe existir");
+  assert.equal(order1.total, 32000, "Total del pedido 1: $32.000");
+  assert.ok(order1.changeAmount?.includes("40.000"), `El pedido 1 debe registrar billete de $40.000 (actual: ${order1.changeAmount})`);
+
+  const card1 = formatDeliveryDriverMessage(order1);
+  assert.ok(card1.includes("Paga con: $40.000") || card1.includes("40.000"), "La ficha del pedido 1 debe indicar que paga con $40.000");
+  assert.ok(card1.includes("Cambio: $8.000"), "El cambio del pedido 1 debe ser exactamente $8.000");
+  assert.ok(!card1.includes("50.000"), "La ficha del pedido 1 NO debe contener $50.000");
+  assert.ok(!card1.includes("18.000"), "La ficha del pedido 1 NO debe contener $18.000");
+
+  // El pedido 1 se entrega
+  await updateOrderStatus(order1.id, "delivered");
+
+  // --- PEDIDO 2 (Mismo cliente, misma conversación) ---
+  await handleSalesMessage(convId, "Hola de nuevo, quiero pedir otra caja tradicional de 8", "Andrés");
+  await handleSalesMessage(convId, "Calle 10 # 5-20 barrio Las Flores", "Andrés");
+  await handleSalesMessage(convId, "Efectivo", "Andrés");
+  await handleSalesMessage(convId, "Ahora pago con un billete de 50.000", "Andrés");
+  const confirmOrder2 = await handleSalesMessage(convId, "1", "Andrés");
+  assert.ok(confirmOrder2.reply.includes("Pedido Confirmado") || confirmOrder2.reply.includes("Registrado"));
+
+  const allOrders2 = await getOrders();
+  const order2 = allOrders2.find((o) => o.conversationId === convId && o.id !== order1.id);
+  assert.ok(order2, "El pedido 2 debe existir");
+  assert.equal(order2.total, 32000, "Total del pedido 2: $32.000");
+  assert.ok(order2.changeAmount?.includes("50.000"), `El pedido 2 debe registrar billete de $50.000 (actual: ${order2.changeAmount})`);
+
+  const card2 = formatDeliveryDriverMessage(order2);
+  assert.ok(card2.includes("Paga con: $50.000") || card2.includes("50.000"), "La ficha del pedido 2 debe indicar que paga con $50.000");
+  assert.ok(card2.includes("Cambio: $18.000"), "El cambio del pedido 2 debe ser exactamente $18.000");
+  assert.ok(!card2.includes("40.000"), "La ficha del pedido 2 NO debe contener $40.000 del pedido anterior");
+  assert.ok(!card2.includes("Cambio: $8.000"), "La ficha del pedido 2 NO debe contener cambio de $8.000");
+
+  // Confirmar que el pedido 1 sigue intacto en base de datos
+  const persistedOrder1 = await findOrderByInvoiceOrRef(order1.id);
+  assert.ok(persistedOrder1?.changeAmount?.includes("40.000"), "El pedido 1 debe mantener $40.000 en almacenamiento");
+});
+
+test("59. Aislamiento estricto de sesiones en la misma conversación: el segundo pedido no hereda valores de pago del pedido anterior ni en el resumen previo ni en la ficha final", async () => {
+  const convId = "whatsapp:+573238889900";
+  await getOrCreateConversation(convId);
+
+  // Pedido 1: Efectivo con $70.000
+  await handleSalesMessage(convId, "Quiero una caja tradicional de 8", "Camila");
+  await handleSalesMessage(convId, "Diagonal 40 # 12-30", "Camila");
+  await handleSalesMessage(convId, "Efectivo", "Camila");
+  await handleSalesMessage(convId, "Tengo un billete de 70.000", "Camila");
+  await handleSalesMessage(convId, "1", "Camila");
+
+  const orders1 = await getOrders();
+  const o1 = orders1.find((o) => o.conversationId === convId);
+  assert.ok(o1);
+  assert.ok(o1.changeAmount?.includes("70.000"));
+  await updateOrderStatus(o1.id, "delivered");
+
+  // Pedido 2: Cliente pide Caja x4 Surtida y paga por Nequi
+  await handleSalesMessage(convId, "Hola, quiero una caja surtida de 4 con mora y arequipe", "Camila");
+  await handleSalesMessage(convId, "Misma dirección Diagonal 40 # 12-30", "Camila");
+  const summaryRes = await handleSalesMessage(convId, "Pago por Nequi", "Camila");
+
+  // El resumen previo (Paso 6) NO debe mencionar 70.000 ni cambio en efectivo
+  assert.ok(!summaryRes.reply.includes("70.000"), "El resumen previo del pedido 2 NO debe mencionar los $70.000 del pedido 1");
+  assert.ok(!summaryRes.reply.includes("Cambio:"), "El resumen previo del pedido 2 por Nequi NO debe incluir cambio de efectivo");
+  assert.ok(summaryRes.reply.toLowerCase().includes("nequi"), "El resumen previo debe reflejar Nequi");
+
+  // Confirmación del Pedido 2
+  const confirmRes = await handleSalesMessage(convId, "1", "Camila");
+  assert.ok(confirmRes.reply.includes("Pedido Confirmado") || confirmRes.reply.includes("Registrado"));
+
+  const orders2 = await getOrders();
+  const o2 = orders2.find((o) => o.conversationId === convId && o.id !== o1.id);
+  assert.ok(o2, "El pedido 2 debe existir");
+  assert.equal(o2.paymentMethod, "Nequi", "El medio de pago del pedido 2 debe ser Nequi");
+  assert.ok(!o2.changeAmount, "El pedido 2 por Nequi no debe tener instrucciones de cambio");
+
+  const card2 = formatDeliveryDriverMessage(o2);
+  assert.ok(!card2.includes("70.000"), "La ficha del domiciliario del pedido 2 NO debe incluir $70.000");
+  assert.ok(!card2.includes("Paga con:"), "La ficha de Nequi NO debe incluir Paga con");
+  assert.ok(!card2.includes("Cambio:"), "La ficha de Nequi NO debe incluir Cambio");
+  assert.ok(card2.includes("PENDIENTE VERIFICAR COMPROBANTE"), "La ficha debe indicar transferencia pendiente");
 });

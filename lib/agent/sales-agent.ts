@@ -109,6 +109,16 @@ export interface CashAmountInfo {
  */
 export function parseCashAmount(text: string): CashAmountInfo | null {
   if (!text) return null;
+
+  // Si es un texto multilínea, analizar cada línea en orden inverso (el mensaje más reciente primero)
+  if (text.includes("\n")) {
+    const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean).reverse();
+    for (const line of lines) {
+      const parsed = parseCashAmount(line);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
   const clean = text.replace(/[*_~`]/g, " ").trim();
 
   // Descartar si es un teléfono colombiano de 10 dígitos (ej: 3228964947)
@@ -240,6 +250,19 @@ export function calculateCashChange(
 // Extrae instrucciones de cambio de efectivo o denominación de billete
 export function extractChangeInstructions(text: string): string | null {
   if (!text) return null;
+
+  // Si es un texto multilínea, analizar cada línea en orden inverso (el mensaje más reciente primero)
+  if (text.includes("\n")) {
+    const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean).reverse();
+    for (const line of lines) {
+      const lineChange = extractChangeInstructions(line);
+      if (lineChange) {
+        return lineChange;
+      }
+    }
+    return null;
+  }
+
   const parsed = parseCashAmount(text);
   if (parsed) {
     return parsed.rawText;
@@ -248,7 +271,7 @@ export function extractChangeInstructions(text: string): string | null {
   const clean = text.replace(/[*_~`]/g, " ").trim();
   // Línea explícita de cambio: "Paga con: Billete de 50" o "Cambio: 50.000"
   const labeledChange = clean.match(
-    /(?:(?:billete|paga con|cambio|vueltas)[^:\n*]*[:\s]+)([^\n\r*]+)/i
+    /(?:(?:billete|paga con|pago con|cambio|vueltas)[^:\n*]*[:\s]+)([^\n\r*]+)/i
   );
   if (labeledChange && labeledChange[1]) {
     const cand = labeledChange[1].trim();
@@ -259,17 +282,6 @@ export function extractChangeInstructions(text: string): string | null {
       !cand.toLowerCase().includes("por confirmar")
     ) {
       return cand;
-    }
-  }
-
-  // Si es un texto multilínea, analizar cada línea en orden inverso (el mensaje más reciente primero)
-  if (text.includes("\n")) {
-    const lines = text.split(/[\r\n]+/).map((l) => l.trim()).filter(Boolean).reverse();
-    for (const line of lines) {
-      const lineParsed = parseCashAmount(line);
-      if (lineParsed) {
-        return lineParsed.rawText;
-      }
     }
   }
 
@@ -613,7 +625,7 @@ function extractProductsFromText(
         lower.includes("caja 8 surtida") ||
         lower.includes("caja de surtidos") ||
         lower.includes("caja surtida de 8") ||
-        lower.includes("caja surtida") ||
+        (lower.includes("caja surtida") && !/\b(?:de\s*4|x4|4\s*unidades)\b/i.test(lower)) ||
         lower.includes("surtidos por 8") ||
         lower.includes("surtidos por 10") ||
         (/\bcaja\s+(?:de\s+)?8\b/i.test(lower) && !lower.includes("tradicional")) ||
@@ -1168,7 +1180,8 @@ async function tryExtractAndRegisterOrder(
   userText: string,
   assistantReply: string,
   products: Product[],
-  clientName?: string
+  clientName?: string,
+  sessionMessages?: Message[]
 ) {
   const assistantLower = assistantReply.toLowerCase();
   const isPreConfirmationSummary =
@@ -1403,7 +1416,7 @@ async function tryExtractAndRegisterOrder(
   let userChange = extractChangeInstructions(userText);
   if (!userChange) {
     try {
-      const history = await getMessages(conversationKey);
+      const history = sessionMessages && sessionMessages.length > 0 ? sessionMessages : await getMessages(conversationKey);
       const userMsgs = history.filter((m) => m.role === "user").reverse();
       for (const m of userMsgs) {
         const found = extractChangeInstructions(m.content);
@@ -1414,7 +1427,7 @@ async function tryExtractAndRegisterOrder(
       }
     } catch {}
   }
-  if (!userChange) {
+  if (!userChange && (!sessionMessages || sessionMessages.length === 0)) {
     userChange = extractChangeInstructions(combined);
   }
 
@@ -1578,10 +1591,7 @@ async function tryExtractAndRegisterOrder(
   }
 
   // Notificar automáticamente al domiciliario asignado por WhatsApp
-  notifyDeliveryDriver(order).catch((dErr) => {
-    console.warn("[sales-agent] Error notificando al domiciliario:", dErr);
-  });
-
+  // FASE 8: La ficha al domiciliario NO se env?a al confirmar el pedido; se enviar? exclusivamente cuando pase a despacho ("ready").
   return order;
 }
 
@@ -1590,21 +1600,9 @@ async function tryExtractAndRegisterOrder(
  * o a un mensaje de reinicio/cancelación explícito del cliente o asistente.
  */
 function getSessionMessages(rawMessages: Message[], latestOrder?: Order | null): Message[] {
-  let msgs = [...rawMessages];
-  if (latestOrder?.createdAt) {
-    const orderTime = latestOrder.createdAt;
-    const sinceOrder = msgs.filter((m) => m.createdAt > orderTime);
-    if (
-      sinceOrder.length > 0 &&
-      (Date.now() - orderTime > 45 * 60 * 1000 ||
-        latestOrder.status === "delivered" ||
-        latestOrder.status === "cancelled")
-    ) {
-      msgs = sinceOrder;
-    }
-  }
+  const msgs = [...rawMessages];
 
-  // Detectar punto de reinicio por cancelación o nuevo pedido dentro del historial
+  // Detectar punto de reinicio por confirmación de pedido anterior, cancelación o nuevo pedido dentro del historial
   let resetIndex = -1;
   for (let i = 0; i < msgs.length; i++) {
     const m = msgs[i];
@@ -1614,7 +1612,10 @@ function getSessionMessages(rawMessages: Message[], latestOrder?: Order | null):
         c.includes("hemos cancelado tu solicitud de pedido") ||
         c.includes("ha sido cancelado con éxito") ||
         c.includes("con muchísimo gusto te tomamos un nuevo pedido") ||
-        c.includes("con muchisimo gusto te tomamos un nuevo pedido")
+        c.includes("con muchisimo gusto te tomamos un nuevo pedido") ||
+        c.includes("pedido confirmado") ||
+        c.includes("pedido registrado") ||
+        c.includes("hemos registrado tu pedido")
       ) {
         resetIndex = i;
       }
@@ -1630,6 +1631,29 @@ function getSessionMessages(rawMessages: Message[], latestOrder?: Order | null):
 
   if (resetIndex >= 0 && resetIndex < msgs.length - 1) {
     return msgs.slice(resetIndex + 1);
+  }
+
+  if (latestOrder?.createdAt) {
+    const orderTime = latestOrder.createdAt;
+    let lastOrderMsgIndex = -1;
+    for (let i = 0; i < msgs.length; i++) {
+      if (msgs[i].createdAt <= orderTime) {
+        lastOrderMsgIndex = i;
+      }
+    }
+    if (
+      lastOrderMsgIndex >= 0 &&
+      lastOrderMsgIndex < msgs.length - 1 &&
+      (Date.now() - orderTime > 45 * 60 * 1000 ||
+        latestOrder.status === "delivered" ||
+        latestOrder.status === "cancelled" ||
+        latestOrder.status === "ready" ||
+        latestOrder.status === "delivering" ||
+        latestOrder.status === "confirmed" ||
+        latestOrder.status === "preparing")
+    ) {
+      return msgs.slice(lastOrderMsgIndex + 1);
+    }
   }
 
   return msgs;
@@ -1722,11 +1746,13 @@ export async function handleSalesMessage(
   // --- VERIFICACIÓN DE PEDIDO PREVIO DEL CLIENTE ---
   const allOrders = await getOrders().catch(() => []);
   const customerDigits = conversationKey.replace(/\D/g, "").slice(-10);
-  const userOrders = allOrders.filter((o) => {
-    if (o.conversationId === conversationKey) return true;
-    if (customerDigits && o.conversationId.replace(/\D/g, "").includes(customerDigits)) return true;
-    return false;
-  });
+  const userOrders = allOrders
+    .filter((o) => {
+      if (o.conversationId === conversationKey) return true;
+      if (customerDigits && o.conversationId.replace(/\D/g, "").includes(customerDigits)) return true;
+      return false;
+    })
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const latestOrder = userOrders[0]; // La orden más reciente del cliente
 
   // --- INTENCIÓN DE CANCELAR PEDIDO O BORRADOR ---
@@ -1964,6 +1990,7 @@ export async function handleSalesMessage(
   // para que NINGÚN producto o selección anterior se mezcle con la sesión actual
   const rawPrevious = await getMessages(conversationKey);
   const previous = getSessionMessages(rawPrevious, latestOrder);
+
   const catalogText = products
     .map((p) => `- ${p.name}: ${formatCop(p.price)} (${p.description || "Deliciosos y frescos"})`)
     .join("\n");
@@ -2192,6 +2219,19 @@ export async function handleSalesMessage(
     sessionPayment = extractPaymentMethod(text);
   }
 
+  // Extraer información de efectivo/cambio de la sesión actual
+  let sessionCash: string | null = null;
+  for (const m of [...allUserAndVoiceMsgs].reverse()) {
+    const c = extractChangeInstructions(m.content);
+    if (c) {
+      sessionCash = c;
+      break;
+    }
+  }
+  if (!sessionCash) {
+    sessionCash = extractChangeInstructions(text);
+  }
+
   let activeMemoryDirective = "";
   if (sessionItems.length > 0) {
     const itemsFormatted = sessionItems
@@ -2231,6 +2271,7 @@ ${itemsFormatted}
 - CLIENTE: ${nameStatus}
 - DIRECCIÓN: ${addressStatus}
 - MEDIO DE PAGO: ${paymentStatus}
+- EFECTIVO / PAGO CON: ${sessionCash ? sessionCash : "No indicado o por confirmar"}
 
 🚨🚨 REGLA SUPREMA DE MEMORIA Y CONTINUIDAD (¡CERO AMNESIA!):
 - El cliente YA ELIGIÓ sus productos: ${sessionItems.map((i) => i.name).join(", ")}.
@@ -2505,7 +2546,8 @@ ${sessionItems.length > 0
             text,
             reply,
             products,
-            pushName
+            pushName,
+            previous
           );
 
           // Fail-Closed: Si el asistente generó un mensaje de confirmación pero la orden no se pudo crear,
@@ -2625,7 +2667,8 @@ ${sessionItems.length > 0
         text,
         reply,
         products,
-        pushName
+        pushName,
+        previous
       );
 
       // Fail-Closed: Si el asistente generó un mensaje de confirmación pero la orden no se pudo crear,
@@ -2791,6 +2834,7 @@ ${sessionItems.length > 0
   }
   const { items: extractedItems, total: extractedTotal } = extractProductsFromText(userChatText, products);
 
+
   if (isGreeting || isNewOrderIntent) {
     const items = products
       .filter((p) => p.sku.startsWith("C"))
@@ -2947,9 +2991,7 @@ ${sessionItems.length > 0
         }
 
         // Notificar automáticamente al domiciliario asignado por WhatsApp
-        notifyDeliveryDriver(order).catch((dErr) => {
-          console.warn("[sales-agent] Error notificando al domiciliario en fallback:", dErr);
-        });
+        // FASE 8: La ficha al domiciliario NO se envía al confirmar el pedido; se enviará exclusivamente cuando pase a despacho ("ready").
         const itemsListText = finalItems.map((it) => {
           let nameWithBreakdown = it.name;
           if (it.sku === "C8S") {

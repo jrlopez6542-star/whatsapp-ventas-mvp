@@ -396,7 +396,7 @@ class MemoryStore {
   }
 
   getOrders(): Order[] {
-    return Array.from(this.orders.values());
+    return Array.from(this.orders.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   }
 
   getOrgSettings(): OrgSettings {

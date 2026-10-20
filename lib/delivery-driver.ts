@@ -284,17 +284,7 @@ export function formatDeliveryDriverMessage(
   const cobroLines = formatCobroSection(order);
   sections.push(cobroLines.join("\n"));
 
-  // 6. 🧾 FACTURA (enlace oficial existente una sola vez)
-  const invoiceUrl =
-    order.invoiceUrl ||
-    (order.invoiceId
-      ? `https://contabilidad-app-fawn.vercel.app/api/invoices/public/${order.invoiceId}`
-      : undefined);
-  if (invoiceUrl) {
-    sections.push(`🧾 FACTURA\n${invoiceUrl}`);
-  }
-
-  // 7. ✅ AL CONFIRMAR
+  // 6. ✅ AL CONFIRMAR
   const pmLower = (order.paymentMethod || "Efectivo").toLowerCase();
   const isCash =
     pmLower.includes("efectivo") ||
