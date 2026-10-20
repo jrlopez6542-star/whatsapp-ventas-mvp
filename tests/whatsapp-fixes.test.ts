@@ -23,6 +23,7 @@ import {
   resolveCustomerPhoneForDriver,
   formatDeliveryDriverMessage,
   notifyDeliveryDriver,
+  clearNotifiedDriversCacheForTests,
 } from "../lib/delivery-driver";
 import {
   parseEvolutionUpsert,
@@ -1660,7 +1661,7 @@ test("44. Ficha con pago por transferencia: sin cambio de efectivo y sin afirmar
   assert.ok(!card.includes("✅ AL CONFIRMAR"), "Transferencia no pide PAGADO al domiciliario");
 });
 
-test("45. FASE 8: Confirmación de pedido por cliente en WhatsApp NO envía ficha al domiciliario", async () => {
+test("45. Confirmación de pedido por cliente en WhatsApp envía ficha al domiciliario y no duplica al despachar", async () => {
   await updateOrgSettings({
     deliveryDriverPhone: "3109998877",
     deliveryDriverNotifyEnabled: "true",
@@ -1681,12 +1682,14 @@ test("45. FASE 8: Confirmación de pedido por cliente en WhatsApp NO envía fich
   const createdOrder = allOrders.find((o) => o.conversationId === convId);
   assert.ok(createdOrder, "La orden debe crearse en BD");
   assert.equal(createdOrder.status, "confirmed", "El estado inicial de la orden debe ser 'confirmed'");
-  assert.equal(
-    createdOrder.driverNotified || null,
-    null,
-    "El domiciliario NO debe haber sido notificado tras la simple confirmación del cliente"
+  assert.ok(
+    createdOrder.driverNotified === "sending_initial" || createdOrder.driverNotified === "initial",
+    "El domiciliario DEBE haber sido notificado o tener reclamo activo tras la confirmación del cliente"
   );
-  assert.equal(createdOrder.driverNotifiedAt || 0, 0);
+
+  // Transición posterior a despacho: la deduplicación atómica debe evitar el envío duplicado
+  const subsequentDispatch = await notifyDeliveryDriver(createdOrder);
+  assert.equal(subsequentDispatch.skipped, "duplicate", "No debe generar una segunda notificación al pasar a despacho");
 });
 
 test("46. FASE 8: Transición de estado a 'preparing' (en cocina) NO envía ficha al domiciliario", async () => {
@@ -2134,6 +2137,76 @@ test("55. Bloqueo estricto de envíos prematuros en POST /api/panel/orders/[id]/
     assert.equal(verifiedOrder?.status, "ready", "El reenvío no debe alterar el status del pedido");
     assert.equal(verifiedOrder?.driverPaymentConfirmed || 0, 0, "El reenvío no debe alterar la confirmación del cobro");
     assert.equal(verifiedOrder?.accountingPaymentSynced || 0, 0, "El reenvío no debe alterar la sincronización contable");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("56. Resiliencia de notificación: fallo inicial libera reserva, permite reintento al pasar a despacho, y deduplicación persiste sin depender de la caché en memoria", async () => {
+  await updateOrgSettings({
+    deliveryDriverPhone: "3109998877",
+    deliveryDriverNotifyEnabled: "true",
+  });
+
+  const order = await createOrder("whatsapp:+573197778899", [{ sku: "C8T", quantity: 1, unitPrice: 32000 }], 32000, {
+    customerName: "Camila Osorio",
+    deliveryAddress: "Calle 100 # 20-30",
+    paymentMethod: "Efectivo",
+    status: "confirmed",
+  });
+
+  let networkCallCount = 0;
+  let simulateFailure = true;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: any, init: any) => {
+    const urlStr = String(url);
+    if (urlStr.includes("/message/sendText")) {
+      networkCallCount++;
+      if (simulateFailure) {
+        return new Response(JSON.stringify({ error: "Conexión rechazada por Evolution API" }), { status: 503 });
+      }
+      return new Response(JSON.stringify({ key: { id: `mock-msg-${networkCallCount}` } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  }) as any;
+
+  try {
+    // 1. Intento inicial de notificación falla
+    const failedNotify = await notifyDeliveryDriver(order);
+    assert.equal(failedNotify.ok, false);
+    assert.equal(networkCallCount, 1);
+
+    // 2. Verificar que la reserva se liberó correctamente (no quedó en sending_initial ni en initial)
+    const orderAfterFailure = await findOrderByInvoiceOrRef(order.id);
+    assert.ok(
+      orderAfterFailure?.driverNotified === undefined || orderAfterFailure?.driverNotified === null || orderAfterFailure?.driverNotified === "",
+      "La reserva de notificación debe haberse liberado tras el fallo del envío"
+    );
+
+    // 3. Pasar el pedido a despacho ('ready'): debe reintentar y tener éxito
+    simulateFailure = false;
+    const readyOrder = await updateOrderStatus(order.id, "ready");
+    assert.equal(readyOrder?.status, "ready");
+
+    const dispatchNotify = await notifyDeliveryDriver(readyOrder!);
+    assert.equal(dispatchNotify.ok, true, "El reintento al pasar a despacho debe tener éxito");
+    assert.equal(dispatchNotify.skipped, undefined);
+    assert.equal(networkCallCount, 2, "Debe haberse ejecutado el envío a Evolution");
+
+    // 4. Confirmar que la orden quedó registrada como notificada en almacenamiento persistente
+    const orderAfterSuccess = await findOrderByInvoiceOrRef(order.id);
+    assert.equal(orderAfterSuccess?.driverNotified, "initial");
+    assert.ok(orderAfterSuccess?.driverNotifiedAt && orderAfterSuccess.driverNotifiedAt > 0);
+
+    // 5. Verificar que la deduplicación NO depende de la memoria:
+    // Vaciamos completamente la caché en memoria (simulando reinicio de contenedor/proceso de Node)
+    clearNotifiedDriversCacheForTests();
+
+    // Reintentar la notificación con la caché en memoria completamente vacía
+    const dedupeAfterMemoryWipe = await notifyDeliveryDriver(orderAfterSuccess!);
+    assert.equal(dedupeAfterMemoryWipe.ok, true);
+    assert.equal(dedupeAfterMemoryWipe.skipped, "duplicate", "La base de datos debe impedir el duplicado aun con la caché en memoria vacía");
+    assert.equal(networkCallCount, 2, "El contador de envíos de red DEBE permanecer en 2 (ningún mensaje nuevo)");
   } finally {
     globalThis.fetch = originalFetch;
   }

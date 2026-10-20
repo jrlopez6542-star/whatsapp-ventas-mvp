@@ -130,7 +130,21 @@ export function resolveCustomerPhoneForDriver(order: Order): CustomerPhoneInfo {
  */
 export function formatOrderItemsForDriver(order: Order): string[] {
   if (order.items && order.items.length > 0) {
-    return order.items.map((it) => `${it.quantity || 1} x ${it.name || it.sku}`);
+    const rawSummary = (order.itemsSummary || "").trim();
+    return order.items.map((it) => {
+      let displayName = it.name || it.sku;
+      if (
+        rawSummary &&
+        (it.sku === "C4S" || it.sku === "C8S" || displayName.toLowerCase().includes("surtida")) &&
+        !displayName.includes("(")
+      ) {
+        const breakdownMatch = rawSummary.match(/(?:C4S|C8S|surtida[^\n,]*?)\s*\(([^)]+)\)/i);
+        if (breakdownMatch && breakdownMatch[1]) {
+          displayName = `${displayName} (${breakdownMatch[1].trim()})`;
+        }
+      }
+      return `${it.quantity || 1} x ${displayName}`;
+    });
   }
 
   const raw = (order.itemsSummary || "").trim();
@@ -296,6 +310,10 @@ export function formatDeliveryDriverMessage(
 // Deduplication cache: key = `${order.id}:${kind}` -> timestamp
 const notifiedDriversCache = new Map<string, number>();
 const NOTIFY_DEDUPE_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+export function clearNotifiedDriversCacheForTests(): void {
+  notifiedDriversCache.clear();
+}
 
 /**
  * Notifica automáticamente al domiciliario asignado si tiene teléfono configurado

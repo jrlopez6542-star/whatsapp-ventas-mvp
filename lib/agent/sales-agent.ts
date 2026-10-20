@@ -17,6 +17,7 @@ import {
   type Order,
 } from "@/lib/store";
 import { createInvoiceInContabilidad } from "@/lib/contabilidad";
+import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { logSystemEvent } from "@/lib/logger";
 import { pickRandomVariation } from "@/lib/anti-ban";
 import {
@@ -1543,7 +1544,7 @@ async function tryExtractAndRegisterOrder(
       deliveryAddress: address,
       deliveryNotes: detectedNotes,
       paymentMethod,
-      paymentStatus: isCashPayment ? "issued" : "paid",
+      paymentStatus: isCashPayment ? "issued" : "pending",
       isCashOnDelivery: isCashPayment,
       changeAmount: detectedChange,
       items: orderItems.map((it) => {
@@ -1576,8 +1577,11 @@ async function tryExtractAndRegisterOrder(
     console.error("[sales-agent] Error generando factura automática:", invErr);
   }
 
-  // FASE 8: Confirmar un pedido no envía la ficha al domiciliario.
-  // La ficha se envía exclusivamente cuando el pedido esté listo para despacho (delivering).
+  // Notificar automáticamente al domiciliario asignado por WhatsApp
+  notifyDeliveryDriver(order).catch((dErr) => {
+    console.warn("[sales-agent] Error notificando al domiciliario:", dErr);
+  });
+
   return order;
 }
 
@@ -2899,7 +2903,7 @@ ${sessionItems.length > 0
             phone: detectedPhone ? `+57${detectedPhone}` : conversationKey.replace(/^whatsapp:/i, ""),
             deliveryAddress: finalAddress,
             paymentMethod: finalPayment,
-            paymentStatus: isCashFallback ? "issued" : "paid",
+            paymentStatus: isCashFallback ? "issued" : "pending",
             isCashOnDelivery: isCashFallback,
             changeAmount: foundChange || undefined,
             items: finalItems.map((it) => ({
@@ -2942,8 +2946,10 @@ ${sessionItems.length > 0
           console.warn("[sales-agent] Error generando factura en fallback:", invErr);
         }
 
-        // FASE 8: Confirmar un pedido no envía la ficha al domiciliario.
-        // La ficha se envía cuando el pedido pase a listo para despacho (delivering).
+        // Notificar automáticamente al domiciliario asignado por WhatsApp
+        notifyDeliveryDriver(order).catch((dErr) => {
+          console.warn("[sales-agent] Error notificando al domiciliario en fallback:", dErr);
+        });
         const itemsListText = finalItems.map((it) => {
           let nameWithBreakdown = it.name;
           if (it.sku === "C8S") {
