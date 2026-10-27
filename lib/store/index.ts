@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import {
   ensureTursoReady,
   getTursoClient,
@@ -61,8 +61,15 @@ export interface OrderItem {
 
 export type OrderStatus = "pending" | "confirmed" | "preparing" | "ready" | "delivering" | "delivered" | "cancelled";
 
+function getIdempotentOrderId(key: string): string {
+  const hex = createHash("sha256").update(key).digest("hex").slice(0, 32);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
 export interface Order {
   id: string;
+  /** Solo en memoria: esta llamada reutilizó el pedido de la misma confirmación. */
+  idempotencyReplay?: boolean;
   conversationId: string;
   customerName?: string;
   customerPhone?: string;
@@ -91,6 +98,8 @@ export interface Order {
   accountingPaymentSyncedAt?: number;
   createdAt: number;
 }
+
+export type OrderInvoiceSnapshot = Pick<Order, "invoiceNumber" | "invoiceId" | "invoiceUrl" | "invoicePdfUrl">;
 
 export interface OrgSettings {
   name: string;
@@ -370,10 +379,15 @@ class MemoryStore {
       invoiceNumber?: string;
       invoiceId?: string;
       invoiceUrl?: string;
+      idempotencyKey?: string;
     }
   ): Order {
+    const id = details?.idempotencyKey ? getIdempotentOrderId(details.idempotencyKey) : randomUUID();
+    const existing = details?.idempotencyKey ? this.orders.get(id) : undefined;
+    if (existing) return { ...existing, idempotencyReplay: true };
+
     const order: Order = {
-      id: randomUUID(),
+      id,
       conversationId,
       customerName: details?.customerName,
       customerPhone: details?.customerPhone,
@@ -861,9 +875,11 @@ export async function createOrder(
     invoiceNumber?: string;
     invoiceId?: string;
     invoiceUrl?: string;
+    idempotencyKey?: string;
   }
 ): Promise<Order> {
   const memOrder = getMemoryStore().createOrder(conversationId, items, total, details);
+  if (!isTursoConfigured() && memOrder.idempotencyReplay) return memOrder;
   if (isTursoConfigured()) {
     try {
       await ensureTursoReady();
@@ -983,11 +999,27 @@ export async function createOrder(
       try {
         await client.batch([orderStmt, ...itemBatch], "write");
       } catch (batchErr: any) {
+        const findIdempotentOrder = async (): Promise<Order | null> => {
+          if (!details?.idempotencyKey) return null;
+          const existing = await client.execute({
+            sql: "SELECT id FROM orders WHERE id = ? LIMIT 1",
+            args: [memOrder.id],
+          });
+          if (!existing.rows.length) return null;
+          const replay = { ...memOrder, idempotencyReplay: true };
+          getMemoryStore().orders.set(memOrder.id, replay);
+          return replay;
+        };
+
+        const firstAttemptExisting = await findIdempotentOrder().catch(() => null);
+        if (firstAttemptExisting) return firstAttemptExisting;
+
         console.warn("[store] Error en batch atómico de orden e items:", batchErr);
+
         try {
           resetTursoReady();
           await ensureTursoReady();
-          if (memOrder.id && typeof memOrder.id === "string" && memOrder.id.length >= 10) {
+          if (!details?.idempotencyKey && memOrder.id && typeof memOrder.id === "string" && memOrder.id.length >= 10) {
             await client.execute({ sql: "DELETE FROM order_items WHERE order_id = ?", args: [memOrder.id] }).catch(() => {});
             await client.execute({ sql: "DELETE FROM orders WHERE id = ?", args: [memOrder.id] }).catch(() => {});
           }
@@ -995,8 +1027,10 @@ export async function createOrder(
           await client.batch([orderStmt, ...itemBatch], "write");
         } catch (retryErr) {
           console.error("[store] Inserción atómica de pedido falló definitivamente:", retryErr);
+          const retryExisting = await findIdempotentOrder().catch(() => null);
+          if (retryExisting) return retryExisting;
           try {
-            if (memOrder.id && typeof memOrder.id === "string" && memOrder.id.length >= 10) {
+            if (!details?.idempotencyKey && memOrder.id && typeof memOrder.id === "string" && memOrder.id.length >= 10) {
               await client.execute({ sql: "DELETE FROM order_items WHERE order_id = ?", args: [memOrder.id] });
               await client.execute({ sql: "DELETE FROM orders WHERE id = ?", args: [memOrder.id] });
             }
@@ -1034,21 +1068,43 @@ export async function deleteOrder(id: string): Promise<void> {
   }
 }
 
-export async function updateOrderStatus(id: string, status: OrderStatus): Promise<Order | null> {
+export async function updateOrderStatus(
+  id: string,
+  status: OrderStatus,
+  options: {
+    rejectCancelled?: boolean;
+    rejectDeliveredOrPaid?: boolean;
+    allowedCurrentStatuses?: OrderStatus[];
+  } = {}
+): Promise<Order | null> {
   const mem = getMemoryStore();
   const memOrder = mem.orders.get(id);
-  if (memOrder) {
-    memOrder.status = status;
-  }
 
   if (isTursoConfigured()) {
     try {
       await ensureTursoReady();
       const client = getTursoClient();
-      await client.execute({
-        sql: "UPDATE orders SET status = ? WHERE id = ?",
-        args: [status, id],
+      const predicates: string[] = [];
+      const args: Array<string> = [status, id];
+      if (options.allowedCurrentStatuses) {
+        if (options.allowedCurrentStatuses.length === 0) return null;
+        predicates.push(`status IN (${options.allowedCurrentStatuses.map(() => "?").join(", ")})`);
+        args.push(...options.allowedCurrentStatuses);
+      }
+      if (options.rejectCancelled) predicates.push("COALESCE(status, '') != 'cancelled'");
+      if (options.rejectDeliveredOrPaid) {
+        predicates.push("COALESCE(status, '') != 'delivered'");
+        predicates.push("COALESCE(driver_payment_confirmed, 0) = 0");
+      }
+
+      const result = await client.execute({
+        sql: `UPDATE orders SET status = ? WHERE id = ?${predicates.length ? ` AND ${predicates.join(" AND ")}` : ""}`,
+        args,
       });
+      if (predicates.length && result.rowsAffected < 1) {
+        return null;
+      }
+      if (memOrder) memOrder.status = status;
       const res = await client.execute({
         sql: "SELECT * FROM orders WHERE id = ? LIMIT 1",
         args: [id],
@@ -1071,6 +1127,7 @@ export async function updateOrderStatus(id: string, status: OrderStatus): Promis
           invoiceNumber: r.invoice_number ? String(r.invoice_number) : undefined,
           invoiceId: r.invoice_id ? String(r.invoice_id) : undefined,
           invoiceUrl: r.invoice_url ? String(r.invoice_url) : undefined,
+          invoicePdfUrl: r.invoice_pdf_url ? String(r.invoice_pdf_url) : undefined,
           driverNotified: r.driver_notified ? String(r.driver_notified) : undefined,
           driverNotifiedAt: r.driver_notified_at ? parseTimestamp(r.driver_notified_at) : undefined,
           invoicePdfSent: r.invoice_pdf_sent ? String(r.invoice_pdf_sent) : undefined,
@@ -1090,7 +1147,39 @@ export async function updateOrderStatus(id: string, status: OrderStatus): Promis
     }
   }
 
+  if (options.allowedCurrentStatuses && !options.allowedCurrentStatuses.includes(memOrder?.status as OrderStatus)) return null;
+  if (options.rejectCancelled && memOrder?.status === "cancelled") return null;
+  if (
+    options.rejectDeliveredOrPaid &&
+    (memOrder?.status === "delivered" || Boolean(memOrder?.driverPaymentConfirmed))
+  ) return null;
+  if (memOrder) memOrder.status = status;
   return memOrder || null;
+}
+
+/** Lee únicamente el estado persistido sin recurrir a un snapshot de memoria si Turso falla. */
+export async function getOrderStatusSnapshot(
+  id: string
+): Promise<Pick<Order, "id" | "status" | "driverPaymentConfirmed"> | null> {
+  if (isTursoConfigured()) {
+    await ensureTursoReady();
+    const result = await getTursoClient().execute({
+      sql: "SELECT id, status, driver_payment_confirmed FROM orders WHERE id = ? LIMIT 1",
+      args: [id],
+    });
+    const row: any = result.rows[0];
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      status: (row.status as OrderStatus) || "pending",
+      driverPaymentConfirmed: Number(row.driver_payment_confirmed || 0),
+    };
+  }
+
+  const order = getMemoryStore().orders.get(id);
+  return order
+    ? { id: order.id, status: order.status, driverPaymentConfirmed: order.driverPaymentConfirmed }
+    : null;
 }
 
 /**
@@ -1276,34 +1365,231 @@ export async function updateOrderDriverNotified(id: string, state: string): Prom
   }
 }
 
+export type InvoicePersistenceStatus = "persisted" | "memory_only" | "failed";
+
+/** Referencias que pueden conservarse de una escritura anterior. */
+export type InvoiceReferenceField = "invoiceId" | "invoiceUrl" | "invoicePdfUrl";
+
+export interface InvoicePersistenceResult {
+  status: InvoicePersistenceStatus;
+  /** Motivo legible cuando `status` es "failed". */
+  error?: string;
+  /** Estado real de la fila leído DESPUÉS del UPDATE (null si la fila no existe). */
+  snapshot?: OrderInvoiceSnapshot | null;
+  /** Referencias conservadas del valor previo por no recibir un valor nuevo válido. */
+  preserved?: InvoiceReferenceField[];
+}
+
+/** Texto normalizado: cadena con contenido o null (ausente). */
+function textoFactura(valor?: string | null): string | null {
+  if (typeof valor !== "string") return null;
+  const limpio = valor.trim();
+  return limpio.length > 0 ? limpio : null;
+}
+
+/** URL http(s) normalizada o null (ausente o inválida): nunca borra por sí sola. */
+function urlFactura(valor?: string | null): string | null {
+  if (typeof valor !== "string") return null;
+  const limpio = valor.trim();
+  if (!limpio) return null;
+  try {
+    const parsed = new URL(limpio);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+      return parsed.toString();
+    }
+  } catch {
+    // Valor inválido: se trata como ausente y se preserva la referencia previa.
+  }
+  return null;
+}
+
+/**
+ * Persiste las referencias de factura de un pedido.
+ *
+ * Contrato (spec v7):
+ * - `invoiceNumber` vacío => `failed` sin escribir nada.
+ * - Un cambio de número exige un `invoiceId` nuevo válido (`references_incomplete`).
+ * - URL ausente o inválida se preserva; no borra la referencia guardada.
+ * - `persisted` exige que todas las referencias de factura confirmadas coincidan tras releerlas.
+ * - `invoicePdfUrl` se persiste para la misma factura y no se arrastra al cambiar su ID.
+ * - La memoria solo se actualiza cuando la escritura se confirma.
+ */
 export async function updateOrderInvoice(
   id: string,
   invoiceNumber: string,
   invoiceId?: string,
   invoiceUrl?: string,
   invoicePdfUrl?: string
-): Promise<void> {
-  const mem = getMemoryStore();
-  const memOrder = mem.orders.get(id);
-  if (memOrder) {
-    memOrder.invoiceNumber = invoiceNumber;
-    memOrder.invoiceId = invoiceId;
-    memOrder.invoiceUrl = invoiceUrl;
-    memOrder.invoicePdfUrl = invoicePdfUrl;
+): Promise<InvoicePersistenceResult> {
+  const numero = textoFactura(invoiceNumber);
+  if (!numero) {
+    return { status: "failed", error: "invoice_number vacío: no se escribe nada" };
   }
 
-  if (isTursoConfigured()) {
-    try {
-      await ensureTursoReady();
-      const client = getTursoClient();
-      await client.execute({
-        sql: "UPDATE orders SET invoice_number = ?, invoice_id = ?, invoice_url = ? WHERE id = ?",
-        args: [invoiceNumber, invoiceId || null, invoiceUrl || null, id],
-      });
-    } catch (err) {
-      console.error("[store] updateOrderInvoice error:", err);
+  const idNuevo = textoFactura(invoiceId);
+  const urlNueva = urlFactura(invoiceUrl);
+  const pdfNuevo = urlFactura(invoicePdfUrl);
+
+  const memOrder = getMemoryStore().orders.get(id);
+
+  const aplicarMemoria = (final: OrderInvoiceSnapshot): void => {
+    if (!memOrder) return;
+    memOrder.invoiceNumber = final.invoiceNumber;
+    memOrder.invoiceId = final.invoiceId;
+    memOrder.invoiceUrl = final.invoiceUrl;
+    memOrder.invoicePdfUrl = final.invoicePdfUrl;
+  };
+
+  if (!isTursoConfigured()) {
+    if (!memOrder) {
+      return { status: "failed", error: "fila de pedido ausente en memoria" };
     }
+    // Misma regla que con Turso: una factura nueva exige invoiceId (sin mezclar referencias).
+    if (numero !== (memOrder.invoiceNumber ?? null) && !idNuevo) {
+      return { status: "failed", error: "references_incomplete: una factura nueva requiere invoiceId" };
+    }
+    const finalMemoria: OrderInvoiceSnapshot = {
+      invoiceNumber: numero,
+      invoiceId: idNuevo ?? memOrder.invoiceId,
+      invoiceUrl: urlNueva ?? memOrder.invoiceUrl,
+      // El PDF solo se conserva en memoria y únicamente para la misma factura.
+      invoicePdfUrl: pdfNuevo ?? ((idNuevo ?? memOrder.invoiceId) === memOrder.invoiceId ? memOrder.invoicePdfUrl : undefined),
+    };
+    aplicarMemoria(finalMemoria);
+    return { status: "memory_only", snapshot: finalMemoria };
   }
+
+  try {
+    await ensureTursoReady();
+    const client = getTursoClient();
+
+    // Un UPDATE silencioso no basta: la lectura previa define qué se preserva y
+    // la posterior confirma qué quedó realmente escrito.
+    const previo = await getOrderInvoiceSnapshot(id);
+    if (!previo) {
+      return { status: "failed", error: "fila de pedido ausente", snapshot: null };
+    }
+
+    const cambiaNumero = numero !== (previo.invoiceNumber ?? null);
+    if (cambiaNumero && !idNuevo) {
+      return {
+        status: "failed",
+        error: "references_incomplete: una factura nueva requiere invoiceId",
+        snapshot: previo,
+      };
+    }
+
+    const finalId = idNuevo ?? previo.invoiceId ?? null;
+    const finalUrl = urlNueva ?? previo.invoiceUrl ?? null;
+    // La URL PDF se conserva durablemente para la misma factura y no se atribuye a otra.
+    const mismaFactura = finalId === (previo.invoiceId ?? null);
+    const finalPdf = pdfNuevo ?? (mismaFactura
+      ? previo.invoicePdfUrl ?? (memOrder?.invoiceId === finalId ? memOrder.invoicePdfUrl : undefined)
+      : undefined);
+
+    const preserved: InvoiceReferenceField[] = [];
+    if (idNuevo === null) preserved.push("invoiceId");
+    if (urlNueva === null) preserved.push("invoiceUrl");
+    if (pdfNuevo === null && finalPdf) {
+      preserved.push("invoicePdfUrl");
+    }
+
+    const ejecucion = await client.execute({
+      sql:
+        "UPDATE orders SET invoice_number = ?, invoice_id = ?, invoice_url = ?, invoice_pdf_url = ? " +
+        "WHERE id = ? AND invoice_number IS ? AND invoice_id IS ? AND invoice_url IS ? AND invoice_pdf_url IS ?",
+      args: [
+        numero,
+        finalId,
+        finalUrl,
+        finalPdf ?? null,
+        id,
+        previo.invoiceNumber ?? null,
+        previo.invoiceId ?? null,
+        previo.invoiceUrl ?? null,
+        previo.invoicePdfUrl ?? null,
+      ],
+    });
+
+    const posterior = await getOrderInvoiceSnapshot(id);
+    if (!posterior) {
+      return { status: "failed", error: "fila de pedido ausente tras el UPDATE", snapshot: null };
+    }
+
+    const igual = (a?: string | null, b?: string | null): boolean => (a ?? null) === (b ?? null);
+    const coincide =
+      igual(posterior.invoiceNumber, numero) &&
+      igual(posterior.invoiceId, finalId) &&
+      igual(posterior.invoiceUrl, finalUrl) &&
+      igual(posterior.invoicePdfUrl, finalPdf);
+
+    if (!coincide) {
+      const filas = Number((ejecucion as { rowsAffected?: number }).rowsAffected ?? 0);
+      const sinCambios =
+        igual(posterior.invoiceNumber, previo.invoiceNumber) &&
+        igual(posterior.invoiceId, previo.invoiceId) &&
+        igual(posterior.invoiceUrl, previo.invoiceUrl) &&
+        igual(posterior.invoicePdfUrl, previo.invoicePdfUrl);
+      if (filas === 0 && !sinCambios) {
+        return {
+          status: "failed",
+          error: "la fila cambió durante la actualización (posible concurrencia)",
+          snapshot: posterior,
+        };
+      }
+      return { status: "failed", error: "la fila no refleja la factura tras el UPDATE", snapshot: posterior };
+    }
+
+    // Memoria = lo confirmado en la fila. Si la factura cambió, el PDF anterior no se arrastra.
+    const confirmadoEnMemoria: OrderInvoiceSnapshot = {
+      ...posterior,
+      invoicePdfUrl: finalPdf ?? (mismaFactura ? posterior.invoicePdfUrl : undefined),
+    };
+    aplicarMemoria(confirmadoEnMemoria);
+    // snapshot contiene los campos de factura leídos desde la base durable.
+    return { status: "persisted", snapshot: posterior, preserved };
+  } catch (err) {
+    const errorName =
+      err && typeof err === "object" && "name" in err && typeof err.name === "string"
+        ? err.name.slice(0, 40)
+        : "PersistenceError";
+    const detalle =
+      err instanceof Error ? err.message.replace(/\s+/g, " ").slice(0, 200) : "";
+    console.error("[store] updateOrderInvoice failed", {
+      error: errorName,
+      detalle: detalle.replace(/(api[_-]?key|token|password|secret)\s*[:=]\s*\S+/gi, "$1=***"),
+    });
+    return {
+      status: "failed",
+      error: "fallo de persistencia durable",
+    };
+  }
+}
+
+/** Lee desde el almacén persistente los datos mínimos para reutilizar una factura confirmada. */
+export async function getOrderInvoiceSnapshot(id: string): Promise<OrderInvoiceSnapshot | null> {
+  if (isTursoConfigured()) {
+    await ensureTursoReady();
+    const client = getTursoClient();
+    const result = await client.execute({
+      sql: "SELECT invoice_number, invoice_id, invoice_url, invoice_pdf_url FROM orders WHERE id = ? LIMIT 1",
+      args: [id],
+    });
+    if (!result.rows.length) return null;
+    const row: any = result.rows[0];
+    const snapshot: OrderInvoiceSnapshot = {
+      invoiceNumber: row.invoice_number ? String(row.invoice_number) : undefined,
+      invoiceId: row.invoice_id ? String(row.invoice_id) : undefined,
+      invoiceUrl: row.invoice_url ? String(row.invoice_url) : undefined,
+      invoicePdfUrl: row.invoice_pdf_url ? String(row.invoice_pdf_url) : undefined,
+    };
+    return snapshot;
+  }
+
+  const order = getMemoryStore().orders.get(id);
+  return order
+    ? { invoiceNumber: order.invoiceNumber, invoiceId: order.invoiceId, invoiceUrl: order.invoiceUrl, invoicePdfUrl: order.invoicePdfUrl }
+    : null;
 }
 
 /**
@@ -1403,31 +1689,35 @@ export async function releaseOrderInvoicePdf(
 
 export async function markOrderDriverPaymentConfirmed(
   orderId: string,
-  data: { amount: number; phone: string; confirmedAt?: number }
+  data: { amount: number; phone: string; confirmedAt?: number },
+  options: { requiredStatus?: OrderStatus } = {}
 ): Promise<Order | null> {
   const now = data.confirmedAt || Date.now();
   const mem = getMemoryStore();
   const memOrder = mem.orders.get(orderId);
-  if (memOrder) {
-    memOrder.driverPaymentConfirmed = 1;
-    memOrder.driverPaymentAmount = data.amount;
-    memOrder.driverPaymentPhone = data.phone;
-    memOrder.driverPaymentConfirmedAt = now;
-  }
 
   if (isTursoConfigured()) {
     try {
       await ensureTursoReady();
       const client = getTursoClient();
-      await client.execute({
+      const update = await client.execute({
         sql: `UPDATE orders
               SET driver_payment_confirmed = 1,
                   driver_payment_amount = ?,
                   driver_payment_phone = ?,
                   driver_payment_confirmed_at = ?
-              WHERE id = ?`,
-        args: [data.amount, data.phone, now, orderId],
+              WHERE id = ?${options.requiredStatus ? " AND status = ? AND COALESCE(driver_payment_confirmed, 0) = 0" : ""}`,
+        args: options.requiredStatus
+          ? [data.amount, data.phone, now, orderId, options.requiredStatus]
+          : [data.amount, data.phone, now, orderId],
       });
+      if (update.rowsAffected < 1) return null;
+      if (memOrder) {
+        memOrder.driverPaymentConfirmed = 1;
+        memOrder.driverPaymentAmount = data.amount;
+        memOrder.driverPaymentPhone = data.phone;
+        memOrder.driverPaymentConfirmedAt = now;
+      }
       const rows = await client.execute({
         sql: "SELECT * FROM orders WHERE id = ? LIMIT 1",
         args: [orderId],
@@ -1447,6 +1737,7 @@ export async function markOrderDriverPaymentConfirmed(
           invoiceNumber: r.invoice_number ? String(r.invoice_number) : memOrder?.invoiceNumber,
           invoiceId: r.invoice_id ? String(r.invoice_id) : memOrder?.invoiceId,
           invoiceUrl: r.invoice_url ? String(r.invoice_url) : memOrder?.invoiceUrl,
+          invoicePdfUrl: r.invoice_pdf_url ? String(r.invoice_pdf_url) : memOrder?.invoicePdfUrl,
           driverPaymentConfirmed: 1,
           driverPaymentAmount: data.amount,
           driverPaymentPhone: data.phone,
@@ -1458,7 +1749,17 @@ export async function markOrderDriverPaymentConfirmed(
       }
     } catch (err) {
       console.error("[store] markOrderDriverPaymentConfirmed error:", err);
+      if (options.requiredStatus) return null;
     }
+  }
+
+  if (options.requiredStatus && memOrder?.status !== options.requiredStatus) return null;
+  if (options.requiredStatus && memOrder?.driverPaymentConfirmed) return memOrder;
+  if (memOrder) {
+    memOrder.driverPaymentConfirmed = 1;
+    memOrder.driverPaymentAmount = data.amount;
+    memOrder.driverPaymentPhone = data.phone;
+    memOrder.driverPaymentConfirmedAt = now;
   }
 
   return memOrder || null;
@@ -1582,6 +1883,7 @@ export async function getOrders(): Promise<Order[]> {
       invoiceNumber: r.invoice_number ? String(r.invoice_number) : undefined,
       invoiceId: r.invoice_id ? String(r.invoice_id) : undefined,
       invoiceUrl: r.invoice_url ? String(r.invoice_url) : undefined,
+      invoicePdfUrl: r.invoice_pdf_url ? String(r.invoice_pdf_url) : undefined,
       driverNotified: r.driver_notified ? String(r.driver_notified) : undefined,
       driverNotifiedAt: r.driver_notified_at ? parseTimestamp(r.driver_notified_at) : undefined,
       invoicePdfSent: r.invoice_pdf_sent ? String(r.invoice_pdf_sent) : undefined,

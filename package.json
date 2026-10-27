@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "node --require ./tests/no-public-network.cjs --import tsx --test lib/outbound-queue.test.ts lib/whatsapp-fixes.test.ts tests/*.test.ts",
+    "test:ui": "playwright test --config tests/ui/playwright.config.ts",
     "test:bot": "node --require ./tests/no-public-network.cjs scripts/test-bot.mjs"
   },
   "dependencies": {
@@ -15,21 +16,24 @@
     "@google/genai": "^2.27.0",
     "@libsql/client": "^0.18.0",
     "dotenv": "^18.0.5",
-    "next": "16.3.5",
-    "openai": "^4.104.0",
+    "next": "16.4.3",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/node": "^20",
+    "@types/node-fetch": "^2.6.13",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.6.1",
     "eslint": "^9",
     "eslint-config-next": "16.3.5",
+    "node-fetch": "^2.7.0",
     "postcss": "^8.5.29",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.15",
-    "typescript": "^5"
+    "typescript": "^5",
+    "zod": "^4.6.7"
   }
 }

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateSession } from "@/lib/auth/session";
+import { runDeepSeekDiagnostic } from "@/lib/deepseek";
+import { safeProviderErrorLabel } from "@/lib/ai-provider-errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -50,8 +52,8 @@ export async function GET(request: NextRequest) {
             break;
           }
         } catch (err: any) {
-          lastErr = err.message;
-          results[`model_${model}`] = err.message;
+          lastErr = safeProviderErrorLabel(err);
+          results[`model_${model}`] = lastErr;
         }
       }
 
@@ -61,28 +63,13 @@ export async function GET(request: NextRequest) {
         results.gemini = `Error: ${lastErr}`;
       }
     } catch (e: any) {
-      results.gemini = "Error fatal: " + e.message;
+      results.gemini = `Error fatal: ${safeProviderErrorLabel(e)}`;
     }
   } else {
     results.gemini = "Not configured";
   }
 
-  if (process.env.OPENAI_API_KEY) {
-    try {
-      const { OpenAI } = await import("openai");
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const response = await openai.chat.completions.create({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-        messages: [{ role: "user", content: "Responde únicamente con la palabra 'OK'" }],
-        max_tokens: 10,
-      });
-      results.openai = `OK: ${response.choices[0]?.message?.content?.trim()}`;
-    } catch (err: any) {
-      results.openai = `Error: ${err.message}`;
-    }
-  } else {
-    results.openai = "Not configured";
-  }
+  results.deepseek = await runDeepSeekDiagnostic("Not configured");
 
   return NextResponse.json({ ok: true, results });
 }

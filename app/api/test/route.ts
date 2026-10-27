@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTursoClient, isTursoConfigured } from "@/lib/store/db";
 import { handleSalesMessage } from "@/lib/agent/sales-agent";
 import { validateSession } from "@/lib/auth/session";
+import { safeProviderErrorLabel } from "@/lib/ai-provider-errors";
 import {
   getMessages,
   appendMessage,
@@ -17,10 +18,14 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   const token = request.cookies.get("panel_session")?.value;
-  const isDev = process.env.NODE_ENV !== "production";
   const user = token ? await validateSession(token) : null;
 
-  if (!isDev && !user) {
+  // Doble condición deliberada: el flag habilita la ruta y la sesión la autoriza.
+  // No se usa NODE_ENV: preview/staging también quedan cerrados.
+  if (process.env.ENABLE_TEST_ENDPOINT !== "true") {
+    return NextResponse.json({ ok: false, error: "No disponible." }, { status: 404 });
+  }
+  if (!user) {
     return NextResponse.json(
       { ok: false, error: "No autorizado. Inicie sesión en el panel para ejecutar pruebas." },
       { status: 401 }
@@ -49,7 +54,7 @@ export async function GET(request: NextRequest) {
       report.tests.database = { passed: true, provider: "In-Memory Store" };
     }
   } catch (err: any) {
-    report.tests.database = { passed: false, error: err.message };
+    report.tests.database = { passed: false, error: safeProviderErrorLabel(err) };
     report.allPassed = false;
   }
 
@@ -68,7 +73,7 @@ export async function GET(request: NextRequest) {
       response: text,
     };
   } catch (err: any) {
-    report.tests.geminiAI = { passed: false, error: err.message };
+    report.tests.geminiAI = { passed: false, error: safeProviderErrorLabel(err) };
     report.allPassed = false;
   }
 
@@ -83,7 +88,7 @@ export async function GET(request: NextRequest) {
       deliveryFee: settings.deliveryFee,
     };
   } catch (err: any) {
-    report.tests.settings = { passed: false, error: err.message };
+    report.tests.settings = { passed: false, error: safeProviderErrorLabel(err) };
     report.allPassed = false;
   }
 
@@ -179,7 +184,7 @@ export async function GET(request: NextRequest) {
 
     report.conversationLog = conversationTurns;
   } catch (err: any) {
-    report.tests.conversation = { passed: false, error: err.message, stack: err.stack };
+    report.tests.conversation = { passed: false, error: safeProviderErrorLabel(err), stack: err.stack };
     report.allPassed = false;
   }
 
@@ -203,7 +208,7 @@ export async function GET(request: NextRequest) {
       resumedStatus: c3?.status,
     };
   } catch (err: any) {
-    report.tests.mobilePauseCommands = { passed: false, error: err.message };
+    report.tests.mobilePauseCommands = { passed: false, error: safeProviderErrorLabel(err) };
     report.allPassed = false;
   }
 

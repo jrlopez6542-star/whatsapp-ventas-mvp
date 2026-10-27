@@ -12,6 +12,11 @@ export interface ContabilidadInvoiceResult {
   total?: number;
   customerName?: string;
   error?: string;
+  /**
+   * Clasificación del resultado remoto: evita confundir un rechazo explícito con
+   * un fallo incierto (posible factura ya creada en el remoto).
+   */
+  remoteOutcome?: "created" | "rejected" | "ambiguous" | "not_attempted";
 }
 
 export interface CreateInvoiceParams {
@@ -78,6 +83,15 @@ const BOT_INVOICE_SECRET =
 /**
  * Llama a la API de Contabilidad para generar la factura legal/oficial automáticamente
  */
+/**
+ * Normaliza un campo de la respuesta remota: `null`, tipos inesperados y cadenas
+ * vacías se convierten en `undefined` (ausente). Un `null` del JSON no debe
+ * borrar una referencia ya persistida.
+ */
+export function normalizarTexto(valor: unknown): string | undefined {
+  return typeof valor === "string" && valor.trim() ? valor.trim() : undefined;
+}
+
 export async function createInvoiceInContabilidad(
   params: CreateInvoiceParams
 ): Promise<ContabilidadInvoiceResult> {
@@ -85,6 +99,7 @@ export async function createInvoiceInContabilidad(
     return {
       ok: false,
       error: "Integración con Contabilidad deshabilitada: falta CONTABILIDAD_API_URL.",
+      remoteOutcome: "not_attempted",
     };
   }
 
@@ -105,21 +120,48 @@ export async function createInvoiceInContabilidad(
       return {
         ok: false,
         error: `HTTP ${res.status} de Contabilidad al crear factura.`,
+        // 4xx = el servidor rechazó la petición; 5xx = pudo crearla y fallar después.
+        remoteOutcome: res.status >= 400 && res.status < 500 ? "rejected" : "ambiguous",
       };
     }
 
     const data = await res.json();
-    if (!data.ok) {
-      return { ok: false, error: "Contabilidad rechazó la solicitud de factura." };
+    if (data && typeof data === "object" && data.ok === false) {
+      return {
+        ok: false,
+        error: "Contabilidad rechazó la solicitud de factura.",
+        remoteOutcome: "rejected",
+      };
+    }
+    if (!data || typeof data !== "object" || data.ok !== true) {
+      return {
+        ok: false,
+        error: "Respuesta de Contabilidad no concluyente al crear factura.",
+        remoteOutcome: "ambiguous",
+      };
+    }
+    const invoiceNumber = normalizarTexto(data.invoiceNumber);
+    const invoiceId = normalizarTexto(data.invoiceId);
+    if (!invoiceNumber || !invoiceId) {
+      return {
+        ok: false,
+        invoiceNumber,
+        invoiceId,
+        invoiceUrl: normalizarTexto(data.invoiceUrl),
+        invoicePdfUrl: normalizarTexto(data.invoicePdfUrl),
+        error: "Respuesta de Contabilidad incompleta; no se puede confirmar la referencia de factura.",
+        remoteOutcome: "ambiguous",
+      };
     }
     return {
       ok: true,
-      invoiceNumber: data.invoiceNumber,
-      invoiceId: data.invoiceId,
-      invoiceUrl: data.invoiceUrl,
-      invoicePdfUrl: data.invoicePdfUrl,
+      invoiceNumber,
+      invoiceId,
+      invoiceUrl: normalizarTexto(data.invoiceUrl),
+      invoicePdfUrl: normalizarTexto(data.invoicePdfUrl),
       total: data.total,
       customerName: data.customerName,
+      remoteOutcome: "created",
     };
   } catch (err: any) {
     console.warn("[contabilidad] Fallo de conexión al crear factura", {
@@ -128,6 +170,8 @@ export async function createInvoiceInContabilidad(
     return {
       ok: false,
       error: "Fallo de conexión al crear factura en Contabilidad.",
+      // La petición pudo llegar y crear la factura: no es un rechazo demostrado.
+      remoteOutcome: "ambiguous",
     };
   }
 }
@@ -146,8 +190,13 @@ export interface RecordPaymentParams {
 export interface RecordPaymentResult {
   ok: boolean;
   alreadyPaid?: boolean;
+  orderId?: string;
   invoiceNumber?: string;
   invoiceId?: string;
+  /** Importe aplicado al pago persistido; independiente del total de factura. */
+  amount?: number;
+  /** Total de la factura devuelto por Contabilidad. */
+  total?: number;
   status?: string;
   paymentId?: string;
   error?: string;
@@ -197,10 +246,13 @@ export async function recordPaymentInContabilidad(
 
     const data = await res.json();
     return {
-      ok: Boolean(data.ok),
-      alreadyPaid: Boolean(data.alreadyPaid),
+      ok: data.ok === true,
+      alreadyPaid: typeof data.alreadyPaid === "boolean" ? data.alreadyPaid : undefined,
+      orderId: typeof data.orderId === "string" ? data.orderId : undefined,
       invoiceNumber: data.invoiceNumber,
       invoiceId: data.invoiceId,
+      amount: typeof data.amount === "number" ? data.amount : undefined,
+      total: typeof data.total === "number" ? data.total : undefined,
       status: data.status,
       paymentId: data.paymentId,
       error: data.ok ? undefined : "Contabilidad rechazó la solicitud de pago.",

@@ -11,13 +11,25 @@ import {
   updateOrderInvoice,
 } from "../lib/store";
 
-type Scenario = "invoice-http-500" | "invoice-timeout" | "payment-http-500";
+type Scenario =
+  | "invoice-http-500"
+  | "invoice-timeout"
+  | "invoice-http-422"
+  | "invoice-malformed-success"
+  | "invoice-incomplete-success"
+  | "payment-http-500";
 type JsonRecord = Record<string, unknown>;
 
 let scenario: Scenario = "invoice-http-500";
 let server: Server;
 let baseUrl = "";
-let createInvoice: (params: JsonRecord) => Promise<{ ok: boolean; invoiceId?: string; invoiceNumber?: string; error?: string }>;
+let createInvoice: (params: JsonRecord) => Promise<{
+  ok: boolean;
+  invoiceId?: string;
+  invoiceNumber?: string;
+  error?: string;
+  remoteOutcome?: string;
+}>;
 let recordPayment: (params: JsonRecord) => Promise<{ ok: boolean; alreadyPaid?: boolean; paymentId?: string; error?: string }>;
 const invoiceRecords = new Map<string, { invoiceId: string; invoiceNumber: string; invoiceUrl: string }>();
 const paymentRecords = new Map<string, { paymentId: string; invoiceId: string; invoiceNumber: string }>();
@@ -56,6 +68,20 @@ server = createServer((request, response) => {
         return;
       }
       sendJson(response, 200, { ok: true, alreadyPaid: attempt > 1, ...payment, status: "paid" });
+      return;
+    }
+
+    if (scenario === "invoice-http-422") {
+      sendJson(response, 422, { ok: false });
+      return;
+    }
+    if (scenario === "invoice-malformed-success") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("{");
+      return;
+    }
+    if (scenario === "invoice-incomplete-success") {
+      sendJson(response, 200, { ok: true, invoiceNumber: "LOCAL-INCOMPLETE" });
       return;
     }
 
@@ -136,6 +162,7 @@ test("invoice HTTP 500 leaves order recoverable and retry creates one invoice wi
   const failed = await createInvoice(invoiceParams(order.id));
   assert.equal(failed.ok, false);
   assert.match(failed.error || "", /HTTP 500/);
+  assert.equal(failed.remoteOutcome, "ambiguous");
   assert.equal(invoiceRecords.has(order.id), false);
   const pending = (await getOrders()).find((candidate) => candidate.id === order.id);
   assert.ok(pending);
@@ -168,6 +195,7 @@ test("ambiguous timeout after local invoice acceptance retries with the same ord
   const timedOut = await createInvoice(invoiceParams(order.id));
   assert.equal(timedOut.ok, false);
   assert.match(timedOut.error || "", /conexión/i);
+  assert.equal(timedOut.remoteOutcome, "ambiguous");
   assert.equal(invoiceRecords.has(order.id), true, "el servicio simulado aceptó antes de perder la respuesta");
   const pending = (await getOrders()).find((candidate) => candidate.id === order.id);
   assert.ok(pending);
@@ -185,6 +213,26 @@ test("ambiguous timeout after local invoice acceptance retries with the same ord
   assert.ok(concurrentInvoices.every((result) => result.ok && result.invoiceId === recovered.invoiceId));
   assert.equal(invoiceRecords.size, beforeCount + 1, "llamadas concurrentes conservan una factura en el endpoint simulado");
   assert.deepEqual(receivedOrderIds.slice(-2), [order.id, order.id]);
+});
+
+test("invoice 4xx is a definitive rejection, while unreadable or incomplete success is ambiguous", async () => {
+  const order = await makeOrder("test:invoice-outcomes");
+
+  scenario = "invoice-http-422";
+  const rejected = await createInvoice(invoiceParams(order.id));
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.remoteOutcome, "rejected");
+
+  scenario = "invoice-malformed-success";
+  const unreadable = await createInvoice(invoiceParams(order.id));
+  assert.equal(unreadable.ok, false);
+  assert.equal(unreadable.remoteOutcome, "ambiguous");
+
+  scenario = "invoice-incomplete-success";
+  const incomplete = await createInvoice(invoiceParams(order.id));
+  assert.equal(incomplete.ok, false);
+  assert.equal(incomplete.remoteOutcome, "ambiguous");
+  assert.equal(incomplete.invoiceId, undefined, "no se inventa una referencia ausente");
 });
 
 test("payment HTTP 500 after acceptance is safe to retry and repeated calls keep one payment per orderId", async () => {

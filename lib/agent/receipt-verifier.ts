@@ -1,4 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
+import { createDeepSeekChatCompletion, DEEPSEEK_MODELS } from "@/lib/deepseek";
+import { safeProviderErrorLabel } from "@/lib/ai-provider-errors";
 
 export interface ReceiptVerificationResult {
   isReceipt: boolean;
@@ -16,17 +18,11 @@ export async function verifyReceiptWithGemini(
   expectedAmount?: number
 ): Promise<ReceiptVerificationResult> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) {
-    return {
-      isReceipt: false,
-      summary: "API Key de Gemini no configurada",
-    };
-  }
-
+  const deepSeekKey = process.env.DEEPSEEK_API_KEY?.trim();
   // Limpiar cualquier prefijo data:image/... si viene incluido
   const pureBase64 = base64Data.replace(/^data:[^;]+;base64,/, "");
 
-  try {
+  if (apiKey) try {
     const ai = new GoogleGenAI({ apiKey });
     const prompt = `Analiza detalladamente esta imagen enviada por un cliente en Colombia.
 Determina si es una captura de pantalla de un comprobante de pago o transferencia bancaria exitosa (por ejemplo: Nequi, Bancolombia, Bre-B, Daviplata, Dale, etc.).
@@ -89,27 +85,24 @@ Debes responder ÚNICAMENTE en formato JSON con la siguiente estructura:
           };
         }
       } catch (err: any) {
-        console.warn(`[receipt-verifier] Modelo ${model} falló:`, err?.message || err);
+        console.warn(`[receipt-verifier] Modelo ${model} falló:`, { error: safeProviderErrorLabel(err) });
       }
     }
   } catch (err) {
-    console.error("[receipt-verifier] Error con Gemini Visión:", err);
+    console.error("[receipt-verifier] Error con Gemini Visión:", { error: safeProviderErrorLabel(err) });
   }
 
-  // Fallback con OpenAI GPT-4o-mini Visión si Gemini falló
-  const openaiKey = process.env.OPENAI_API_KEY?.trim();
-  if (openaiKey) {
+  // Fallback con DeepSeek Flash Vision si Gemini no pudo concluir.
+  if (deepSeekKey) {
     try {
-      const { OpenAI } = await import("openai");
-      const openai = new OpenAI({ apiKey: openaiKey });
       const prompt = `Analiza detalladamente esta imagen de un comprobante de pago en Colombia. Determina si es un pago exitoso (Nequi, Bre-B, Bancolombia, Daviplata).
 ${expectedAmount ? `Monto esperado: $${expectedAmount} COP.` : ""}
 Responde estrictamente en JSON:
 {"isReceipt": true/false, "bank": string|null, "amount": number|null, "reference": string|null, "date": string|null, "summary": string}`;
 
-      const res = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        response_format: { type: "json_object" },
+      const res = await createDeepSeekChatCompletion({
+        model: DEEPSEEK_MODELS.receipt,
+        jsonOutput: true,
         messages: [
           {
             role: "user",
@@ -119,12 +112,14 @@ Responde estrictamente en JSON:
                 type: "image_url",
                 image_url: {
                   url: `data:${mimeType || "image/jpeg"};base64,${pureBase64}`,
+                  detail: "high",
                 },
               },
             ],
           },
         ],
         temperature: 0.1,
+        timeoutMs: 20_000,
       });
 
       const content = res.choices[0]?.message?.content || "";
@@ -143,13 +138,17 @@ Responde estrictamente en JSON:
         matchesExpected,
         summary: parsed.summary || "",
       };
-    } catch (openAiErr) {
-      console.warn("[receipt-verifier] OpenAI Visión fallback falló:", openAiErr);
+    } catch (deepSeekErr) {
+      console.warn("[receipt-verifier] DeepSeek Vision fallback falló:", {
+        error: safeProviderErrorLabel(deepSeekErr),
+      });
     }
   }
 
   return {
     isReceipt: false,
-    summary: "No se pudo procesar la imagen del comprobante.",
+    summary: apiKey || deepSeekKey
+      ? "No se pudo procesar la imagen del comprobante."
+      : "API Key de Gemini no configurada",
   };
 }

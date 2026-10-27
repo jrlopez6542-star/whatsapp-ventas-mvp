@@ -1,5 +1,6 @@
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { logSystemEvent } from "@/lib/logger";
+import { safeProviderErrorLabel } from "@/lib/ai-provider-errors";
 
 const WHISPER_PROMPT =
   "Buñuelandia: Buñuelos de queso tradicionales, buñuelos rellenos de arequipe, bocadillo, nutella, mora. " +
@@ -98,7 +99,7 @@ export async function transcribeWhatsAppAudio(
           return { ok: false, reason: "inaudible" };
         }
       } catch (sttErr: any) {
-        console.warn("[audio-transcriber] gemini-3.5-transcribe falló, pasando a modelos multimodales", { error: safeErrorName(sttErr) });
+        console.warn("[audio-transcriber] gemini-3.5-transcribe falló, pasando a modelos multimodales", { error: safeProviderErrorLabel(sttErr) });
       }
 
       // 3b. INTENTO MULTIMODAL CON PROMPT (gemini-flash-lite-latest, gemini-3.5-flash-lite, gemini-3.8-flash, gemini-flash-latest)
@@ -153,11 +154,11 @@ export async function transcribeWhatsAppAudio(
             return { ok: false, reason: "inaudible" };
           }
         } catch (modelErr: any) {
-          console.warn(`[audio-transcriber] Gemini modelo ${model} falló para audio`, { error: safeErrorName(modelErr) });
+          console.warn(`[audio-transcriber] Gemini modelo ${model} falló para audio`, { error: safeProviderErrorLabel(modelErr) });
         }
       }
     } catch (geminiErr) {
-      console.warn("[audio-transcriber] Error conectando con Gemini para audio", { error: safeErrorName(geminiErr) });
+      console.warn("[audio-transcriber] Error conectando con Gemini para audio", { error: safeProviderErrorLabel(geminiErr) });
     }
   }
 
@@ -211,7 +212,7 @@ export async function transcribeWhatsAppAudio(
         logSystemEvent("warn", "voice", `Whisper devolvió HTTP ${res.status}`);
       }
     } catch (whisperErr: any) {
-      console.warn("[audio-transcriber] Error en llamada REST a Whisper", { error: safeErrorName(whisperErr) });
+      console.warn("[audio-transcriber] Error en llamada REST a Whisper", { error: safeProviderErrorLabel(whisperErr) });
     }
   }
 
@@ -255,13 +256,6 @@ export function getAudioTranscriptionFailureReply(reason: AudioTranscriptionFail
   return reason === "inaudible"
     ? "¡Hola! Recibimos tu nota de voz 🎤 pero no logramos entender las palabras. ¿Podrías reenviarla o escribirnos tu pedido? ¡Con gusto te atendemos! 😊"
     : "¡Hola! Tuvimos un inconveniente técnico al procesar tu nota de voz 🎤. ¿Podrías reenviarla o escribirnos tu pedido? ¡Con gusto te ayudamos! 😊";
-}
-
-function safeErrorName(error: unknown): string {
-  if (error && typeof error === "object" && "name" in error && typeof error.name === "string") {
-    return error.name.slice(0, 40);
-  }
-  return "ProviderError";
 }
 
 export function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

@@ -299,6 +299,7 @@ export async function ensureTursoReady(): Promise<void> {
       "invoice_number TEXT",
       "invoice_id TEXT",
       "invoice_url TEXT",
+      "invoice_pdf_url TEXT",
       "customer_phone TEXT",
       "driver_notified TEXT",
       "driver_notified_at INTEGER DEFAULT 0",

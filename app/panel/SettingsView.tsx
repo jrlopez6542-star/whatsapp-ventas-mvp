@@ -583,7 +583,13 @@ export function SettingsView() {
           <p className="text-sm text-slate-400 mb-6">Herramientas para desarrolladores para comprobar conexiones con Gemini y Evolution API.</p>
           
           <div className="space-y-3">
-            <button onClick={() => window.open('/api/test', '_blank')} className="w-full bg-[#202c33] hover:bg-[#2a3942] text-slate-300 font-medium px-4 py-3 rounded-lg border border-[#2a3942] transition flex items-center gap-3">
+            <button onClick={async () => {
+              const r = await fetch('/api/test', { credentials: 'same-origin' });
+              if (r.status === 404) { alert('Endpoint de pruebas desactivado (ENABLE_TEST_ENDPOINT no está activo).'); return; }
+              if (r.status === 401) { alert('Inicia sesión en el panel para ejecutar las pruebas.'); return; }
+              const data = await r.json().catch(() => null);
+              alert(data?.allPassed ? 'Pruebas completadas: todo correcto.' : 'Pruebas ejecutadas con fallos; revisa el informe.');
+            }} className="w-full bg-[#202c33] hover:bg-[#2a3942] text-slate-300 font-medium px-4 py-3 rounded-lg border border-[#2a3942] transition flex items-center gap-3">
               <i className="ph-fill ph-robot text-emerald-400 text-lg"></i> Probar Conexión con Gemini AI
             </button>
             <button onClick={() => window.open('/api/test2', '_blank')} className="w-full bg-[#202c33] hover:bg-[#2a3942] text-slate-300 font-medium px-4 py-3 rounded-lg border border-[#2a3942] transition flex items-center gap-3">

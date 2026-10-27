@@ -284,16 +284,6 @@ export function formatDeliveryDriverMessage(
   const cobroLines = formatCobroSection(order);
   sections.push(cobroLines.join("\n"));
 
-  // 6. ✅ AL CONFIRMAR
-  const pmLower = (order.paymentMethod || "Efectivo").toLowerCase();
-  const isCash =
-    pmLower.includes("efectivo") ||
-    pmLower.includes("contra entrega") ||
-    pmLower.includes("contraentrega");
-  if (isCash) {
-    sections.push(`✅ AL CONFIRMAR\nEnvía: "PAGADO ${ref}"`);
-  }
-
   return sections.join("\n\n");
 }
 

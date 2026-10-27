@@ -62,12 +62,14 @@ test("network failure leaves the local order recoverable and retry reuses its or
 
     const first = await createInvoiceInContabilidad(params);
     assert.equal(first.ok, false, "El cliente debe conservar el fallo de red como resultado no confirmado");
+    assert.equal(first.remoteOutcome, "ambiguous", "la desconexión no demuestra rechazo remoto");
     const afterFailure = (await getOrders()).find((candidate) => candidate.id === order.id);
     assert.ok(afterFailure, "El pedido debe seguir disponible para recuperación");
     assert.equal(afterFailure.invoiceId, undefined, "No se inventa una factura confirmada tras un timeout ambiguo");
 
     const retry = await createInvoiceInContabilidad(params);
     assert.equal(retry.ok, true);
+    assert.equal(retry.remoteOutcome, "created");
     assert.equal(retry.invoiceId, `local-invoice-${order.id}`);
     assert.equal(receivedBodies.length, 2);
     assert.equal(receivedBodies[0].orderId, order.id);

@@ -1,17 +1,103 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   deleteOrder,
+  getOrders,
+  getOrderStatusSnapshot,
   updateOrderStatus,
   appendMessage,
+  markOrderDriverPaymentConfirmed,
   markOrderAccountingPaymentSynced,
+  getOrderInvoiceSnapshot,
+  type Order,
   type OrderStatus,
 } from "@/lib/store";
 import { sendOutboundWhatsApp } from "@/lib/whatsapp-send";
 import { requirePanelAuth } from "@/lib/auth/session";
-import { recordPaymentInContabilidad } from "@/lib/contabilidad";
 import { notifyDeliveryDriver } from "@/lib/delivery-driver";
+import { recordPaymentInContabilidad } from "@/lib/contabilidad";
 
 export const dynamic = "force-dynamic";
+
+type AccountingPaymentSync = { synced: boolean; warning?: string };
+const accountingPaymentSyncsInFlight = new Map<string, Promise<AccountingPaymentSync>>();
+
+async function synchronizeConfirmedCashPayment(
+  order: Order,
+  confirmedBy?: string
+): Promise<AccountingPaymentSync> {
+  if (order.accountingPaymentSynced === 1 || order.accountingPaymentSynced === true) {
+    return { synced: true };
+  }
+  if (!order.driverPaymentConfirmed) {
+    return { synced: false, warning: "El pago no está confirmado localmente; la sincronización contable queda pendiente." };
+  }
+
+  let request = accountingPaymentSyncsInFlight.get(order.id);
+  if (!request) {
+    request = (async () => {
+      const invoice = await getOrderInvoiceSnapshot(order.id);
+      const invoiceId = invoice?.invoiceId || order.invoiceId;
+      const invoiceNumber = invoice?.invoiceNumber || order.invoiceNumber;
+      const amount = Number(order.driverPaymentAmount);
+      const confirmedAt = order.driverPaymentConfirmedAt;
+      if (!Number.isSafeInteger(amount) || amount <= 0) {
+        return { synced: false, warning: "Falta un importe válido del cobro confirmado; la sincronización contable queda pendiente." };
+      }
+      if (!confirmedAt || confirmedAt <= 0) {
+        return { synced: false, warning: "Falta la fecha persistida de confirmación; la sincronización contable queda pendiente." };
+      }
+      if (!invoiceId && !invoiceNumber) {
+        return { synced: false, warning: "El pedido no tiene invoiceId ni número de factura guardados; la sincronización contable queda pendiente." };
+      }
+
+      const result = await recordPaymentInContabilidad({
+        orderId: order.id,
+        invoiceId,
+        invoiceNumber,
+        amount,
+        paymentMethod: order.paymentMethod,
+        confirmedBy,
+        confirmedAt,
+      });
+
+      const identityMatches = Boolean(
+        result.orderId === order.id &&
+        result.invoiceId && result.invoiceNumber &&
+        (!invoiceId || result.invoiceId === invoiceId) &&
+        (!invoiceNumber || result.invoiceNumber === invoiceNumber)
+      );
+      // The payment amount is validated independently from the invoice total.
+      const amountMatches = typeof result.amount === "number" &&
+        Number.isFinite(result.amount) && Math.abs(result.amount - amount) <= 1;
+      const responseIsConfirmed = result.ok && result.status === "paid" &&
+        typeof result.alreadyPaid === "boolean" &&
+        Boolean(result.paymentId?.trim()) && identityMatches && amountMatches;
+
+      if (!responseIsConfirmed) {
+        return {
+          synced: false,
+          warning: result.alreadyPaid === true
+            ? "Contabilidad indica que el pedido ya tiene un pago, pero las referencias o el importe aplicado no coinciden. El pago local queda pendiente de conciliación."
+            : result.error
+            ? `Cobro confirmado en BOTW; Contabilidad no confirmó la sincronización (${result.error}). Queda pendiente para reintentar.`
+            : "Cobro confirmado en BOTW; la respuesta de Contabilidad no coincide con el pedido, factura o importe esperado. Queda pendiente para reintentar.",
+        };
+      }
+
+      const syncedAt = Date.now();
+      const marked = await markOrderAccountingPaymentSynced(order.id, syncedAt);
+      return marked
+        ? { synced: true }
+        : { synced: false, warning: "Contabilidad confirmó el cobro, pero BOTW no pudo guardar el marcador de sincronización. Queda pendiente para reintentar de forma idempotente." };
+    })().finally(() => {
+      if (accountingPaymentSyncsInFlight.get(order.id) === request) {
+        accountingPaymentSyncsInFlight.delete(order.id);
+      }
+    });
+    accountingPaymentSyncsInFlight.set(order.id, request);
+  }
+  return request;
+}
 
 export async function DELETE(
   request: NextRequest,
@@ -61,8 +147,40 @@ export async function PATCH(
       return NextResponse.json({ ok: false, error: "Estado no válido" }, { status: 400 });
     }
 
-    const updated = await updateOrderStatus(id, status);
+    const updated = await updateOrderStatus(id, status, {
+      rejectCancelled: status === "delivered",
+      rejectDeliveredOrPaid: status === "cancelled",
+      ...(status === "preparing"
+        ? { allowedCurrentStatuses: ["pending", "confirmed"] }
+        : {}),
+    });
     if (!updated) {
+      if (status === "preparing") {
+        const currentOrder = await getOrderStatusSnapshot(id);
+        if (!currentOrder) {
+          return NextResponse.json({ ok: false, error: "Pedido no encontrado" }, { status: 404 });
+        }
+        return NextResponse.json(
+          { ok: false, error: `No se puede pasar el pedido a preparación desde el estado actual "${currentOrder.status}".` },
+          { status: 409 }
+        );
+      } else if (status === "delivered") {
+        const currentOrder = (await getOrders()).find((order) => order.id === id);
+        if (currentOrder?.status === "cancelled") {
+          return NextResponse.json(
+            { ok: false, error: "No se puede marcar como entregado ni confirmar el cobro de un pedido cancelado." },
+            { status: 409 }
+          );
+        }
+      } else if (status === "cancelled") {
+        const currentOrder = (await getOrders()).find((order) => order.id === id);
+        if (currentOrder && (currentOrder.status === "delivered" || currentOrder.driverPaymentConfirmed)) {
+          return NextResponse.json(
+            { ok: false, error: "No se puede cancelar un pedido ya entregado o con el cobro confirmado." },
+            { status: 409 }
+          );
+        }
+      }
       return NextResponse.json({ ok: false, error: "Pedido no encontrado" }, { status: 404 });
     }
 
@@ -86,28 +204,40 @@ export async function PATCH(
         pm.includes("contraentrega");
 
       if (isCash) {
-        if (updated.driverPaymentConfirmed) {
-          if (!updated.accountingPaymentSynced) {
-            const syncRes = await recordPaymentInContabilidad({
-              orderId: updated.id,
-              invoiceId: updated.invoiceId,
-              invoiceNumber: updated.invoiceNumber,
-              amount: updated.total,
-              confirmedBy: updated.driverPaymentPhone || "domiciliario",
-            });
-            if (syncRes.ok) {
-              paymentSynced = await markOrderAccountingPaymentSynced(updated.id);
-              if (!paymentSynced) {
-                warning = "Contabilidad registró el pago, pero BOTW no pudo guardar el estado de sincronización. Se puede reintentar sin duplicar el pago.";
-              }
-            } else {
-              warning = `Pedido entregado con cobro del domiciliario confirmado, pero falló la sincronización con Contabilidad: ${syncRes.error || "error de red"}. Se conservó la confirmación para reintentar.`;
-            }
+        if (!updated.driverPaymentConfirmed) {
+          const confirmed = await markOrderDriverPaymentConfirmed(updated.id, {
+            amount: updated.total,
+            phone: "panel-admin",
+          }, { requiredStatus: "delivered" });
+          if (confirmed?.driverPaymentConfirmed) {
+            Object.assign(updated, confirmed);
           } else {
-            paymentSynced = true;
+            const latestOrder = (await getOrders()).find((order) => order.id === id);
+            if (latestOrder?.status === "delivered" && latestOrder.driverPaymentConfirmed) {
+              Object.assign(updated, latestOrder);
+            } else {
+              warning = "Pedido entregado, pero BOTW no pudo registrar la confirmación del cobro.";
+            }
           }
-        } else {
-          warning = "Pedido entregado; cobro pendiente de confirmación del domiciliario.";
+        }
+
+        if (updated.driverPaymentConfirmed) {
+          const sync = await synchronizeConfirmedCashPayment(
+            updated,
+            auth.user?.name || auth.user?.email || auth.user?.id
+          ).catch((err) => ({
+            synced: false,
+            warning: `Cobro confirmado en BOTW; falló la sincronización con Contabilidad y queda pendiente para reintentar (${err instanceof Error ? err.name : "IntegrationError"}).`,
+          }));
+          paymentSynced = sync.synced;
+          if (paymentSynced) {
+            updated.accountingPaymentSynced = 1;
+            updated.accountingPaymentSyncedAt = Date.now();
+          } else if (sync.warning) {
+            warning = sync.warning;
+          }
+        } else if (!warning) {
+          warning = "Pedido entregado, pero BOTW no pudo registrar la confirmación del cobro.";
         }
       }
     }

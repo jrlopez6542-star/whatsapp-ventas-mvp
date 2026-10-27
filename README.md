@@ -2,7 +2,7 @@
 
 App Next.js (App Router + TypeScript) estilo Clienteli-simple: webhook WhatsApp
 (**Evolution API** preferido, **Twilio** fallback), catálogo editable en COP,
-agente de ventas (OpenAI o keywords), **panel** con bandeja / chat / pedidos /
+agente de ventas (Gemini principal, DeepSeek de respaldo y reglas deterministas), **panel** con bandeja / chat / pedidos /
 catálogo CRUD / config, y persistencia **Turso** (con fallback en memoria).
 
 ## Qué hace
@@ -78,8 +78,10 @@ Copia `.env.example` → `.env.local` (y configúralas en Vercel Production):
 | `TWILIO_ACCOUNT_SID` | Fallback / Twilio | REST send |
 | `TWILIO_AUTH_TOKEN` | Fallback / Twilio | Signature + Basic auth |
 | `TWILIO_WHATSAPP_FROM` | Fallback / Twilio | Ej. sandbox `whatsapp:+14155238886` |
-| `OPENAI_API_KEY` | No | Agente con tools |
-| `OPENAI_MODEL` | No | Default `gpt-4o-mini` |
+| `GEMINI_API_KEY` | Agente IA | Proveedor principal para ventas, comprobantes y audio |
+| `GEMINI_MODEL` | No | Modelo Gemini opcional para priorizar antes de los candidatos predeterminados |
+| `DEEPSEEK_API_KEY` | Agente IA | Respaldo para ventas y comprobantes visuales |
+| `OPENAI_API_KEY` | No | Solo respaldo de transcripción de audio con Whisper; no se usa para ventas ni comprobantes |
 | `PANEL_PASSWORD` | Recomendado | Protege `/panel` |
 | `TURSO_DATABASE_URL` | Para durable | `libsql://whatsapp-ventas-jrlopez1306.aws-us-east-1.turso.io` |
 | `TURSO_AUTH_TOKEN` | Para durable | Token de DB Turso |
@@ -153,7 +155,7 @@ Proyecto: `whatsapp-ventas-mvp` (team `jrlopez6542-1905`).
 
 ```bash
 vercel link --yes --project whatsapp-ventas-mvp
-# Asegurar en Production: PANEL_PASSWORD, TURSO_*, OPENAI_* (opc.)
+# Asegurar en Production: PANEL_PASSWORD, TURSO_*, GEMINI_API_KEY y DEEPSEEK_API_KEY (opc.)
 # Evolution: añade EVOLUTION_* cuando tengas tunnel + instancia (no hace falta al primer deploy)
 # Twilio: TWILIO_* como fallback
 vercel deploy --prod --yes

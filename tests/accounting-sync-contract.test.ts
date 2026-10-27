@@ -28,14 +28,39 @@ test("accounting sync marker changes only after durable Turso write succeeds", (
   assert.ok(marker.indexOf("if (result.rowsAffected < 1)") < marker.indexOf("memOrder.accountingPaymentSynced = 1"));
 });
 
-test("delivery retries an already-confirmed payment when accounting marker is pending", () => {
+test("panel delivery syncs confirmed cash only after validating Contabilidad's response", () => {
   const webhook = source("app/api/webhooks/evolution/route.ts");
-  assert.match(
-    webhook,
-    /if \(order\.driverPaymentConfirmed\)[\s\S]*?order\.status === "delivered" && !order\.accountingPaymentSynced[\s\S]*?recordPaymentInContabilidad/
-  );
+  assert.match(webhook, /Ya no es necesario confirmar el cobro por WhatsApp/);
+  assert.doesNotMatch(webhook, /markOrderDriverPaymentConfirmed|recordPaymentInContabilidad/);
   const panel = source("app/api/panel/orders/[id]/route.ts");
-  assert.match(panel, /paymentSynced = await markOrderAccountingPaymentSynced\(updated\.id\)/);
+  assert.match(panel, /status === "delivered"[\s\S]*?markOrderDriverPaymentConfirmed/);
+  assert.match(panel, /recordPaymentInContabilidad/);
+  assert.match(panel, /markOrderAccountingPaymentSynced/);
+  assert.match(panel, /result\.status === "paid"/);
+  assert.match(panel, /result\.paymentId/);
+  assert.match(panel, /result\.orderId === order\.id/);
+  assert.match(panel, /result\.amount/);
+  assert.match(panel, /Math\.abs\(result\.amount - amount\)/);
+  assert.match(panel, /currentOrder\?\.status === "cancelled"/);
+});
+
+test("delivery payment and cancellation use mutually exclusive atomic status predicates", () => {
+  const store = source("lib/store/index.ts");
+  const updateStatus = store.slice(
+    store.indexOf("export async function updateOrderStatus("),
+    store.indexOf("export async function claimOrderDriverNotification(")
+  );
+  assert.match(updateStatus, /COALESCE\(status, ''\) != 'cancelled'/);
+  assert.match(updateStatus, /status IN \(\$\{options\.allowedCurrentStatuses\.map\(\(\) => "\?"\)\.join\(", "\)\}\)/);
+  assert.match(updateStatus, /COALESCE\(status, ''\) != 'delivered'/);
+  assert.match(updateStatus, /COALESCE\(driver_payment_confirmed, 0\) = 0/);
+
+  const confirmPayment = store.slice(
+    store.indexOf("export async function markOrderDriverPaymentConfirmed("),
+    store.indexOf("export async function markOrderAccountingPaymentSynced(")
+  );
+  assert.match(confirmPayment, /AND status = \? AND COALESCE\(driver_payment_confirmed, 0\) = 0/);
+  assert.match(confirmPayment, /if \(options\.requiredStatus\) return null/);
 });
 
 test("accounting HTTP timeouts and non-success responses remain retryable", () => {

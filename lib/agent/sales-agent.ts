@@ -4,6 +4,8 @@ import {
   getConversation,
   getMessages,
   getOrders,
+  getOrderInvoiceSnapshot,
+  getOrderStatusSnapshot,
   getOrgSettings,
   getProducts,
   setConversationStatus,
@@ -16,7 +18,7 @@ import {
   type Product,
   type Order,
 } from "@/lib/store";
-import { createInvoiceInContabilidad } from "@/lib/contabilidad";
+import { createInvoiceInContabilidad, type ContabilidadInvoiceResult } from "@/lib/contabilidad";
 import { notifyDeliveryDriver } from "@/lib/delivery-driver";
 import { logSystemEvent } from "@/lib/logger";
 import { pickRandomVariation } from "@/lib/anti-ban";
@@ -28,10 +30,14 @@ import {
   checkCoverageLocation,
   getOutOfCoverageMessage,
 } from "@/lib/agent/order-validator";
+import { getSessionMessages, getValidOrderConfirmationSummary } from "@/lib/agent/session-context";
+import { createDeepSeekChatCompletion, DEEPSEEK_MODELS } from "@/lib/deepseek";
+import { safeProviderErrorLabel } from "@/lib/ai-provider-errors";
 
 export interface SalesMessageResult {
   reply: string;
   mode: "ai" | "keyword" | "human_escalated" | "order_created";
+  assistantMessageId?: string;
   mediaUrl?: string;
   mediaCaption?: string;
   invoiceUrl?: string;
@@ -824,8 +830,8 @@ function buildGeminiContents(
   return turns;
 }
 
-// Sanitizar historial para OpenAI
-function buildOpenAIMessages(
+// Sanitizar historial para el formato Chat Completions compatible de DeepSeek
+function buildDeepSeekMessages(
   systemPrompt: string,
   previousMessages: Message[],
   currentText: string
@@ -1120,6 +1126,49 @@ export async function fetchAndValidateInvoicePdf(
  * - Valida URLs exclusivamente con new URL() y HTTPS hacia el dominio contable oficial o configurado.
  * - Evita duplicar el número o el enlace si ya aparecen en existingText (por ejemplo en el reply del asistente).
  */
+/**
+ * Comprueba que una URL pública de factura corresponde al `invoiceId` indicado:
+ * mismo prefijo `/api/invoices/public/` y mismo identificador en la ruta
+ * (acepta la variante `/pdf`). Evita entregar la referencia de otra factura.
+ */
+/** URL canónica del PDF público de una factura (id codificado una sola vez). */
+export function canonicalInvoicePdfUrl(invoiceId: string): string {
+  return `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${encodeURIComponent(invoiceId)}/pdf`;
+}
+
+/**
+ * URL de PDF que se ENTREGA: la candidata solo si es un PDF válido y pertenece
+ * al mismo invoiceId; en caso contrario, el canónico codificado. Devuelve
+ * exactamente el valor que se usa aguas abajo (validado == entregado).
+ */
+export function resolveDeliveredPdfUrl(candidate?: string, invoiceId?: string): string | undefined {
+  if (candidate && isValidContabilidadPdfUrl(candidate) && belongsToInvoice(candidate, invoiceId, true)) {
+    return candidate;
+  }
+  if (!invoiceId) return undefined;
+  const canonico = canonicalInvoicePdfUrl(invoiceId);
+  return isValidContabilidadPdfUrl(canonico) ? canonico : undefined;
+}
+
+export function belongsToInvoice(urlStr?: string, invoiceId?: string, esPdf = false): boolean {
+  if (!urlStr || !invoiceId) return false;
+  const id = invoiceId.trim();
+  if (!id) return false;
+  try {
+    const parsed = new URL(urlStr.trim());
+    const prefijo = "/api/invoices/public/";
+    if (!parsed.pathname.startsWith(prefijo)) return false;
+    const resto = parsed.pathname.slice(prefijo.length);
+    const terminaEnPdf = resto.endsWith("/pdf");
+    if (esPdf !== terminaEnPdf) return false;       // público y PDF no se confunden
+    const identificador = terminaEnPdf ? resto.slice(0, -"/pdf".length) : resto;
+    if (!identificador || identificador.includes("/")) return false;
+    return decodeURIComponent(identificador) === id;
+  } catch {
+    return false;
+  }
+}
+
 export function resolveInvoiceNoticeDetails(
   invoiceNumber?: string,
   invoiceUrl?: string,
@@ -1134,7 +1183,7 @@ export function resolveInvoiceNoticeDetails(
   const formattedNumber = rawNum ? (rawNum.startsWith("#") ? rawNum : `#${rawNum}`) : undefined;
 
   let publicUrl: string | undefined = undefined;
-  if (invoiceUrl && isValidContabilidadPublicUrl(invoiceUrl)) {
+  if (invoiceUrl && isValidContabilidadPublicUrl(invoiceUrl) && (!invoiceId || belongsToInvoice(invoiceUrl, invoiceId))) {
     publicUrl = invoiceUrl.trim();
   } else if (
     invoiceId &&
@@ -1174,6 +1223,325 @@ export function resolveInvoiceNoticeDetails(
   return { formattedNumber, publicUrl, noticeLine };
 }
 
+const invoiceRequestsInFlight = new Map<string, Promise<EnsureInvoiceResult>>();
+
+/**
+ * Facturas creadas en Contabilidad cuya persistencia local falló.
+ *
+ * Retener la referencia aquí evita repetir el POST cuando el remoto ya creó la
+ * factura y solo falló el guardado. Es memoria del proceso: NO sustituye a la
+ * persistencia en base de datos ni sobrevive a un reinicio.
+ */
+type ConfirmedContabilidadInvoiceResult = ContabilidadInvoiceResult & {
+  ok: true;
+  invoiceNumber: string;
+  invoiceId: string;
+};
+
+const invoicePendingPersistence = new Map<string, ConfirmedContabilidadInvoiceResult>();
+
+/** Resultado enriquecido: qué ocurrió en el remoto y qué ocurrió al guardar la referencia. */
+type EnsureInvoiceSuccessState =
+  | "reused"
+  | "created_persisted"
+  | "created_memory_only"
+  | "created_not_persisted";
+type EnsureInvoiceFailureState =
+  | "remote_rejected"
+  | "remote_ambiguous"
+  | "not_attempted"
+  | "local_read_failed";
+
+type EnsureInvoiceDetails = Omit<ContabilidadInvoiceResult, "ok" | "invoiceNumber" | "invoiceId"> & {
+  /** Resultado real de `updateOrderInvoice` cuando se intentó guardar. */
+  persistence?: "persisted" | "memory_only" | "failed";
+  /** Motivo del fallo de persistencia local. */
+  persistenceError?: string;
+  /** true cuando se reutilizó una referencia ya leída del almacén (no hubo POST). */
+  reused?: boolean;
+  /** Referencias conservadas del valor previo por no recibir un valor nuevo válido. */
+  preserved?: ("invoiceId" | "invoiceUrl" | "invoicePdfUrl")[];
+};
+
+export type EnsureInvoiceResult =
+  | (EnsureInvoiceDetails & {
+      ok: true;
+      state: EnsureInvoiceSuccessState;
+      invoiceNumber: string;
+      invoiceId: string;
+    })
+  | (EnsureInvoiceDetails & {
+      ok: false;
+      state: EnsureInvoiceFailureState;
+      invoiceNumber?: string;
+      invoiceId?: string;
+    });
+
+type ConfirmedEnsureInvoiceResult = Extract<EnsureInvoiceResult, { ok: true }>;
+
+/** Solo estas situaciones confirman una factura y permiten presentarla al cliente. */
+export function isConfirmedInvoiceReference(
+  result: EnsureInvoiceResult
+): result is ConfirmedEnsureInvoiceResult {
+  return Boolean(
+    result.ok &&
+      result.invoiceNumber?.trim() &&
+      result.invoiceId?.trim() &&
+      ["reused", "created_persisted", "created_memory_only", "created_not_persisted"].includes(result.state)
+  );
+}
+
+/**
+ * Copia el resultado al objeto del agente SOLO si la persistencia se confirmó
+ * (`persisted`) o se resolvió en memoria (`memory_only`). En `failed` la
+ * memoria del agente no se toca: la referencia vive en `invoicePendingPersistence`.
+ * Los campos ausentes no se escriben (nunca se pisa un valor con `undefined`).
+ */
+function applyInvoiceResultToOrder(
+  order: Order,
+  result: EnsureInvoiceResult
+): void {
+  if (!isConfirmedInvoiceReference(result)) return;
+  if (result.state === "created_not_persisted") return;
+  order.invoiceNumber = result.invoiceNumber;
+  if (result.invoiceId !== undefined) order.invoiceId = result.invoiceId;
+  if (result.invoiceUrl !== undefined) order.invoiceUrl = result.invoiceUrl;
+  if (result.invoicePdfUrl !== undefined) order.invoicePdfUrl = result.invoicePdfUrl;
+}
+
+/**
+ * Guarda la referencia recién creada y deja constancia de si quedó persistida.
+ * Si el guardado falla, la referencia remota se retiene en memoria para no
+ * volver a crear la factura en el próximo intento.
+ */
+async function persistCreatedInvoice(
+  order: Order,
+  result: ConfirmedContabilidadInvoiceResult
+): Promise<EnsureInvoiceResult> {
+  const guardado = await updateOrderInvoice(
+    order.id,
+    result.invoiceNumber,
+    result.invoiceId,
+    result.invoiceUrl,
+    result.invoicePdfUrl
+  );
+
+  const state: EnsureInvoiceSuccessState =
+    guardado.status === "persisted"
+      ? "created_persisted"
+      : guardado.status === "memory_only"
+        ? "created_memory_only"
+        : "created_not_persisted";
+  const enriquecido: EnsureInvoiceResult = {
+    ...result,
+    ok: true,
+    state,
+    remoteOutcome: "created",
+    persistence: guardado.status,
+    persistenceError: guardado.error,
+    preserved: guardado.preserved,
+  };
+
+  if (guardado.status === "failed") {
+    invoicePendingPersistence.set(order.id, { ...result });
+    console.warn(
+      "[sales-agent] Factura creada en Contabilidad pero no persistida localmente:",
+      guardado.error
+    );
+  } else {
+    invoicePendingPersistence.delete(order.id);
+  }
+
+  return enriquecido;
+}
+
+/** Reuses locally saved invoices; known remote creations retry only the local write within this process. */
+export async function ensureInvoiceForOrder(
+  order: Order,
+  params: Parameters<typeof createInvoiceInContabilidad>[0],
+  createInvoice: typeof createInvoiceInContabilidad = createInvoiceInContabilidad
+): Promise<EnsureInvoiceResult> {
+  // 1) Referencia remota ya confirmada que no se pudo guardar: se reintenta el
+  //    GUARDADO, nunca un nuevo POST (la factura ya existe en Contabilidad).
+  const pendiente = invoicePendingPersistence.get(order.id);
+  if (pendiente) {
+    const reintento = await persistCreatedInvoice(order, pendiente);
+    applyInvoiceResultToOrder(order, reintento);
+    return reintento;
+  }
+
+  const existingRequest = invoiceRequestsInFlight.get(order.id);
+  if (existingRequest) {
+    const result = await existingRequest;
+    applyInvoiceResultToOrder(order, result);
+    return result;
+  }
+
+  const request: Promise<EnsureInvoiceResult> = (async (): Promise<EnsureInvoiceResult> => {
+      let saved: Awaited<ReturnType<typeof getOrderInvoiceSnapshot>>;
+      try {
+        saved = await getOrderInvoiceSnapshot(order.id);
+      } catch {
+        return {
+          ok: false,
+          remoteOutcome: "not_attempted",
+          state: "local_read_failed",
+          error: "No se pudo leer el estado local de la factura.",
+        } satisfies EnsureInvoiceResult;
+      }
+      if (saved?.invoiceNumber?.trim() && saved.invoiceId?.trim()) {
+        return {
+          ok: true,
+          remoteOutcome: "created",
+          state: "reused",
+          invoiceNumber: saved.invoiceNumber,
+          invoiceId: saved.invoiceId,
+          invoiceUrl: saved.invoiceUrl,
+          invoicePdfUrl: saved.invoicePdfUrl,
+          reused: true,
+        } satisfies EnsureInvoiceResult;
+      }
+
+      const result = await createInvoice({ ...params, orderId: order.id });
+      if (result.ok) {
+        if (result.remoteOutcome && result.remoteOutcome !== "created") {
+          return {
+            ...result,
+            ok: false,
+            remoteOutcome: "ambiguous",
+            state: "remote_ambiguous",
+            error: "La respuesta de Contabilidad no confirma una factura utilizable.",
+          } satisfies EnsureInvoiceResult;
+        }
+        if (!result.invoiceNumber?.trim() || !result.invoiceId?.trim()) {
+          return {
+            ...result,
+            ok: false,
+            remoteOutcome: "ambiguous",
+            state: "remote_ambiguous",
+            error: "Contabilidad no devolvió referencias completas de factura.",
+          } satisfies EnsureInvoiceResult;
+        }
+        const confirmedResult: ConfirmedContabilidadInvoiceResult = {
+          ...result,
+          ok: true,
+          invoiceNumber: result.invoiceNumber,
+          invoiceId: result.invoiceId,
+          remoteOutcome: "created",
+        };
+        return persistCreatedInvoice(order, confirmedResult);
+      }
+      // Un fallo de transporte o un servidor 5xx no demuestra que el remoto no creara la factura.
+      const remoteOutcome = result.remoteOutcome ?? "ambiguous";
+      return {
+        ...result,
+        ok: false,
+        remoteOutcome,
+        state:
+          remoteOutcome === "rejected"
+            ? "remote_rejected"
+            : remoteOutcome === "not_attempted"
+              ? "not_attempted"
+              : "remote_ambiguous",
+      } satisfies EnsureInvoiceResult;
+    })();
+  invoiceRequestsInFlight.set(order.id, request);
+  try {
+    const result = await request;
+    applyInvoiceResultToOrder(order, result);
+    return result;
+  } finally {
+    if (invoiceRequestsInFlight.get(order.id) === request) {
+      invoiceRequestsInFlight.delete(order.id);
+    }
+  }
+}
+
+function isAssistantOrderConfirmation(reply: string): boolean {
+  const assistantLower = (reply || "").toLowerCase();
+  const isPreConfirmationSummary =
+    assistantLower.includes("resumen de tu pedido") ||
+    assistantLower.includes("1️⃣ ✅ confirmar pedido") ||
+    assistantLower.includes("responde con el número para continuar") ||
+    (assistantLower.includes("1️⃣") && (assistantLower.includes("confirmar") || assistantLower.includes("modificar")));
+
+  return !isPreConfirmationSummary && (
+    assistantLower.includes("pedido confirmado y registrado") ||
+    assistantLower.includes("¡pedido confirmado en buñuelandia!") ||
+    assistantLower.includes("¡pedido confirmado") ||
+    assistantLower.includes("pedido registrado") ||
+    assistantLower.includes("hemos registrado tu pedido") ||
+    assistantLower.includes("pedido creado") ||
+    assistantLower.includes("van en camino calienticos") ||
+    assistantLower.includes("pendiente de asignación") ||
+    assistantLower.includes("entra en preparación")
+  );
+}
+
+function buildSafePreConfirmationReply(
+  items: Array<{ sku: string; quantity: number; unitPrice: number; name: string }>,
+  address: string | null,
+  payment: string | null,
+  change: string | null,
+  userHistory: string,
+  businessCity: string,
+  welcomeMessage: string
+): string {
+  if (items.length === 0) {
+    return `${welcomeMessage}\n\nPara tomar tu pedido, indícanos qué productos deseas o escribe *catálogo* para ver las opciones.`;
+  }
+
+  const hasSurtida = items.some((item) => item.sku === "C4S" || item.sku === "C8S");
+  if (hasSurtida && !hasValidSauceSelection(userHistory)) {
+    return MISSING_SAUCES_INTERCEPT_MESSAGE;
+  }
+
+  if (!address) {
+    return `Para continuar con tu pedido de ${items.map((item) => item.name).join(", ")}, compártenos tu dirección exacta en ${(businessCity || "Tocancipá").split(",")[0].trim()} o alrededores. 📍`;
+  }
+
+  if (!payment) {
+    return `¡Excelente! Ya tenemos tu dirección: *${address}* 📍\n\nPor favor indícanos con qué medio de pago deseas cancelar:\n1️⃣ *Nequi*\n2️⃣ *Bre-B*\n3️⃣ *Efectivo contra entrega*`;
+  }
+
+  const total = items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0);
+  if (change && (payment.toLowerCase().includes("efectivo") || payment.toLowerCase().includes("contra entrega"))) {
+    const cashCalc = calculateCashChange(change, total);
+    if (cashCalc?.isInsufficient) {
+      return `El monto indicado (${cashCalc.formattedCash}) no alcanza para cubrir el total de tu pedido (${formatCop(total)}) 🥟💵. Por favor indícanos con qué billete pagarás o si deseas ajustar las cantidades de tu pedido.`;
+    }
+  }
+
+  const itemsListText = items.map((item) => {
+    let nameWithBreakdown = item.name;
+    if (item.sku === "C8S") {
+      const breakdown = extractFlavorBreakdown(userHistory, 8);
+      if (breakdown) nameWithBreakdown = `${item.name} (${breakdown})`;
+    } else if (item.sku === "C4S") {
+      const breakdown = extractFlavorBreakdown(userHistory, 4);
+      if (breakdown) nameWithBreakdown = `${item.name} (${breakdown})`;
+    }
+    return `• ${nameWithBreakdown} x${item.quantity}: ${formatCop(item.unitPrice * item.quantity)}`;
+  }).join("\n");
+
+  let changeSummaryLine = "";
+  if (change) {
+    const cashCalc = calculateCashChange(change, total);
+    if (cashCalc && !cashCalc.isInsufficient) {
+      if (cashCalc.isExact) {
+        changeSummaryLine = `\n💵 *Paga con:* Monto exacto _(no requiere cambio)_`;
+      } else {
+        const billPrefix = change.toLowerCase().includes("billete") ? "Billete de " : "";
+        changeSummaryLine = `\n💵 *Paga con:* ${billPrefix}${cashCalc.formattedCash} (Cambio: ${cashCalc.formattedChange}) _(llevaremos tu cambio listo)_`;
+      }
+    } else {
+      changeSummaryLine = `\n💵 *Paga con:* ${change} _(llevaremos tu cambio listo)_`;
+    }
+  }
+
+  return `📋 *Resumen de tu Pedido:*\n${itemsListText}\n\n📦 *Subtotal productos:* ${formatCop(total)}\n🛵 *Domicilio:* ¡GRATIS!\n💰 *Total a pagar:* ${formatCop(total)}\n📍 *Dirección de entrega:* ${address}\n💳 *Medio de pago:* ${payment}${changeSummaryLine}\n\n¿Todo está correcto? Elige una opción:\n1️⃣ ✅ Confirmar pedido\n2️⃣ ✏️ Modificar algún dato`;
+}
+
 // Helper: Extraer pedido estructurado si el texto o respuesta contiene confirmación
 async function tryExtractAndRegisterOrder(
   conversationKey: string,
@@ -1181,28 +1549,11 @@ async function tryExtractAndRegisterOrder(
   assistantReply: string,
   products: Product[],
   clientName?: string,
-  sessionMessages?: Message[]
+  sessionMessages?: Message[],
+  hasValidCustomerConfirmation = false,
+  confirmationMessageId?: string
 ) {
-  const assistantLower = assistantReply.toLowerCase();
-  const isPreConfirmationSummary =
-    assistantLower.includes("resumen de tu pedido") ||
-    assistantLower.includes("1️⃣ ✅ confirmar pedido") ||
-    assistantLower.includes("responde con el número para continuar") ||
-    (assistantLower.includes("1️⃣") && (assistantLower.includes("confirmar") || assistantLower.includes("modificar")));
-
-  const hasConfirmationKeyword =
-    !isPreConfirmationSummary &&
-    (assistantLower.includes("pedido confirmado y registrado") ||
-      assistantLower.includes("¡pedido confirmado en buñuelandia!") ||
-      assistantLower.includes("¡pedido confirmado") ||
-      assistantLower.includes("pedido registrado") ||
-      assistantLower.includes("hemos registrado tu pedido") ||
-      assistantLower.includes("pedido creado") ||
-      assistantLower.includes("van en camino calienticos") ||
-      assistantLower.includes("pendiente de asignación") ||
-      assistantLower.includes("entra en preparación"));
-
-  if (!hasConfirmationKeyword) return null;
+  if (!hasValidCustomerConfirmation || !isAssistantOrderConfirmation(assistantReply)) return null;
 
   const combined = (userText + " " + assistantReply).toLowerCase();
   const { items: extractedItems } = extractProductsFromText(combined, products);
@@ -1533,6 +1884,7 @@ async function tryExtractAndRegisterOrder(
       deliveryFee: detectedFee,
       changeAmount: detectedChange,
       deliveryNotes: detectedNotes,
+      idempotencyKey: confirmationMessageId ? `${conversationKey}:${confirmationMessageId}` : undefined,
     });
   } catch (createErr) {
     console.error("[sales-agent] Error persistiendo pedido en base de datos:", createErr);
@@ -1550,7 +1902,7 @@ async function tryExtractAndRegisterOrder(
 
   // Generar factura oficial automáticamente en Buñuelandia Contabilidad (Opción 1)
   try {
-    const invRes = await createInvoiceInContabilidad({
+    const invRes = await ensureInvoiceForOrder(order, {
       orderId: order.id,
       customerName,
       phone: customerPhone ? `+57${customerPhone}` : conversationKey.replace(/^whatsapp:/i, ""),
@@ -1572,20 +1924,18 @@ async function tryExtractAndRegisterOrder(
       deliveryFee: detectedFee,
       total: detectedTotal,
     });
-
-    if (invRes.ok && invRes.invoiceNumber) {
-      await updateOrderInvoice(
-        order.id,
-        invRes.invoiceNumber,
-        invRes.invoiceId,
-        invRes.invoiceUrl,
-        invRes.invoicePdfUrl
-      );
-      order.invoiceNumber = invRes.invoiceNumber;
-      order.invoiceId = invRes.invoiceId;
-      order.invoiceUrl = invRes.invoiceUrl;
-      order.invoicePdfUrl = invRes.invoicePdfUrl;
+    if (isConfirmedInvoiceReference(invRes)) {
+      // Preserve confirmed remote references for the reply without mutating the
+      // in-memory store when the durable write failed.
+      order = {
+        ...order,
+        invoiceNumber: invRes.invoiceNumber,
+        invoiceId: invRes.invoiceId,
+        invoiceUrl: invRes.invoiceUrl,
+        invoicePdfUrl: invRes.invoicePdfUrl,
+      };
     }
+
   } catch (invErr) {
     console.error("[sales-agent] Error generando factura automática:", invErr);
   }
@@ -1593,70 +1943,6 @@ async function tryExtractAndRegisterOrder(
   // Notificar automáticamente al domiciliario asignado por WhatsApp
   // FASE 8: La ficha al domiciliario NO se env?a al confirmar el pedido; se enviar? exclusivamente cuando pase a despacho ("ready").
   return order;
-}
-
-/**
- * Aísla la sesión conversacional activa cortando los mensajes anteriores a un pedido finalizado/cancelado
- * o a un mensaje de reinicio/cancelación explícito del cliente o asistente.
- */
-function getSessionMessages(rawMessages: Message[], latestOrder?: Order | null): Message[] {
-  const msgs = [...rawMessages];
-
-  // Detectar punto de reinicio por confirmación de pedido anterior, cancelación o nuevo pedido dentro del historial
-  let resetIndex = -1;
-  for (let i = 0; i < msgs.length; i++) {
-    const m = msgs[i];
-    const c = (m.content || "").toLowerCase();
-    if (m.role === "assistant") {
-      if (
-        c.includes("hemos cancelado tu solicitud de pedido") ||
-        c.includes("ha sido cancelado con éxito") ||
-        c.includes("con muchísimo gusto te tomamos un nuevo pedido") ||
-        c.includes("con muchisimo gusto te tomamos un nuevo pedido") ||
-        c.includes("pedido confirmado") ||
-        c.includes("pedido registrado") ||
-        c.includes("hemos registrado tu pedido")
-      ) {
-        resetIndex = i;
-      }
-    } else if (m.role === "user") {
-      if (
-        /\b(?:para\s+)?cancelar\s+(?:el\s+|mi\s+)?(?:pedido|orden)\b/i.test(c) ||
-        /\b(?:nuevo\s+pedido|otro\s+pedido|pedir\s+de\s+nuevo|otra\s+orden|nueva\s+orden|hola\s+para\s+un\s+pedido|para\s+un\s+pedido)\b/i.test(c)
-      ) {
-        resetIndex = i;
-      }
-    }
-  }
-
-  if (resetIndex >= 0 && resetIndex < msgs.length - 1) {
-    return msgs.slice(resetIndex + 1);
-  }
-
-  if (latestOrder?.createdAt) {
-    const orderTime = latestOrder.createdAt;
-    let lastOrderMsgIndex = -1;
-    for (let i = 0; i < msgs.length; i++) {
-      if (msgs[i].createdAt <= orderTime) {
-        lastOrderMsgIndex = i;
-      }
-    }
-    if (
-      lastOrderMsgIndex >= 0 &&
-      lastOrderMsgIndex < msgs.length - 1 &&
-      (Date.now() - orderTime > 45 * 60 * 1000 ||
-        latestOrder.status === "delivered" ||
-        latestOrder.status === "cancelled" ||
-        latestOrder.status === "ready" ||
-        latestOrder.status === "delivering" ||
-        latestOrder.status === "confirmed" ||
-        latestOrder.status === "preparing")
-    ) {
-      return msgs.slice(lastOrderMsgIndex + 1);
-    }
-  }
-
-  return msgs;
 }
 
 export async function handleSalesMessage(
@@ -1768,14 +2054,63 @@ export async function handleSalesMessage(
 
   if (isCancelIntent) {
     if (latestOrder && (latestOrder.status === "pending" || latestOrder.status === "confirmed")) {
-      await updateOrderStatus(latestOrder.id, "cancelled");
-      logSystemEvent("info", "agent", `Pedido #${latestOrder.id.slice(0, 8)} cancelado a solicitud del cliente`, {
-        orderId: latestOrder.id,
-        conversationKey,
-      });
-      const reply = `Tu pedido *#${latestOrder.id.slice(0, 8)}* ha sido cancelado con éxito ✅. Si deseas realizar un nuevo pedido más adelante, con muchísimo gusto estaremos atentos. ¡Esperamos atenderte pronto en BUÑUELANDIA! 🥟`;
+      let cancelled = null;
+      try {
+        cancelled = await updateOrderStatus(latestOrder.id, "cancelled", {
+          allowedCurrentStatuses: ["pending", "confirmed"],
+          rejectDeliveredOrPaid: true,
+        });
+      } catch (error) {
+        logSystemEvent("warn", "agent", "No se pudo persistir la cancelación del pedido", {
+          orderId: latestOrder.id,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
+
+      if (cancelled) {
+        logSystemEvent("info", "agent", `Pedido #${latestOrder.id.slice(0, 8)} cancelado a solicitud del cliente`, {
+          orderId: latestOrder.id,
+          conversationKey,
+        });
+      }
+
+      let reply: string;
+      let mode: SalesMessageResult["mode"] = "keyword";
+      if (cancelled) {
+        reply = `Tu pedido *#${latestOrder.id.slice(0, 8)}* ha sido cancelado con éxito ✅. Si deseas realizar un nuevo pedido más adelante, con muchísimo gusto estaremos atentos. ¡Esperamos atenderte pronto en BUÑUELANDIA! 🥟`;
+      } else {
+        let currentOrder;
+        try {
+          currentOrder = await getOrderStatusSnapshot(latestOrder.id);
+        } catch (error) {
+          logSystemEvent("warn", "agent", "No se pudo releer el estado del pedido tras intentar cancelarlo", {
+            orderId: latestOrder.id,
+            errorName: error instanceof Error ? error.name : "UnknownError",
+          });
+        }
+
+        if (currentOrder?.status === "cancelled") {
+          reply = `Tu pedido *#${latestOrder.id.slice(0, 8)}* ya se encuentra cancelado ✅.`;
+        } else if (currentOrder?.status === "delivered" || currentOrder?.driverPaymentConfirmed) {
+          reply = `No es posible cancelar el pedido *#${latestOrder.id.slice(0, 8)}* porque ya figura como entregado o con el recaudo confirmado. Si necesitas ayuda, un asesor puede revisar el caso.`;
+        } else if (
+          currentOrder &&
+          ["preparing", "ready", "delivering"].includes(currentOrder.status)
+        ) {
+          await setConversationStatus(conversationKey, "human");
+          const statusDesc = currentOrder.status === "delivering"
+            ? "en camino con el domiciliario 🛵"
+            : currentOrder.status === "ready"
+              ? "listo para despacho 🛵"
+              : "en preparación en cocina 👨‍🍳🔥";
+          reply = `Tu pedido *#${latestOrder.id.slice(0, 8)}* ya se encuentra ${statusDesc}. He notificado a un asesor humano para evaluar tu solicitud de cancelación. En breve se comunicarán contigo por aquí.`;
+          mode = "human_escalated";
+        } else {
+          reply = `No pude confirmar la cancelación del pedido *#${latestOrder.id.slice(0, 8)}*. No te confirmaré que se canceló hasta verificarlo. Por favor intenta de nuevo o solicita ayuda a un asesor.`;
+        }
+      }
       await appendMessage(conversationKey, "assistant", reply);
-      return { reply, mode: "keyword" };
+      return { reply, mode };
     } else if (latestOrder && (latestOrder.status === "preparing" || latestOrder.status === "delivering")) {
       await setConversationStatus(conversationKey, "human");
       const statusDesc = latestOrder.status === "delivering" ? "en camino con el domiciliario 🛵" : "en preparación en cocina 👨‍🍳🔥";
@@ -2283,34 +2618,10 @@ ${nextStepInstruction}
 `;
   }
 
-  // Detectar si el mensaje anterior del bot fue el resumen de pre-confirmación y el usuario confirma
-  const lastAssistantMsgObj = [...previous].reverse().find((m) => m.role === "assistant");
-  const lastAssistantText = (lastAssistantMsgObj?.content || "").toLowerCase();
-  const isPreConfirmation =
-    lastAssistantText.includes("resumen de tu pedido") ||
-    lastAssistantText.includes("1️⃣ ✅ confirmar") ||
-    (lastAssistantText.includes("1️⃣") && (lastAssistantText.includes("confirmar") || lastAssistantText.includes("modificar")));
+  const validConfirmationSummary = getValidOrderConfirmationSummary(previous, text);
+  const hasValidCustomerConfirmation = Boolean(validConfirmationSummary);
 
-  const isUserConfirmingSummary =
-    isPreConfirmation &&
-    (
-      text === "1" ||
-      text === "1️⃣" ||
-      lower === "1" ||
-      lower === "1." ||
-      lower === "si" ||
-      lower === "sí" ||
-      lower === "confirmar" ||
-      lower === "confirmo" ||
-      lower === "confirmado" ||
-      lower === "dale" ||
-      lower === "de una" ||
-      lower === "correcto" ||
-      lower.startsWith("1 ") ||
-      lower.includes("confirmar pedido")
-    );
-
-  const confirmationDirective = isUserConfirmingSummary
+  const confirmationDirective = hasValidCustomerConfirmation
     ? `\n\n🚨🚨 ACCIÓN URGENTE Y OBLIGATORIA EN ESTE TURNO:
 El cliente acaba de responder "${text}" para confirmar el pedido (Opción 1 del resumen previo).
 Debes responder INMEDIATAMENTE con el formato exacto del Paso 7 (CONFIRMACIÓN FINAL Y FACTURACIÓN):
@@ -2547,15 +2858,14 @@ ${sessionItems.length > 0
             reply,
             products,
             pushName,
-            previous
+            previous,
+            hasValidCustomerConfirmation,
+            validConfirmationSummary?.id
           );
 
           // Fail-Closed: Si el asistente generó un mensaje de confirmación pero la orden no se pudo crear,
           // no dar falso positivo al cliente.
-          const replyHasConfirmation =
-            reply.toLowerCase().includes("pedido confirmado") ||
-            reply.toLowerCase().includes("pedido registrado") ||
-            reply.toLowerCase().includes("hemos registrado tu pedido");
+          const replyHasConfirmation = isAssistantOrderConfirmation(reply);
 
           // Validación de efectivo suficiente
           const userCashCheck = extractChangeInstructions(text);
@@ -2570,6 +2880,16 @@ ${sessionItems.length > 0
           if (hasInsufficientCash) {
             const cashCalc = calculateCashChange(userCashCheck, currentTotal);
             reply = `El monto indicado (${cashCalc?.formattedCash}) no alcanza para cubrir el total de tu pedido (${formatCop(currentTotal)}) 🥟💵. Por favor indícanos con qué billete pagarás o si deseas ajustar las cantidades de tu pedido.`;
+          } else if (replyHasConfirmation && !hasValidCustomerConfirmation) {
+            reply = buildSafePreConfirmationReply(
+              sessionItems,
+              sessionAddress,
+              sessionPayment,
+              sessionCash,
+              allUserChatText,
+              settings.businessCity || "Tocancipá, Cundinamarca",
+              settings.welcomeMessage
+            );
           } else if (replyHasConfirmation && !maybeOrder) {
             console.error("[sales-agent] Fail-Closed: Confirmación generada pero persistencia de pedido falló en Gemini.");
             reply = "Tuvimos un inconveniente técnico momentáneo al registrar tu pedido ⚠️. Por favor responde con el número 1️⃣ para intentar confirmarlo nuevamente o escribe *asesor* si deseas que una persona te atienda.";
@@ -2594,7 +2914,7 @@ ${sessionItems.length > 0
             }
           }
 
-          await appendMessage(conversationKey, "assistant", reply);
+          const assistantMessage = await appendMessage(conversationKey, "assistant", reply);
 
           const shouldSendQr = Boolean(
             settings.transferQrImage &&
@@ -2621,6 +2941,7 @@ ${sessionItems.length > 0
           return {
             reply,
             mode: maybeOrder ? "order_created" : "ai",
+            assistantMessageId: assistantMessage.id,
             mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
             invoiceUrl: resolvedPublicUrl,
             invoicePdfUrl: resolvedPdfUrl,
@@ -2628,28 +2949,30 @@ ${sessionItems.length > 0
           };
         } catch (mErr: any) {
           lastError = mErr;
-          console.warn(`[sales-agent] Gemini modelo ${model} falló, intentando siguiente...`, mErr?.message || mErr);
+          console.warn(`[sales-agent] Gemini modelo ${model} falló, intentando siguiente...`, {
+            error: safeProviderErrorLabel(mErr),
+          });
         }
       }
-      console.warn("[sales-agent] Todos los modelos de Gemini fallaron; pasando a OpenAI como fallback...", lastError);
+      console.warn("[sales-agent] Todos los modelos de Gemini fallaron; pasando a DeepSeek como fallback...", {
+        error: safeProviderErrorLabel(lastError),
+      });
     } catch (geminiImportErr) {
-      console.warn("[sales-agent] Error inicializando SDK de Gemini; intentando OpenAI...", geminiImportErr);
+      console.warn("[sales-agent] Error inicializando SDK de Gemini; intentando DeepSeek...", {
+        error: safeProviderErrorLabel(geminiImportErr),
+      });
     }
   }
 
-  // 3. Intentar con OpenAI (si Gemini no está o falló)
-  if (process.env.OPENAI_API_KEY?.trim()) {
+  // 3. Intentar con DeepSeek (si Gemini no está o falló)
+  if (process.env.DEEPSEEK_API_KEY?.trim()) {
     try {
-      const { OpenAI } = await import("openai");
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
-      const messages = buildOpenAIMessages(systemPrompt, previous, text);
-
-      const res = await openai.chat.completions.create({
-        model,
+      const messages = buildDeepSeekMessages(systemPrompt, previous, text);
+      const res = await createDeepSeekChatCompletion({
+        model: DEEPSEEK_MODELS.sales,
         messages,
         temperature: 0.35,
-        max_tokens: 1500,
+        maxTokens: 1500,
       });
 
       let reply = res.choices[0]?.message?.content?.trim() || settings.welcomeMessage;
@@ -2668,15 +2991,14 @@ ${sessionItems.length > 0
         reply,
         products,
         pushName,
-        previous
+        previous,
+        hasValidCustomerConfirmation,
+        validConfirmationSummary?.id
       );
 
       // Fail-Closed: Si el asistente generó un mensaje de confirmación pero la orden no se pudo crear,
       // no dar falso positivo al cliente.
-      const replyHasConfirmation =
-        reply.toLowerCase().includes("pedido confirmado") ||
-        reply.toLowerCase().includes("pedido registrado") ||
-        reply.toLowerCase().includes("hemos registrado tu pedido");
+      const replyHasConfirmation = isAssistantOrderConfirmation(reply);
 
       // Validación de efectivo suficiente
       const userCashCheck = extractChangeInstructions(text);
@@ -2691,8 +3013,18 @@ ${sessionItems.length > 0
       if (hasInsufficientCash) {
         const cashCalc = calculateCashChange(userCashCheck, currentTotal);
         reply = `El monto indicado (${cashCalc?.formattedCash}) no alcanza para cubrir el total de tu pedido (${formatCop(currentTotal)}) 🥟💵. Por favor indícanos con qué billete pagarás o si deseas ajustar las cantidades de tu pedido.`;
+      } else if (replyHasConfirmation && !hasValidCustomerConfirmation) {
+        reply = buildSafePreConfirmationReply(
+          sessionItems,
+          sessionAddress,
+          sessionPayment,
+          sessionCash,
+          allUserChatText,
+          settings.businessCity || "Tocancipá, Cundinamarca",
+          settings.welcomeMessage
+        );
       } else if (replyHasConfirmation && !maybeOrder) {
-        console.error("[sales-agent] Fail-Closed: Confirmación generada pero persistencia de pedido falló en OpenAI.");
+        console.error("[sales-agent] Fail-Closed: Confirmación generada pero persistencia de pedido falló en DeepSeek.");
         reply = "Tuvimos un inconveniente técnico momentáneo al registrar tu pedido ⚠️. Por favor responde con el número 1️⃣ para intentar confirmarlo nuevamente o escribe *asesor* si deseas que una persona te atienda.";
       }
 
@@ -2708,7 +3040,7 @@ ${sessionItems.length > 0
         }
       }
 
-      await appendMessage(conversationKey, "assistant", reply);
+      const assistantMessage = await appendMessage(conversationKey, "assistant", reply);
 
       const shouldSendQr = Boolean(
         settings.transferQrImage &&
@@ -2720,13 +3052,13 @@ ${sessionItems.length > 0
           )
       );
 
-      const resolvedOpenAiPublicUrl = maybeOrder?.invoiceUrl && isValidContabilidadPublicUrl(maybeOrder.invoiceUrl)
+      const resolvedDeepSeekPublicUrl = maybeOrder?.invoiceUrl && isValidContabilidadPublicUrl(maybeOrder.invoiceUrl)
         ? maybeOrder.invoiceUrl
         : (maybeOrder?.invoiceId && isValidContabilidadPublicUrl(`${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}`)
             ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}`
             : undefined);
 
-      const resolvedOpenAiPdfUrl = maybeOrder?.invoicePdfUrl && isValidContabilidadPdfUrl(maybeOrder.invoicePdfUrl)
+      const resolvedDeepSeekPdfUrl = maybeOrder?.invoicePdfUrl && isValidContabilidadPdfUrl(maybeOrder.invoicePdfUrl)
         ? maybeOrder.invoicePdfUrl
         : (maybeOrder?.invoiceId && isValidContabilidadPdfUrl(`${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}/pdf`)
             ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${maybeOrder.invoiceId}/pdf`
@@ -2735,13 +3067,16 @@ ${sessionItems.length > 0
       return {
         reply,
         mode: maybeOrder ? "order_created" : "ai",
+        assistantMessageId: assistantMessage.id,
         mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
-        invoiceUrl: resolvedOpenAiPublicUrl,
-        invoicePdfUrl: resolvedOpenAiPdfUrl,
+        invoiceUrl: resolvedDeepSeekPublicUrl,
+        invoicePdfUrl: resolvedDeepSeekPdfUrl,
         invoiceNumber: maybeOrder?.invoiceNumber,
       };
-    } catch (openaiErr: any) {
-      console.warn("[sales-agent] OpenAI falló (cuota o error de red); usando fallback inteligente de BUÑUELANDIA", openaiErr?.message || openaiErr);
+    } catch (deepSeekErr: any) {
+      console.warn("[sales-agent] DeepSeek falló (HTTP, cuota o error de red); usando fallback inteligente de BUÑUELANDIA", {
+        error: safeProviderErrorLabel(deepSeekErr),
+      });
     }
   }
 
@@ -2882,7 +3217,7 @@ ${sessionItems.length > 0
 
     if (isPreviousPreConfirmation && isUserModifying) {
       reply = `¡Claro que sí! 🥟✏️ Cuéntanos qué dato te gustaría modificar: ¿los productos, la dirección de entrega o el medio de pago?`;
-    } else if (isUserConfirming) {
+    } else if (isUserConfirming && hasValidCustomerConfirmation) {
       // PASO 7: CONFIRMACIÓN OFICIAL Y FACTURACIÓN (Solo tras responder 1 o confirmar)
       const summaryItems = finalItems.map((it) => {
         if (it.sku === "C8S") {
@@ -2917,6 +3252,9 @@ ${sessionItems.length > 0
             changeAmount: foundChange || undefined,
             itemsSummary: summaryItems,
             deliveryFee: 0,
+            idempotencyKey: validConfirmationSummary
+              ? `${conversationKey}:${validConfirmationSummary.id}`
+              : undefined,
           }
         );
       } catch (createErr) {
@@ -2941,7 +3279,7 @@ ${sessionItems.length > 0
           finalPayment.toLowerCase().includes("contra entrega");
 
         try {
-          const invRes = await createInvoiceInContabilidad({
+          const invRes = await ensureInvoiceForOrder(order, {
             orderId: order.id,
             customerName: clientName,
             phone: detectedPhone ? `+57${detectedPhone}` : conversationKey.replace(/^whatsapp:/i, ""),
@@ -2959,24 +3297,10 @@ ${sessionItems.length > 0
             deliveryFee: 0,
             total: finalTotal,
           });
-          if (invRes.ok && (invRes.invoiceNumber || invRes.invoiceUrl || invRes.invoiceId)) {
-            await updateOrderInvoice(
-              order.id,
-              invRes.invoiceNumber || "",
-              invRes.invoiceId,
-              invRes.invoiceUrl,
-              invRes.invoicePdfUrl
-            );
-            order.invoiceNumber = invRes.invoiceNumber;
-            order.invoiceId = invRes.invoiceId;
-            order.invoiceUrl = invRes.invoiceUrl;
-            order.invoicePdfUrl = invRes.invoicePdfUrl;
+          const invPresentable = isConfirmedInvoiceReference(invRes);
+          if (invPresentable) {
             createdInvoiceNumber = invRes.invoiceNumber;
-            const resolvedFallbackPdfUrl = invRes.invoicePdfUrl && isValidContabilidadPdfUrl(invRes.invoicePdfUrl)
-              ? invRes.invoicePdfUrl
-              : (invRes.invoiceId && isValidContabilidadPdfUrl(`${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${invRes.invoiceId}/pdf`)
-                  ? `${DEFAULT_CONTABILIDAD_ORIGIN}/api/invoices/public/${invRes.invoiceId}/pdf`
-                  : undefined);
+            const resolvedFallbackPdfUrl = resolveDeliveredPdfUrl(invRes.invoicePdfUrl, invRes.invoiceId);
             createdInvoicePdfUrl = resolvedFallbackPdfUrl;
             const { noticeLine, publicUrl } = resolveInvoiceNoticeDetails(
               invRes.invoiceNumber,
@@ -3111,10 +3435,11 @@ ${sessionItems.length > 0
       shouldSendTransferQr(text, reply, mode === "order_created", foundPayment || sessionPayment)
   );
 
-  await appendMessage(conversationKey, "assistant", reply);
+  const assistantMessage = await appendMessage(conversationKey, "assistant", reply);
   return {
     reply,
     mode,
+    assistantMessageId: assistantMessage.id,
     mediaUrl: shouldSendQr ? settings.transferQrImage : undefined,
     invoiceUrl: createdInvoiceUrl,
     invoicePdfUrl: createdInvoicePdfUrl,

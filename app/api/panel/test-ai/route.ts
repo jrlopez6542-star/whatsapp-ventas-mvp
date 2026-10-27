@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requirePanelAuth } from '@/lib/auth/session';
+import { runDeepSeekDiagnostic } from "@/lib/deepseek";
+import { safeProviderErrorLabel } from "@/lib/ai-provider-errors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,7 +27,7 @@ export async function GET(request: NextRequest) {
           model,
           contents: "Responde únicamente con la palabra 'OK'",
         }).then(res => ({ model, ok: true, text: res.text, error: null }))
-          .catch(err => ({ model, ok: false, error: err.message, text: null }))
+          .catch(err => ({ model, ok: false, error: safeProviderErrorLabel(err), text: null }))
       );
       
       const outcomes = await Promise.all(promises);
@@ -39,32 +41,14 @@ export async function GET(request: NextRequest) {
       
       results.debug = outcomes;
     } catch (e: any) {
-      results.gemini = "Error fatal: " + e.message;
+      results.gemini = `Error fatal: ${safeProviderErrorLabel(e)}`;
     }
   } else {
     results.gemini = "No configurado";
   }
 
-  if (process.env.OPENAI_API_KEY) {
-    try {
-      const { OpenAI } = await import("openai");
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      const response = await openai.chat.completions.create({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-        messages: [{ role: "user", content: "Responde únicamente con la palabra 'OK'" }],
-        max_tokens: 10,
-      });
-      if (response.choices[0].message.content) {
-        results.openai = "OK";
-      } else {
-        results.openai = "Error desconocido";
-      }
-    } catch (e: any) {
-      results.openai = "Error: " + e.message;
-    }
-  } else {
-    results.openai = "No configurado";
-  }
+  const deepSeekDiagnostic = await runDeepSeekDiagnostic("No configurado");
+  results.deepseek = deepSeekDiagnostic.startsWith("OK:") ? "OK" : deepSeekDiagnostic;
 
   return NextResponse.json({ ok: true, results });
 }

@@ -33,11 +33,13 @@ import {
 import { sentInvoicePdfsCache, SENT_PDF_CACHE_TTL_MS } from "../lib/contabilidad";
 import {
   createOrder,
+  getMessages,
   getOrders,
   getConversation,
   getOrCreateConversation,
   setConversationPhone,
   updateOrderStatus,
+  updateMessageDeliveryStatus,
   claimOrderInvoicePdf,
   releaseOrderInvoicePdf,
   findOrderByInvoiceOrRef,
@@ -47,7 +49,15 @@ import {
   type Order,
 } from "../lib/store";
 import { normalizeEvolutionNumber } from "../lib/evolution";
-import { recordPaymentInContabilidad } from "../lib/contabilidad";
+
+async function markLatestSummaryAccepted(conversationId: string): Promise<void> {
+  const messages = await getMessages(conversationId);
+  const summary = [...messages].reverse().find(
+    (message) => message.role === "assistant" && message.content?.toLowerCase().includes("resumen de tu pedido")
+  );
+  assert.ok(summary, "El flujo de prueba debe haber guardado el resumen previo");
+  await updateMessageDeliveryStatus(summary.id, "accepted");
+}
 
 test("1. Cliente @lid sin teléfono guardado que responde «al mismo número»", async () => {
   const lidConvId = "whatsapp:lid:271296004931588";
@@ -194,6 +204,7 @@ test("6. Pago en Efectivo nunca envía QR ni textos de transferencia", () => {
 
   const driverMsg = formatDeliveryDriverMessage(cashOrder);
   assert.ok(driverMsg.includes("Cobrar en efectivo al entregar y llevar el cambio listo"));
+  assert.ok(!driverMsg.includes("PAGADO"), "La ficha no debe pedir al domiciliario confirmar el cobro por WhatsApp");
   assert.ok(!driverMsg.includes("TRANSFERENCIA PENDIENTE"));
   assert.ok(!driverMsg.includes("TRANSFERENCIA VERIFICADA"));
   assert.ok(!driverMsg.includes("YA PAGADO"));
@@ -216,9 +227,10 @@ test("7. Ficha inicial al domiciliario en pedido por Nequi/Bre-B muestra estado 
   const driverMsg = formatDeliveryDriverMessage(pendingTransferOrder);
   assert.ok(
     driverMsg.includes("⏳ *PAGO POR TRANSFERENCIA (PENDIENTE VERIFICAR COMPROBANTE):* Confirmar validación de pago antes de entregar."),
-    "Debe advertir que la transferencia está pendiente de comprobante"
+    "Debe indicar que el comprobante debe validarse antes de entregar"
   );
   assert.ok(!driverMsg.includes("YA PAGADO"), "No debe decir YA PAGADO");
+  assert.ok(!driverMsg.includes("PAGADO"), "No debe solicitar una confirmación por WhatsApp");
 });
 
 test("8. Comprobante válido con importe exacto pasa a preparing y notifica al domiciliario", async () => {
@@ -861,6 +873,7 @@ test("21. Conservación del efectivo del usuario frente a respuestas contradicto
 
   // El cliente indica explícitamente 40000
   const cashRes = await handleSalesMessage(convId, "40000", "Camilo");
+  await markLatestSummaryAccepted(convId);
 
   // Verificar que el resumen contenga el importe explícito del cliente y el cambio calculado de $4.000
   assert.ok(
@@ -1282,7 +1295,7 @@ test("32. Webhook: Flujo de ventas despacha mensaje único con enlace y no invoc
   assert.equal(outboundCalls.some(c => Boolean(c.media)), false, "NO debe haber ningún envío de medios ni documentos PDF adjuntos");
 });
 
-test("33. Domiciliario: Comando PAGADO solo se procesa desde el número autorizado", () => {
+test("33. Domiciliario: Normaliza el número configurado para identificar remitentes autorizados", () => {
   const configuredDriver = "3228964947";
   const normalizedConfigured = normalizeEvolutionNumber(configuredDriver);
 
@@ -1333,7 +1346,7 @@ test("34. Domiciliario: Validación de pedidos inexistentes y medios de pago no 
   assert.equal(notFound, null, "Debe retornar null ante referencias inexistentes");
 });
 
-test("35. Domiciliario: Confirmación persistente e idempotencia ante repetición del comando PAGADO", async () => {
+test("35. Persistencia: el marcador existente guarda el origen y el importe confirmado en la orden", async () => {
   const cashOrder = await createOrder("whatsapp:+573002223344", [], 38000, {
     customerName: "Laura Gómez",
     paymentMethod: "Efectivo contra entrega",
@@ -1345,128 +1358,247 @@ test("35. Domiciliario: Confirmación persistente e idempotencia ante repetició
   // 1. Confirmación válida inicial
   const confirmed = await markOrderDriverPaymentConfirmed(cashOrder.id, {
     amount: 38000,
-    phone: "573228964947",
+    phone: "panel-admin",
   });
   assert.ok(confirmed);
   assert.equal(confirmed?.driverPaymentConfirmed, 1);
   assert.equal(confirmed?.driverPaymentAmount, 38000);
-  assert.equal(confirmed?.driverPaymentPhone, "573228964947");
+  assert.equal(confirmed?.driverPaymentPhone, "panel-admin");
   assert.ok(confirmed?.driverPaymentConfirmedAt && confirmed.driverPaymentConfirmedAt > 0);
 
-  // 2. Repetición del comando PAGADO (simulación de doble envío por WhatsApp)
-  // El código verifica si driverPaymentConfirmed ya es 1
+  // El marcador sigue asociado a la orden existente; no crea una orden o factura nueva.
   const reloaded = await findOrderByInvoiceOrRef("B-0081");
   assert.equal(reloaded?.driverPaymentConfirmed, 1);
-
-  // Al estar ya confirmado, el webhook rechaza el segundo registro devolviendo already_confirmed
-  const shouldSkipSecondCharge = Boolean(reloaded?.driverPaymentConfirmed);
-  assert.equal(shouldSkipSecondCharge, true, "No debe registrar un segundo cobro si ya fue confirmado");
 });
 
-test("36. Panel: Marcar Entregado sin confirmación de cobro conserva factura pendiente y alerta al admin", async () => {
-  const unconfirmedOrder = await createOrder("whatsapp:+573003334455", [], 42000, {
-    customerName: "Mateo Silva",
-    paymentMethod: "Efectivo",
+test("36. Panel: al marcar Entregado confirma el cobro contra entrega una vez y no altera la referencia de factura", async () => {
+  const { NextRequest } = await import("next/server");
+  const { createUser, createSession } = await import("../lib/auth/session");
+  const { PATCH: patchOrder } = await import("../app/api/panel/orders/[id]/route");
+
+  const user = await createUser({
+    email: `delivery_${Date.now()}@bunuelandia.co`,
+    password: "Password123*",
+    name: "Delivery Test Admin",
+    role: "admin",
+  });
+  const { token } = await createSession(user.id);
+  const order = await createOrder("whatsapp:+573003334455", [], 42000, {
+    customerName: "Test Cash Order",
+    paymentMethod: "Efectivo contra entrega",
+    changeAmount: "$50.000",
     invoiceNumber: "B-0082",
     invoiceId: "inv-cash-82",
     status: "delivering",
   });
 
-  // El administrador marca 'delivered' desde el panel
-  const updated = await updateOrderStatus(unconfirmedOrder.id, "delivered");
-  assert.ok(updated);
-  assert.equal(updated?.status, "delivered", "El pedido pasa físicamente a delivered");
+  const originalFetch = globalThis.fetch;
+  const originalPaymentUrl = process.env.CONTABILIDAD_RECORD_PAYMENT_URL;
+  let fetchCalls = 0;
+  process.env.CONTABILIDAD_RECORD_PAYMENT_URL = "http://127.0.0.1:3030/api/invoices/record-payment";
+  globalThis.fetch = (async (url: any, init: any) => {
+    assert.ok(String(url).startsWith("http://127.0.0.1:"), "El test solo admite el endpoint local simulado");
+    fetchCalls++;
+    const body = JSON.parse(String(init.body));
+    assert.equal(body.orderId, order.id);
+    assert.equal(body.invoiceId, "inv-cash-82");
+    assert.equal(body.invoiceNumber, "B-0082");
+    assert.equal(body.amount, 42000);
+    assert.equal(body.paymentMethod, "Efectivo contra entrega");
+    assert.equal(body.confirmedBy, user.name);
+    assert.ok(body.confirmedAt);
+    return new Response(JSON.stringify({
+      ok: true,
+      alreadyPaid: fetchCalls > 1,
+      orderId: body.orderId,
+      invoiceId: "inv-cash-82",
+      invoiceNumber: "B-0082",
+      amount: body.amount,
+      total: 42000,
+      status: "paid",
+      paymentId: "local-payment-82",
+    }), { status: 200 });
+  }) as any;
 
-  // Lógica del endpoint PATCH /api/panel/orders/[id]
-  let warning: string | undefined;
-  let paymentSynced = false;
-  let accountingCalled = false;
+  try {
+    const request = () => new NextRequest(`http://localhost:3000/api/panel/orders/${order.id}`, {
+      method: "PATCH",
+      headers: { cookie: `panel_session=${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ status: "delivered", notifyCustomer: false }),
+    });
+    const firstResponse = await patchOrder(request(), { params: Promise.resolve({ id: order.id }) });
+    assert.equal(firstResponse.status, 200);
+    const firstData = await firstResponse.json();
+    assert.equal(firstData.order.status, "delivered");
+    assert.equal(firstData.order.driverPaymentConfirmed, 1);
+    assert.equal(firstData.order.driverPaymentAmount, 42000, "Registra el efectivo cobrado por el total de la orden");
+    assert.equal(firstData.order.driverPaymentPhone, "panel-admin", "Identifica que la confirmación provino del panel");
+    assert.ok(firstData.order.driverPaymentConfirmedAt, "La primera transición registra la hora de confirmación");
+    assert.equal(firstData.order.changeAmount, "$50.000", "Conserva el efectivo ofrecido y el cambio del pedido");
+    assert.equal(firstData.order.invoiceNumber, "B-0082");
+    assert.equal(firstData.order.invoiceId, "inv-cash-82");
+    assert.equal(firstData.order.invoicePaymentStatus, undefined, "BOTW no almacena ni modifica un estado de pago de factura");
+    assert.equal(firstData.order.accountingPaymentSynced, 1, "Solo marca sincronizado tras validar la respuesta contable");
+    assert.equal(firstData.paymentSynced, true);
+    assert.equal(firstData.warning, undefined);
+    assert.equal(fetchCalls, 1, "La entrega en efectivo registra el cobro en Contabilidad una vez");
 
-  const isCash = (updated?.paymentMethod || "").toLowerCase().includes("efectivo");
-  if (isCash) {
-    if (updated?.driverPaymentConfirmed) {
-      accountingCalled = true;
-      paymentSynced = true;
-    } else {
-      warning = "Pedido entregado; cobro pendiente de confirmación del domiciliario.";
-    }
+    const repeatedResponse = await patchOrder(request(), { params: Promise.resolve({ id: order.id }) });
+    assert.equal(repeatedResponse.status, 200);
+    const repeatedData = await repeatedResponse.json();
+    assert.equal(repeatedData.order.driverPaymentConfirmedAt, firstData.order.driverPaymentConfirmedAt, "El reintento no vuelve a escribir la confirmación");
+    assert.equal(repeatedData.order.driverPaymentConfirmed, 1);
+    assert.equal(fetchCalls, 1, "Repetir PATCH no vuelve a registrar el pago ya sincronizado");
+
+    const transferOrder = await createOrder("whatsapp:+573003334477", [], 28000, {
+      paymentMethod: "Nequi",
+      invoiceNumber: "B-TRANSFER-01",
+      invoiceId: "inv-transfer-01",
+      status: "ready",
+    });
+    const transferRequest = new NextRequest(`http://localhost:3000/api/panel/orders/${transferOrder.id}`, {
+      method: "PATCH",
+      headers: { cookie: `panel_session=${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ status: "delivered", notifyCustomer: false }),
+    });
+    const transferResponse = await patchOrder(transferRequest, { params: Promise.resolve({ id: transferOrder.id }) });
+    assert.equal(transferResponse.status, 200);
+    const transferData = await transferResponse.json();
+    assert.equal(transferData.order.driverPaymentConfirmed || 0, 0, "No clasifica una transferencia como efectivo cobrado por el domiciliario");
+    assert.equal(transferData.order.accountingPaymentSynced || 0, 0);
+    assert.equal(transferData.order.invoiceId, "inv-transfer-01");
+    assert.equal(fetchCalls, 1, "Entregar una orden no efectivo no crea un movimiento de efectivo");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalPaymentUrl === undefined) delete process.env.CONTABILIDAD_RECORD_PAYMENT_URL;
+    else process.env.CONTABILIDAD_RECORD_PAYMENT_URL = originalPaymentUrl;
   }
-
-  assert.equal(warning, "Pedido entregado; cobro pendiente de confirmación del domiciliario.");
-  assert.equal(paymentSynced, false, "El pago no se marca como sincronizado");
-  assert.equal(accountingCalled, false, "NO debe llamar a Contabilidad para registrar el pago si falta el cobro del domiciliario");
-  assert.equal(updated?.accountingPaymentSynced || 0, 0, "Factura permanece sin pago registrado");
 });
 
-test("37. Flujo completo: Domiciliario confirma primero y Admin marca Entregado después", async () => {
-  const order = await createOrder("whatsapp:+573004445566", [], 55000, {
-    customerName: "Valentina Ruiz",
-    paymentMethod: "Efectivo contra entrega",
-    invoiceNumber: "B-0083",
-    invoiceId: "inv-cash-83",
-    status: "delivering",
+test("36a. Panel: un pedido cancelado no puede marcarse Entregado ni confirmar o sincronizar su cobro", async () => {
+  const { NextRequest } = await import("next/server");
+  const { createUser, createSession } = await import("../lib/auth/session");
+  const { PATCH: patchOrder } = await import("../app/api/panel/orders/[id]/route");
+
+  const user = await createUser({
+    email: `cancelled_${Date.now()}@bunuelandia.co`,
+    password: "Password123*",
+    name: "Cancelled Order Admin",
+    role: "admin",
   });
-
-  // Paso 1: Domiciliario envía "PAGADO B-0083" mientras el pedido sigue en camino
-  await markOrderDriverPaymentConfirmed(order.id, {
-    amount: 55000,
-    phone: "573228964947",
-  });
-
-  // Como status sigue siendo 'delivering', Contabilidad aún NO se sincroniza
-  assert.equal(order.accountingPaymentSynced || 0, 0);
-
-  // Paso 2: Administrador marca 'delivered' en el panel
-  const deliveredOrder = await updateOrderStatus(order.id, "delivered");
-  assert.equal(deliveredOrder?.status, "delivered");
-
-  // Ambas condiciones se cumplen:
-  let accountingCalled = false;
-  if (deliveredOrder?.driverPaymentConfirmed && !deliveredOrder.accountingPaymentSynced) {
-    accountingCalled = true;
-    await markOrderAccountingPaymentSynced(deliveredOrder.id);
-  }
-
-  assert.equal(accountingCalled, true, "Debe llamar a Contabilidad al cumplirse ambas condiciones");
-  const finalOrder = await findOrderByInvoiceOrRef("B-0083");
-  assert.equal(finalOrder?.accountingPaymentSynced, 1, "Queda registrado como sincronizado con Contabilidad");
-  assert.equal(finalOrder?.invoiceNumber, "B-0083", "Conserva exactamente la misma factura");
-});
-
-test("38. Flujo inverso: Admin marca Entregado primero y Domiciliario confirma después", async () => {
-  const order = await createOrder("whatsapp:+573005556677", [], 28000, {
-    customerName: "Camilo Torres",
+  const { token } = await createSession(user.id);
+  const order = await createOrder("whatsapp:+573003334466", [], 31000, {
     paymentMethod: "Efectivo",
-    invoiceNumber: "B-0084",
-    invoiceId: "inv-cash-84",
-    status: "delivering",
+    invoiceNumber: "B-CANCELLED-01",
+    invoiceId: "inv-cancelled-01",
+    status: "cancelled",
+  });
+  const request = new NextRequest(`http://localhost:3000/api/panel/orders/${order.id}`, {
+    method: "PATCH",
+    headers: { cookie: `panel_session=${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ status: "delivered", notifyCustomer: false }),
   });
 
-  // Paso 1: Admin marca entregado primero
-  const deliveredOrder = await updateOrderStatus(order.id, "delivered");
-  assert.equal(deliveredOrder?.status, "delivered");
-  assert.equal(deliveredOrder?.accountingPaymentSynced || 0, 0, "Factura pendiente sin confirmar");
-
-  // Paso 2: Domiciliario envía "PAGADO B-0084" posteriormente
-  await markOrderDriverPaymentConfirmed(deliveredOrder!.id, {
-    amount: 28000,
-    phone: "573228964947",
-  });
-
-  // El webhook detecta que order.status === 'delivered'
-  const current = await findOrderByInvoiceOrRef("B-0084");
-  let autoSynced = false;
-  if (current?.status === "delivered" && current.driverPaymentConfirmed && !current.accountingPaymentSynced) {
-    autoSynced = true;
-    await markOrderAccountingPaymentSynced(current.id);
-  }
-
-  assert.equal(autoSynced, true, "Sincroniza automáticamente con Contabilidad al llegar la confirmación posterior");
-  const syncedOrder = await findOrderByInvoiceOrRef("B-0084");
-  assert.equal(syncedOrder?.accountingPaymentSynced, 1);
+  const response = await patchOrder(request, { params: Promise.resolve({ id: order.id }) });
+  assert.equal(response.status, 409);
+  const data = await response.json();
+  assert.equal(data.ok, false);
+  const unchanged = await findOrderByInvoiceOrRef(order.id);
+  assert.equal(unchanged?.status, "cancelled");
+  assert.equal(unchanged?.driverPaymentConfirmed || 0, 0);
+  assert.equal(unchanged?.accountingPaymentSynced || 0, 0);
 });
 
-test("39. Resiliencia y recuperación: Fallo temporal de Contabilidad conserva confirmación para reintento", async () => {
+test("36b. Panel: un pedido entregado y cobrado no puede cancelarse ni alterar su factura", async () => {
+  const { NextRequest } = await import("next/server");
+  const { createUser, createSession } = await import("../lib/auth/session");
+  const { PATCH: patchOrder } = await import("../app/api/panel/orders/[id]/route");
+
+  const user = await createUser({
+    email: `delivered_${Date.now()}@bunuelandia.co`,
+    password: "Password123*",
+    name: "Delivered Order Admin",
+    role: "admin",
+  });
+  const { token } = await createSession(user.id);
+  const order = await createOrder("whatsapp:+573003334488", [], 31000, {
+    paymentMethod: "Efectivo",
+    invoiceNumber: "B-DELIVERED-01",
+    invoiceId: "inv-delivered-01",
+    status: "delivering",
+  });
+  const request = (status: string) => new NextRequest(`http://localhost:3000/api/panel/orders/${order.id}`, {
+    method: "PATCH",
+    headers: { cookie: `panel_session=${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ status, notifyCustomer: false }),
+  });
+
+  const deliveredResponse = await patchOrder(request("delivered"), { params: Promise.resolve({ id: order.id }) });
+  assert.equal(deliveredResponse.status, 200);
+  const deliveredData = await deliveredResponse.json();
+  assert.equal(deliveredData.order.status, "delivered");
+  assert.equal(deliveredData.order.driverPaymentConfirmed, 1);
+
+  const cancelResponse = await patchOrder(request("cancelled"), { params: Promise.resolve({ id: order.id }) });
+  assert.equal(cancelResponse.status, 409);
+  const finalOrder = await findOrderByInvoiceOrRef(order.id);
+  assert.equal(finalOrder?.status, "delivered");
+  assert.equal(finalOrder?.driverPaymentConfirmed, 1);
+  assert.equal(finalOrder?.accountingPaymentSynced || 0, 0);
+  assert.equal(finalOrder?.invoiceNumber, "B-DELIVERED-01");
+  assert.equal(finalOrder?.invoiceId, "inv-delivered-01");
+});
+
+test("36c. Panel: operaciones concurrentes de entrega y cancelación nunca dejan un pedido cancelado con cobro confirmado", async () => {
+  const { NextRequest } = await import("next/server");
+  const { createUser, createSession } = await import("../lib/auth/session");
+  const { PATCH: patchOrder } = await import("../app/api/panel/orders/[id]/route");
+
+  const user = await createUser({
+    email: `race_${Date.now()}@bunuelandia.co`,
+    password: "Password123*",
+    name: "Race Test Admin",
+    role: "admin",
+  });
+  const { token } = await createSession(user.id);
+  const order = await createOrder("whatsapp:+573003334499", [], 35000, {
+    paymentMethod: "Efectivo contra entrega",
+    invoiceNumber: "B-RACE-01",
+    invoiceId: "inv-race-01",
+    status: "delivering",
+  });
+  const request = (status: string) => new NextRequest(`http://localhost:3000/api/panel/orders/${order.id}`, {
+    method: "PATCH",
+    headers: { cookie: `panel_session=${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ status, notifyCustomer: false }),
+  });
+
+  const [deliveryResponse, cancelResponse] = await Promise.all([
+    patchOrder(request("delivered"), { params: Promise.resolve({ id: order.id }) }),
+    patchOrder(request("cancelled"), { params: Promise.resolve({ id: order.id }) }),
+  ]);
+  assert.ok([200, 409].includes(deliveryResponse.status));
+  assert.ok([200, 409].includes(cancelResponse.status));
+
+  const finalOrder = await findOrderByInvoiceOrRef(order.id);
+  assert.ok(finalOrder);
+  assert.equal(
+    finalOrder?.status === "cancelled" && Boolean(finalOrder.driverPaymentConfirmed),
+    false,
+    "Una cancelación no puede coexistir con el cobro confirmado por la transición a entregado"
+  );
+  if (finalOrder?.status === "cancelled") {
+    assert.equal(finalOrder.driverPaymentConfirmed || 0, 0);
+  } else {
+    assert.equal(finalOrder?.status, "delivered");
+    assert.equal(finalOrder?.driverPaymentConfirmed, 1);
+  }
+  assert.equal(finalOrder?.accountingPaymentSynced || 0, 0);
+  assert.equal(finalOrder?.invoiceNumber, "B-RACE-01");
+  assert.equal(finalOrder?.invoiceId, "inv-race-01");
+});
+
+test("37. Persistencia: un marcador contable solo se establece después de un reintento exitoso", async () => {
   const order = await createOrder("whatsapp:+573006667788", [], 32000, {
     customerName: "Paola Andrade",
     paymentMethod: "Efectivo",
@@ -1475,10 +1607,10 @@ test("39. Resiliencia y recuperación: Fallo temporal de Contabilidad conserva c
     status: "delivered",
   });
 
-  // Domiciliario confirma el cobro
+  // El panel registra el cobro usando los campos existentes de la orden.
   await markOrderDriverPaymentConfirmed(order.id, {
     amount: 32000,
-    phone: "573228964947",
+    phone: "panel-admin",
   });
 
   // Simulación: Contabilidad falla temporalmente (timeout / 500)
@@ -1491,7 +1623,7 @@ test("39. Resiliencia y recuperación: Fallo temporal de Contabilidad conserva c
 
   // La confirmación del domiciliario NO se pierde
   const afterFailure = await findOrderByInvoiceOrRef("B-0085");
-  assert.equal(afterFailure?.driverPaymentConfirmed, 1, "La confirmación del domiciliario debe conservarse intacta en BD");
+  assert.equal(afterFailure?.driverPaymentConfirmed, 1, "La confirmación del panel debe conservarse intacta en BD");
   assert.equal(afterFailure?.accountingPaymentSynced || 0, 0, "Permanece pendiente de sincronización");
 
   // Reintento: Contabilidad vuelve a estar disponible
@@ -1505,7 +1637,7 @@ test("39. Resiliencia y recuperación: Fallo temporal de Contabilidad conserva c
   assert.equal(afterRetry?.accountingPaymentSynced, 1, "Se sincroniza exitosamente en el reintento sin duplicar cobro");
 });
 
-test("40. Integridad de facturas: Nunca se crea una segunda factura al cobrar y conserva número y enlace", async () => {
+test("38. Integridad de facturas: conserva número y enlace al registrar cobro", async () => {
   const originalInvoiceNumber = "B-0086";
   const originalInvoiceId = "inv-uuid-86";
   const originalInvoiceUrl = "https://contabilidad-app-fawn.vercel.app/api/invoices/public/inv-uuid-86";
@@ -1590,9 +1722,9 @@ test("41. Ficha compacta completa: Encabezado, cliente, entrega, pedido, cobro y
   const countUrls = (card.match(/https:\/\/contabilidad-app-fawn\.vercel\.app\/api\/invoices\/public\/inv-uuid-14/g) || []).length;
   assert.equal(countUrls, 0, "Enlace de factura no debe aparecer en la ficha");
 
-  // 7. AL CONFIRMAR
-  assert.ok(card.includes("✅ AL CONFIRMAR"), "Debe tener bloque ✅ AL CONFIRMAR");
-  assert.ok(card.includes('Envía: "PAGADO B-0014"'), "Debe indicar el comando exacto");
+  // 7. El pago se registra desde el panel al entregar, no por un comando WhatsApp
+  assert.ok(!card.includes("✅ AL CONFIRMAR"), "No debe pedir confirmación al domiciliario");
+  assert.ok(!card.includes("PAGADO"), "La ficha no debe incluir un comando de confirmación de cobro");
 });
 
 test("42. Ficha compacta con campos opcionales ausentes: omite referencia, observación, factura y cambio sin inventar datos", () => {
@@ -1673,6 +1805,7 @@ test("45. Confirmación de pedido por cliente en WhatsApp NO envía ficha al dom
   await handleSalesMessage(convId, "Calle 12 # 4-50 centro", "Sebastián");
   await handleSalesMessage(convId, "Pago en efectivo contra entrega", "Sebastián");
   await handleSalesMessage(convId, "50000", "Sebastián");
+  await markLatestSummaryAccepted(convId);
   const confirmRes = await handleSalesMessage(convId, "1", "Sebastián");
 
   assert.ok(confirmRes.reply.includes("Pedido Confirmado") || confirmRes.reply.includes("Registrado"));
@@ -1914,7 +2047,7 @@ test("51. FASE 8: Despacho desacoplado: El envío de ficha no marca el pedido co
   assert.equal(state?.accountingPaymentSynced || 0, 0, "accountingPaymentSynced debe permanecer 0");
 });
 
-test("52. FASE 5: Evidencia fotográfica opcional: ausencia de foto no bloquea entrega ni confirmación de cobro", async () => {
+test("52. FASE 5: El registro del cobro no depende de adjuntar una foto", async () => {
   const order = await createOrder("whatsapp:+573190009988", [], 25000, {
     customerName: "Hugo Lombardi",
     paymentMethod: "Efectivo",
@@ -1922,13 +2055,13 @@ test("52. FASE 5: Evidencia fotográfica opcional: ausencia de foto no bloquea e
     status: "delivering",
   });
 
-  // El domiciliario confirma cobro sin adjuntar ninguna foto (solo texto plano)
+  // El panel usa los campos existentes de confirmación; no requiere una foto del domiciliario.
   const confirmed = await markOrderDriverPaymentConfirmed(order.id, {
     amount: 25000,
-    phone: "573228964947",
+    phone: "panel-admin",
   });
   assert.ok(confirmed);
-  assert.equal(confirmed?.driverPaymentConfirmed, 1, "La confirmación de cobro es exitosa sin exigir foto");
+  assert.equal(confirmed?.driverPaymentConfirmed, 1, "El marcador de cobro se registra sin foto");
 
   // El administrador marca 'delivered' sin exigir foto
   const delivered = await updateOrderStatus(order.id, "delivered");
@@ -2257,6 +2390,7 @@ test("57. Confirmación de pedido envía texto y factura al cliente pero no noti
     await handleSalesMessage(convId, "Carrera 15 # 45-20 apto 301", "Laura Restrepo");
     await handleSalesMessage(convId, "Pago en efectivo", "Laura Restrepo");
     await handleSalesMessage(convId, "Pagaré con un billete de 50.000", "Laura Restrepo");
+    await markLatestSummaryAccepted(convId);
 
     // Cliente confirma el pedido con 1
     const confirmRes = await handleSalesMessage(convId, "1", "Laura Restrepo");
@@ -2300,6 +2434,7 @@ test("58. Dos pedidos consecutivos con efectivo diferente ($40.000 vs $50.000): 
   await handleSalesMessage(convId, "Calle 10 # 5-20 barrio Las Flores", "Andrés");
   await handleSalesMessage(convId, "Efectivo", "Andrés");
   await handleSalesMessage(convId, "Tengo un billete de 40.000", "Andrés");
+  await markLatestSummaryAccepted(convId);
   const confirmOrder1 = await handleSalesMessage(convId, "1", "Andrés");
   assert.ok(confirmOrder1.reply.includes("Pedido Confirmado") || confirmOrder1.reply.includes("Registrado"));
 
@@ -2323,6 +2458,7 @@ test("58. Dos pedidos consecutivos con efectivo diferente ($40.000 vs $50.000): 
   await handleSalesMessage(convId, "Calle 10 # 5-20 barrio Las Flores", "Andrés");
   await handleSalesMessage(convId, "Efectivo", "Andrés");
   await handleSalesMessage(convId, "Ahora pago con un billete de 50.000", "Andrés");
+  await markLatestSummaryAccepted(convId);
   const confirmOrder2 = await handleSalesMessage(convId, "1", "Andrés");
   assert.ok(confirmOrder2.reply.includes("Pedido Confirmado") || confirmOrder2.reply.includes("Registrado"));
 
@@ -2352,6 +2488,7 @@ test("59. Aislamiento estricto de sesiones en la misma conversación: el segundo
   await handleSalesMessage(convId, "Diagonal 40 # 12-30", "Camila");
   await handleSalesMessage(convId, "Efectivo", "Camila");
   await handleSalesMessage(convId, "Tengo un billete de 70.000", "Camila");
+  await markLatestSummaryAccepted(convId);
   await handleSalesMessage(convId, "1", "Camila");
 
   const orders1 = await getOrders();
@@ -2364,6 +2501,7 @@ test("59. Aislamiento estricto de sesiones en la misma conversación: el segundo
   await handleSalesMessage(convId, "Hola, quiero una caja surtida de 4 con mora y arequipe", "Camila");
   await handleSalesMessage(convId, "Misma dirección Diagonal 40 # 12-30", "Camila");
   const summaryRes = await handleSalesMessage(convId, "Pago por Nequi", "Camila");
+  await markLatestSummaryAccepted(convId);
 
   // El resumen previo (Paso 6) NO debe mencionar 70.000 ni cambio en efectivo
   assert.ok(!summaryRes.reply.includes("70.000"), "El resumen previo del pedido 2 NO debe mencionar los $70.000 del pedido 1");

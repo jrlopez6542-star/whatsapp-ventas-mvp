@@ -13,3 +13,4 @@ unpack.mjs
 *.id_rsa
 *.pk8
 credentials.json
+.perch

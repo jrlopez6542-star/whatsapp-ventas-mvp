@@ -41,14 +41,11 @@ import {
   setConversationStatus,
   setConversationCustomerName,
   getOrders,
+  getOrderStatusSnapshot,
   updateOrderStatus,
   getOrgSettings,
   getMessages,
-  findOrderByInvoiceOrRef,
-  markOrderDriverPaymentConfirmed,
-  markOrderAccountingPaymentSynced,
 } from "@/lib/store";
-import { recordPaymentInContabilidad } from "@/lib/contabilidad";
 
 export const runtime = "nodejs";
 /** Delay (≤5.5s) + LLM + Evolution REST; keep room under Vercel hobby/pro caps. */
@@ -311,7 +308,7 @@ export async function POST(request: NextRequest) {
     // 1. Si un número NO autorizado intenta enviar el comando PAGADO
     if (isPagadoCommand && !isAuthorizedDriver) {
       const replyTarget = replyTargetFromParsed(parsed);
-      const warnMsg = "⚠️ Este número no está autorizado como domiciliario para confirmar cobros de pedidos.";
+      const warnMsg = "⚠️ Este número no está autorizado para usar comandos del domiciliario.";
       await sendOutboundWhatsApp(replyTarget, warnMsg).catch(() => {});
       if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
       return jsonOk({ driverCommand: "unauthorized", senderDigits });
@@ -320,105 +317,12 @@ export async function POST(request: NextRequest) {
     // 2. Si es el domiciliario autorizado
     if (isAuthorizedDriver) {
       const replyTarget = replyTargetFromParsed(parsed);
-      const match = text.match(/^PAGADO\s+([#A-Za-z0-9\-]+)$/i);
-      if (!match) {
-        const helpMsg = "ℹ️ Hola. Para confirmar el cobro de un pedido en efectivo, escribe:\nPAGADO <número_factura_o_pedido>\nEjemplo: PAGADO B-0014";
-        await sendOutboundWhatsApp(replyTarget, helpMsg).catch(() => {});
-        if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
-        return jsonOk({ driverCommand: "help_sent" });
-      }
-
-      const ref = match[1].replace(/^#/, "").trim();
-      const order = await findOrderByInvoiceOrRef(ref);
-
-      if (!order) {
-        const notFoundMsg = `⚠️ No se encontró ningún pedido con la referencia "${ref}". Por favor verifica el número de factura o pedido.`;
-        await sendOutboundWhatsApp(replyTarget, notFoundMsg).catch(() => {});
-        if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
-        return jsonOk({ driverCommand: "order_not_found", ref });
-      }
-
-      // Validar si ya estaba confirmado previamente
-      if (order.driverPaymentConfirmed) {
-        if (order.status === "delivered" && !order.accountingPaymentSynced) {
-          const retryRes = await recordPaymentInContabilidad({
-            orderId: order.id,
-            invoiceId: order.invoiceId,
-            invoiceNumber: order.invoiceNumber,
-            amount: order.total,
-            confirmedBy: senderDigits,
-          });
-          if (retryRes.ok) {
-            const marked = await markOrderAccountingPaymentSynced(order.id);
-            if (!marked) {
-              console.warn("[driver] pago ya registrado; marcador pendiente de persistir en BOTW", {
-                orderId: order.id,
-              });
-            }
-          }
-        }
-        const alreadyMsg = `ℹ️ El cobro del pedido #${order.invoiceNumber || order.id.slice(0, 8)} ya fue confirmado anteriormente por un valor de $${(order.driverPaymentAmount || order.total).toLocaleString("es-CO")}.`;
-        await sendOutboundWhatsApp(replyTarget, alreadyMsg).catch(() => {});
-        if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
-        return jsonOk({ driverCommand: "already_confirmed", orderId: order.id });
-      }
-
-      // Validar medio de pago en efectivo
-      const pm = (order.paymentMethod || "").toLowerCase();
-      const isCash = pm.includes("efectivo") || pm.includes("contra entrega") || pm.includes("contraentrega");
-      if (!isCash) {
-        const notCashMsg = `⚠️ El pedido #${order.invoiceNumber || order.id.slice(0, 8)} no está registrado como pago en efectivo (Medio: ${order.paymentMethod || "Transferencia"}). No requiere cobro en efectivo.`;
-        await sendOutboundWhatsApp(replyTarget, notCashMsg).catch(() => {});
-        if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
-        return jsonOk({ driverCommand: "not_cash", orderId: order.id });
-      }
-
-      // Registrar confirmación persistente del domiciliario
-      await markOrderDriverPaymentConfirmed(order.id, {
-        amount: order.total,
-        phone: senderDigits,
-      });
-
-      logSystemEvent(
-        "success",
-        "driver",
-        `Domiciliario ${senderDigits} confirmó cobro de $${order.total} para pedido #${order.invoiceNumber || order.id.slice(0, 8)}`,
-        { orderId: order.id, total: order.total }
-      );
-
-      // Si el pedido YA había sido marcado como «Entregado» por el administrador, ahora AMBAS condiciones se cumplen
-      if (order.status === "delivered" && !order.accountingPaymentSynced) {
-        const syncRes = await recordPaymentInContabilidad({
-          orderId: order.id,
-          invoiceId: order.invoiceId,
-          invoiceNumber: order.invoiceNumber,
-          amount: order.total,
-          confirmedBy: senderDigits,
-        });
-        if (syncRes.ok) {
-          const marked = await markOrderAccountingPaymentSynced(order.id);
-          logSystemEvent(
-            marked ? "success" : "warn",
-            "driver",
-            marked
-              ? `Cobro sincronizado en Contabilidad para pedido #${order.invoiceNumber || order.id.slice(0, 8)} tras confirmación del domiciliario`
-              : `Pago ya registrado en Contabilidad; quedó pendiente persistir el marcador de sincronización para pedido #${order.invoiceNumber || order.id.slice(0, 8)}`,
-            { orderId: order.id, invoiceNumber: order.invoiceNumber }
-          );
-        } else {
-          logSystemEvent(
-            "warn",
-            "driver",
-            `Cobro confirmado por domiciliario pero falló sincronización con Contabilidad: ${syncRes.error}`,
-            { orderId: order.id, error: syncRes.error }
-          );
-        }
-      }
-
-      const successMsg = `✅ Cobro de $${order.total.toLocaleString("es-CO")} para el pedido #${order.invoiceNumber || order.id.slice(0, 8)} confirmado exitosamente. ¡Muchas gracias! 🛵💨`;
-      await sendOutboundWhatsApp(replyTarget, successMsg).catch(() => {});
+      const infoMsg = isPagadoCommand
+        ? "ℹ️ Ya no es necesario confirmar el cobro por WhatsApp. El administrador registra la entrega y el cobro desde el panel."
+        : "ℹ️ El estado de entrega y el cobro se registran desde el panel. Ya no se requieren comandos de confirmación por WhatsApp.";
+      await sendOutboundWhatsApp(replyTarget, infoMsg).catch(() => {});
       if (parsed.messageId) await completeWebhookEvent(parsed.messageId);
-      return jsonOk({ driverCommand: "confirmed", orderId: order.id });
+      return jsonOk({ driverCommand: isPagadoCommand ? "panel_managed" : "panel_help" });
     }
 
     console.log("[evolution inbound]", {
@@ -708,11 +612,50 @@ export async function POST(request: NextRequest) {
                     return;
                   }
 
-                  // Comprobante e importe correctos: marcar como preparing
-                  await updateOrderStatus(pendingOrder.id, "preparing").catch((err) => {
-                    console.error("[evolution] error updating order status to preparing:", err);
-                  });
-                  pendingOrder.status = "preparing";
+                  // Solo avanzar si el estado persistido sigue siendo pending/confirmed.
+                  let preparedOrder = null;
+                  try {
+                    preparedOrder = await updateOrderStatus(pendingOrder.id, "preparing", {
+                      allowedCurrentStatuses: ["pending", "confirmed"],
+                    });
+                  } catch (err) {
+                    console.error("[evolution] error updating order status to preparing:", {
+                      orderId: pendingOrder.id,
+                      error: safeWebhookErrorName(err),
+                    });
+                  }
+
+                  if (!preparedOrder) {
+                    const currentOrder = await getOrderStatusSnapshot(pendingOrder.id);
+                    if (currentOrder?.status === "cancelled") {
+                      const cancelledReply = "Vimos que tu pedido fue cancelado mientras verificábamos el comprobante. No avanzamos el pedido ni notificamos al domiciliario.";
+                      await appendMessage(fromKey, "assistant", cancelledReply);
+                      try {
+                        await sendDelayedOutboundWhatsApp(fromKey, replyTo, cancelledReply, parsed.messageId);
+                      } catch (err) {
+                        console.error("[evolution] error sending cancelled-order receipt reply:", { error: safeWebhookErrorName(err) });
+                      }
+                      return;
+                    }
+
+                    if (
+                      currentOrder &&
+                      ["preparing", "ready", "delivering", "delivered"].includes(currentOrder.status)
+                    ) {
+                      const alreadyProcessedReply =
+                        "¡Hola! El comprobante ya fue procesado y el pedido continúa en su estado actual. ¡Muchas gracias!";
+                      await appendMessage(fromKey, "assistant", alreadyProcessedReply);
+                      try {
+                        await sendDelayedOutboundWhatsApp(fromKey, replyTo, alreadyProcessedReply, parsed.messageId);
+                      } catch (err) {
+                        console.error("[evolution] error sending already-processed receipt reply:", { error: safeWebhookErrorName(err) });
+                      }
+                      return;
+                    }
+
+                    // Sin estado persistido verificable no declarar el pago aprobado ni continuar.
+                    throw new Error("verified_receipt_status_not_persisted");
+                  }
 
                   const bankName = verification.bank || "transferencia";
                   const amountFormatted = `$${expectedAmount.toLocaleString("es-CO")} COP`;
@@ -728,8 +671,8 @@ export async function POST(request: NextRequest) {
                   );
 
                   // Notificar al domiciliario que el comprobante se validó satisfactoriamente
-                  const driverNotice = `✅ *PAGO VERIFICADO (#${pendingOrder.id.slice(0, 8)})*: Comprobante validado de *${pendingOrder.customerName}* por *$${expectedAmount.toLocaleString("es-CO")}*. No cobrar al entregar. 🛵`;
-                  await notifyDeliveryDriver(pendingOrder, driverNotice).catch((dErr) => {
+                  const driverNotice = `✅ *PAGO VERIFICADO (#${preparedOrder.id.slice(0, 8)})*: Comprobante validado de *${preparedOrder.customerName}* por *$${expectedAmount.toLocaleString("es-CO")}*. No cobrar al entregar. 🛵`;
+                  await notifyDeliveryDriver(preparedOrder, driverNotice).catch((dErr) => {
                     console.warn("[evolution] error notificando al domiciliario tras verificar comprobante:", dErr);
                   });
 
@@ -766,7 +709,7 @@ export async function POST(request: NextRequest) {
         }
 
         const effectiveName = parsed.pushName || conv.customerName;
-        const { reply, mode, mediaUrl, invoiceUrl, invoicePdfUrl, invoiceNumber } = await handleSalesMessage(fromKey, currentText, effectiveName);
+        const { reply, mode, mediaUrl, invoiceUrl, invoicePdfUrl, invoiceNumber, assistantMessageId } = await handleSalesMessage(fromKey, currentText, effectiveName);
         console.log("[evolution reply processed in after]", {
           from: fromKey,
           replyTo,
@@ -859,7 +802,9 @@ export async function POST(request: NextRequest) {
           console.error("[evolution] outbound failed", send);
           try {
             const msgs = await getMessages(fromKey);
-            const lastAssistantMsg = [...msgs].reverse().find((m) => m.role === "assistant");
+            const lastAssistantMsg = assistantMessageId
+              ? msgs.find((m) => m.id === assistantMessageId)
+              : [...msgs].reverse().find((m) => m.role === "assistant");
             if (lastAssistantMsg) {
               await updateMessageDeliveryStatus(lastAssistantMsg.id, "failed", { errorDetails: send.error });
             }
@@ -873,7 +818,9 @@ export async function POST(request: NextRequest) {
           });
           try {
             const msgs = await getMessages(fromKey);
-            const lastAssistantMsg = [...msgs].reverse().find((m) => m.role === "assistant");
+            const lastAssistantMsg = assistantMessageId
+              ? msgs.find((m) => m.id === assistantMessageId)
+              : [...msgs].reverse().find((m) => m.role === "assistant");
             if (lastAssistantMsg) {
               await updateMessageDeliveryStatus(lastAssistantMsg.id, "accepted", { providerMessageId: send.id });
             }

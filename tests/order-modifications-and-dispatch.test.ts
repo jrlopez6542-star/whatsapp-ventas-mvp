@@ -19,7 +19,9 @@ import {
 import {
   createOrder,
   getConversation,
+  getMessages,
   getOrders,
+  updateMessageDeliveryStatus,
   updateOrderStatus,
   getOrgSettings,
   updateOrgSettings,
@@ -27,6 +29,15 @@ import {
   type Order,
 } from "../lib/store";
 import { getSystemLogs } from "../lib/logger";
+
+async function markLatestSummaryAccepted(conversationId: string): Promise<void> {
+  const messages = await getMessages(conversationId);
+  const summary = [...messages].reverse().find(
+    (message) => message.role === "assistant" && message.content?.toLowerCase().includes("resumen de tu pedido")
+  );
+  assert.ok(summary, "El flujo de prueba debe haber guardado el resumen previo");
+  await updateMessageDeliveryStatus(summary.id, "accepted");
+}
 
 test("Test A: Cambio de producto de surtida a tradicional («Para cambiar a una tradicional») abandona el bucle de salsas", async () => {
   const convId = "whatsapp:+573001112233";
@@ -72,6 +83,7 @@ test("Test B: Resumen previo y orden confirmada corresponden a C8T ($32.000 COP)
     "Mi dirección es Calle 7 # 11-20 conjunto El Portal y pago en efectivo con billete de 50",
     "Lucía Torres"
   );
+  await markLatestSummaryAccepted(convId);
 
   // Verificaciones Paso 6 (Resumen Previo):
   assert.ok(
@@ -385,6 +397,7 @@ test("Test H: Fallo de persistencia en createOrder activa Fail-Closed sin confir
   // Preparar borrador previo
   await handleSalesMessage(convId, "Quiero una caja tradicional de 8", "Sebastián Fail");
   await handleSalesMessage(convId, "Carrera 7 # 45-10 apto 201 y pago en efectivo con 50", "Sebastián Fail");
+  await markLatestSummaryAccepted(convId);
 
   const oldDbUrl = process.env.TURSO_DATABASE_URL;
   const oldDbToken = process.env.TURSO_AUTH_TOKEN;
@@ -627,6 +640,7 @@ test("Test L: Extracción limpia de dirección desacoplada de medios de pago y c
   const convId = "whatsapp:+573197776655";
   await handleSalesMessage(convId, "Quiero una caja tradicional de 8", "Sebastián");
   const step6Res = await handleSalesMessage(convId, raw1, "Sebastián");
+  await markLatestSummaryAccepted(convId);
 
   assert.ok(step6Res.reply.includes("Calle 7 # 11-20 conjunto El Portal"), "El resumen debe mostrar la dirección limpia");
   assert.ok(!step6Res.reply.includes("conjunto El Portal y pago"), "El resumen no debe mostrar la cláusula de pago dentro de la dirección");
@@ -657,6 +671,7 @@ test("Test M: Mensaje de confirmación post-registro no afirma «Tus buñuelos v
   const convId = "whatsapp:+573183332211";
   await handleSalesMessage(convId, "Quiero una caja tradicional de 4", "Valeria");
   await handleSalesMessage(convId, "Calle 5 # 3-10 centro y pago en efectivo", "Valeria");
+  await markLatestSummaryAccepted(convId);
 
   const confirmRes = await handleSalesMessage(convId, "1", "Valeria");
   const replyLower = confirmRes.reply.toLowerCase();
