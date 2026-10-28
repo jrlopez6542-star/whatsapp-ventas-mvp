@@ -43,16 +43,75 @@ export interface CreateInvoiceParams {
 const CONTABILIDAD_PRODUCTION_API_URL =
   "https://contabilidad-app-fawn.vercel.app/api/invoices/create-from-order";
 
+export function isProductionContabilidadUrl(url?: string): boolean {
+  if (!url || typeof url !== "string") return false;
+  const lower = url.trim().toLowerCase();
+  return (
+    lower.includes("contabilidad-app-fawn.vercel.app") ||
+    lower.includes("contabilidad-prod") ||
+    lower.includes("contabilidad_prod")
+  );
+}
+
+export interface ContabilidadEnv {
+  CONTABILIDAD_API_URL?: string;
+  CONTABILIDAD_API_URL_PREVIEW?: string;
+  CONTABILIDAD_RECORD_PAYMENT_URL?: string;
+  CONTABILIDAD_RECORD_PAYMENT_URL_PREVIEW?: string;
+  VERCEL_ENV?: string;
+  VERCEL?: string;
+  NODE_ENV?: string;
+  NODE_TEST_CONTEXT?: string;
+  [key: string]: string | undefined;
+}
+
+export function isPreviewEnvironment(
+  env: ContabilidadEnv = process.env
+): boolean {
+  return (
+    env.VERCEL_ENV === "preview" ||
+    (Boolean(env.VERCEL) && env.VERCEL_ENV !== "production")
+  );
+}
+
 export function resolveContabilidadApiUrl(
-  env: Partial<Pick<NodeJS.ProcessEnv, "CONTABILIDAD_API_URL" | "NODE_ENV" | "NODE_TEST_CONTEXT">> = process.env
+  env: ContabilidadEnv = process.env
 ): string {
   const isTestRuntime = env.NODE_ENV === "test" || Boolean(env.NODE_TEST_CONTEXT);
+  const isPreview = isPreviewEnvironment(env);
+
+  // 1. En runtime de pruebas: Bloqueo estricto de endpoints públicos; solo admitir loopback
+  if (isTestRuntime) {
+    const configuredUrl = isPreview
+      ? env.CONTABILIDAD_API_URL_PREVIEW?.trim()
+      : (env.CONTABILIDAD_API_URL_PREVIEW?.trim() || env.CONTABILIDAD_API_URL?.trim());
+    if (configuredUrl) {
+      return isLoopbackUrl(configuredUrl) ? configuredUrl : "";
+    }
+    return "";
+  }
+
+  // 2. En entorno Preview: NUNCA usar la URL de producción por defecto
+  // Permitir únicamente una variable dedicada CONTABILIDAD_API_URL_PREVIEW que no apunte a producción
+  if (isPreview) {
+    const previewUrl = env.CONTABILIDAD_API_URL_PREVIEW?.trim();
+    if (!previewUrl) {
+      return "";
+    }
+    if (isProductionContabilidadUrl(previewUrl)) {
+      console.warn(
+        "[contabilidad][SECURITY FATAL] CONTABILIDAD_API_URL_PREVIEW apunta a la aplicación de producción. Conexión rechazada por fallo seguro."
+      );
+      return "";
+    }
+    return previewUrl;
+  }
+
+  // 3. Fuera de Preview (producción y desarrollo local estándar)
   const configuredUrl = env.CONTABILIDAD_API_URL?.trim();
   if (configuredUrl) {
-    if (!isTestRuntime) return configuredUrl;
-    return isLoopbackUrl(configuredUrl) ? configuredUrl : "";
+    return configuredUrl;
   }
-  if (isTestRuntime) return "";
   return env.NODE_ENV === "production" ? CONTABILIDAD_PRODUCTION_API_URL : "";
 }
 
@@ -95,7 +154,8 @@ export function normalizarTexto(valor: unknown): string | undefined {
 export async function createInvoiceInContabilidad(
   params: CreateInvoiceParams
 ): Promise<ContabilidadInvoiceResult> {
-  if (!CONTABILIDAD_API_URL) {
+  const apiUrl = resolveContabilidadApiUrl();
+  if (!apiUrl) {
     return {
       ok: false,
       error: "Integración con Contabilidad deshabilitada: falta CONTABILIDAD_API_URL.",
@@ -104,7 +164,7 @@ export async function createInvoiceInContabilidad(
   }
 
   try {
-    const res = await fetch(CONTABILIDAD_API_URL, {
+    const res = await fetch(apiUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -209,20 +269,30 @@ export async function recordPaymentInContabilidad(
   params: RecordPaymentParams
 ): Promise<RecordPaymentResult> {
   try {
+    const isPreview = isPreviewEnvironment();
     let paymentUrl: string;
-    if (process.env.CONTABILIDAD_RECORD_PAYMENT_URL?.trim()) {
-      paymentUrl = process.env.CONTABILIDAD_RECORD_PAYMENT_URL.trim();
-      if (isTestRuntime() && !isLoopbackUrl(paymentUrl)) {
+    const explicitPaymentUrl = isPreview
+      ? process.env.CONTABILIDAD_RECORD_PAYMENT_URL_PREVIEW?.trim()
+      : (process.env.CONTABILIDAD_RECORD_PAYMENT_URL_PREVIEW?.trim() || process.env.CONTABILIDAD_RECORD_PAYMENT_URL?.trim());
+
+    if (explicitPaymentUrl) {
+      if (isTestRuntime() && !isLoopbackUrl(explicitPaymentUrl)) {
         return { ok: false, error: "Integración externa deshabilitada durante las pruebas." };
       }
+      if (isPreview && isProductionContabilidadUrl(explicitPaymentUrl)) {
+        console.warn("[contabilidad][SECURITY FATAL] URL de pago apunta a producción en Preview. Conexión rechazada por fallo seguro.");
+        return { ok: false, error: "Conexión a Contabilidad de producción rechazada en Preview por seguridad." };
+      }
+      paymentUrl = explicitPaymentUrl;
     } else {
-      if (!CONTABILIDAD_API_URL) {
+      const apiUrl = resolveContabilidadApiUrl();
+      if (!apiUrl) {
         return {
           ok: false,
           error: "Integración con Contabilidad deshabilitada: falta CONTABILIDAD_API_URL.",
         };
       }
-      const baseApi = CONTABILIDAD_API_URL.replace(/\/create-from-order\/?$/, "");
+      const baseApi = apiUrl.replace(/\/create-from-order\/?$/, "");
       paymentUrl = `${baseApi}/record-payment`;
     }
 

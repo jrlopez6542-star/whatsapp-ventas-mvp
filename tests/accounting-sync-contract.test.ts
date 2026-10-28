@@ -12,7 +12,11 @@ import {
   isLocalBuildRun,
   isLoopback,
 } from "./no-public-network.cjs";
-import { resolveContabilidadApiUrl } from "../lib/contabilidad";
+import {
+  resolveContabilidadApiUrl,
+  isProductionContabilidadUrl,
+  isPreviewEnvironment,
+} from "../lib/contabilidad";
 
 const source = (path: string) =>
   readFileSync(join(process.cwd(), path), "utf8");
@@ -91,6 +95,122 @@ test("local runs do not fall back to the public accounting endpoint", () => {
   assert.equal(
     resolveContabilidadApiUrl({ NODE_ENV: "production" }),
     "https://contabilidad-app-fawn.vercel.app/api/invoices/create-from-order"
+  );
+});
+
+test("production contabilidad url detection identifies production hosts", () => {
+  assert.equal(
+    isProductionContabilidadUrl("https://contabilidad-app-fawn.vercel.app/api/invoices/create-from-order"),
+    true
+  );
+  assert.equal(
+    isProductionContabilidadUrl("https://contabilidad-prod.internal.domain/api/invoices/create-from-order"),
+    true
+  );
+  assert.equal(
+    isProductionContabilidadUrl("https://contabilidad_prod.internal.domain/api/invoices/create-from-order"),
+    true
+  );
+  assert.equal(
+    isProductionContabilidadUrl("https://contabilidad-sandbox.internal.domain/api/invoices/create-from-order"),
+    false
+  );
+  assert.equal(isProductionContabilidadUrl("http://127.0.0.1:3000/api"), false);
+  assert.equal(isProductionContabilidadUrl(""), false);
+  assert.equal(isProductionContabilidadUrl(undefined), false);
+});
+
+test("preview environment detection identifies preview runs", () => {
+  assert.equal(isPreviewEnvironment({ VERCEL_ENV: "preview" }), true);
+  assert.equal(
+    isPreviewEnvironment({ VERCEL: "1", VERCEL_ENV: "feature-branch" }),
+    true
+  );
+  assert.equal(
+    isPreviewEnvironment({ VERCEL: "1", VERCEL_ENV: "production" }),
+    false
+  );
+  assert.equal(isPreviewEnvironment({ VERCEL_ENV: "production" }), false);
+  assert.equal(isPreviewEnvironment({}), false);
+});
+
+test("preview environment blocks production accounting endpoint and requires safe dedicated url", () => {
+  // 1. NODE_ENV=production y VERCEL_ENV=preview, sin URL Preview: nunca devuelve la URL de producción
+  assert.equal(
+    resolveContabilidadApiUrl({ NODE_ENV: "production", VERCEL_ENV: "preview" }),
+    ""
+  );
+
+  // 2. Preview con CONTABILIDAD_API_URL de producción heredada: nunca cae a producción y devuelve vacío
+  assert.equal(
+    resolveContabilidadApiUrl({
+      NODE_ENV: "production",
+      VERCEL_ENV: "preview",
+      CONTABILIDAD_API_URL: "https://contabilidad-app-fawn.vercel.app/api/invoices/create-from-order",
+    }),
+    ""
+  );
+
+  // 3. Preview con CONTABILIDAD_API_URL_PREVIEW apuntando a producción: rechazada por seguridad
+  assert.equal(
+    resolveContabilidadApiUrl({
+      NODE_ENV: "production",
+      VERCEL_ENV: "preview",
+      CONTABILIDAD_API_URL_PREVIEW: "https://contabilidad-app-fawn.vercel.app/api/invoices/create-from-order",
+    }),
+    ""
+  );
+  assert.equal(
+    resolveContabilidadApiUrl({
+      NODE_ENV: "production",
+      VERCEL_ENV: "preview",
+      CONTABILIDAD_API_URL_PREVIEW: "https://contabilidad-prod.internal.domain/api/invoices/create-from-order",
+    }),
+    ""
+  );
+
+  // 4. Preview con URL segura explícita: permitida conforme a la política
+  assert.equal(
+    resolveContabilidadApiUrl({
+      NODE_ENV: "production",
+      VERCEL_ENV: "preview",
+      CONTABILIDAD_API_URL_PREVIEW: "https://contabilidad-sandbox.internal.domain/api/invoices/create-from-order",
+    }),
+    "https://contabilidad-sandbox.internal.domain/api/invoices/create-from-order"
+  );
+
+  // 5. Preview con VERCEL=1 y VERCEL_ENV no-production
+  assert.equal(
+    resolveContabilidadApiUrl({
+      NODE_ENV: "production",
+      VERCEL: "1",
+      VERCEL_ENV: "custom-preview-branch",
+    }),
+    ""
+  );
+
+  // 6. Producción real (sin Preview): conserva el comportamiento existente
+  assert.equal(
+    resolveContabilidadApiUrl({ NODE_ENV: "production", VERCEL_ENV: "production" }),
+    "https://contabilidad-app-fawn.vercel.app/api/invoices/create-from-order"
+  );
+
+  // 7. Test runtime en Preview: rechaza URLs públicas y solo admite loopback
+  assert.equal(
+    resolveContabilidadApiUrl({
+      NODE_ENV: "test",
+      VERCEL_ENV: "preview",
+      CONTABILIDAD_API_URL_PREVIEW: "https://contabilidad.example.com/api/invoices/create-from-order",
+    }),
+    ""
+  );
+  assert.equal(
+    resolveContabilidadApiUrl({
+      NODE_ENV: "test",
+      VERCEL_ENV: "preview",
+      CONTABILIDAD_API_URL_PREVIEW: "http://127.0.0.1:4040/api/invoices/create-from-order",
+    }),
+    "http://127.0.0.1:4040/api/invoices/create-from-order"
   );
 });
 
