@@ -236,8 +236,31 @@ export async function ensureTursoReady(): Promise<void> {
           created_at INTEGER DEFAULT 0
         )`,
         `CREATE TABLE IF NOT EXISTS org_settings (
-          key TEXT PRIMARY KEY,
-          value TEXT NOT NULL
+          id INTEGER PRIMARY KEY DEFAULT 1,
+          business_name TEXT,
+          tone TEXT,
+          welcome_message TEXT,
+          rules TEXT,
+          business_hours_enabled TEXT,
+          business_hours_start TEXT,
+          business_hours_end TEXT,
+          out_of_hours_message TEXT,
+          extra_prompt TEXT,
+          bot_objective TEXT,
+          transfer_qr_image TEXT,
+          nequi_number TEXT,
+          breb_key TEXT,
+          delivery_fee INTEGER DEFAULT 0,
+          free_delivery_threshold INTEGER DEFAULT 0,
+          estimated_delivery_time TEXT,
+          bot_enabled TEXT DEFAULT 'true',
+          upsell_drinks_enabled TEXT DEFAULT 'true',
+          delivery_driver_phone TEXT,
+          delivery_driver_notify_enabled TEXT DEFAULT 'true',
+          auto_pause_on_mobile_reply TEXT DEFAULT 'true',
+          business_city TEXT DEFAULT 'Tocancipá, Cundinamarca',
+          coverage_area TEXT DEFAULT 'Tocancipá y alrededores',
+          updated_at TEXT
         )`,
         `CREATE TABLE IF NOT EXISTS system_logs (
           id TEXT PRIMARY KEY,
@@ -451,35 +474,118 @@ export async function ensureTursoReady(): Promise<void> {
       } catch {}
     }
 
-    const alterOrgSettings = [
-      "business_name TEXT",
-      "tone TEXT",
-      "welcome_message TEXT",
-      "rules TEXT",
-      "business_hours_enabled TEXT",
-      "business_hours_start TEXT",
-      "business_hours_end TEXT",
-      "out_of_hours_message TEXT",
-      "extra_prompt TEXT",
-      "bot_objective TEXT",
-      "transfer_qr_image TEXT",
-      "nequi_number TEXT",
-      "breb_key TEXT",
-      "delivery_fee INTEGER DEFAULT 0",
-      "free_delivery_threshold INTEGER DEFAULT 0",
-      "estimated_delivery_time TEXT",
-      "bot_enabled TEXT DEFAULT 'true'",
-      "upsell_drinks_enabled TEXT DEFAULT 'true'",
-      "delivery_driver_phone TEXT",
-      "delivery_driver_notify_enabled TEXT DEFAULT 'true'",
-      "auto_pause_on_mobile_reply TEXT DEFAULT 'true'",
-      "business_city TEXT DEFAULT 'Tocancipá, Cundinamarca'",
-      "coverage_area TEXT DEFAULT 'Tocancipá y alrededores'",
+    // Migración e inspección robusta para org_settings
+    const orgSettingsTableInfo = await client.execute("PRAGMA table_info(org_settings);");
+    const existingOrgCols = new Set(
+      (orgSettingsTableInfo.rows || []).map((r: any) => String(r.name || r[1] || "").toLowerCase())
+    );
+
+    const requiredOrgSettingsCols = [
+      { name: "id", ddl: "id INTEGER" },
+      { name: "updated_at", ddl: "updated_at TEXT" },
+      { name: "business_name", ddl: "business_name TEXT" },
+      { name: "tone", ddl: "tone TEXT" },
+      { name: "welcome_message", ddl: "welcome_message TEXT" },
+      { name: "rules", ddl: "rules TEXT" },
+      { name: "business_hours_enabled", ddl: "business_hours_enabled TEXT" },
+      { name: "business_hours_start", ddl: "business_hours_start TEXT" },
+      { name: "business_hours_end", ddl: "business_hours_end TEXT" },
+      { name: "out_of_hours_message", ddl: "out_of_hours_message TEXT" },
+      { name: "extra_prompt", ddl: "extra_prompt TEXT" },
+      { name: "bot_objective", ddl: "bot_objective TEXT" },
+      { name: "transfer_qr_image", ddl: "transfer_qr_image TEXT" },
+      { name: "nequi_number", ddl: "nequi_number TEXT" },
+      { name: "breb_key", ddl: "breb_key TEXT" },
+      { name: "delivery_fee", ddl: "delivery_fee INTEGER DEFAULT 0" },
+      { name: "free_delivery_threshold", ddl: "free_delivery_threshold INTEGER DEFAULT 0" },
+      { name: "estimated_delivery_time", ddl: "estimated_delivery_time TEXT" },
+      { name: "bot_enabled", ddl: "bot_enabled TEXT DEFAULT 'true'" },
+      { name: "upsell_drinks_enabled", ddl: "upsell_drinks_enabled TEXT DEFAULT 'true'" },
+      { name: "delivery_driver_phone", ddl: "delivery_driver_phone TEXT" },
+      { name: "delivery_driver_notify_enabled", ddl: "delivery_driver_notify_enabled TEXT DEFAULT 'true'" },
+      { name: "auto_pause_on_mobile_reply", ddl: "auto_pause_on_mobile_reply TEXT DEFAULT 'true'" },
+      { name: "business_city", ddl: "business_city TEXT DEFAULT 'Tocancipá, Cundinamarca'" },
+      { name: "coverage_area", ddl: "coverage_area TEXT DEFAULT 'Tocancipá y alrededores'" },
     ];
-    for (const col of alterOrgSettings) {
-      try {
-        await client.execute(`ALTER TABLE org_settings ADD COLUMN ${col};`);
-      } catch {}
+
+    for (const col of requiredOrgSettingsCols) {
+      if (!existingOrgCols.has(col.name)) {
+        try {
+          await client.execute(`ALTER TABLE org_settings ADD COLUMN ${col.ddl};`);
+          existingOrgCols.add(col.name);
+        } catch (err: any) {
+          const errMsg = String(err?.message || err || "").toLowerCase();
+          if (errMsg.includes("duplicate column name")) {
+            existingOrgCols.add(col.name);
+          } else {
+            console.error(`[db][FATAL] Falló migración al añadir columna '${col.name}' a org_settings:`, err);
+            throw err;
+          }
+        }
+      }
+    }
+
+    // Homologación y consolidación de esquema legado clave-valor a fila singleton (id = 1)
+    const row1Check = await client.execute("SELECT 1 FROM org_settings WHERE id = 1 LIMIT 1;");
+    if (row1Check.rows.length === 0) {
+      if (existingOrgCols.has("key") && existingOrgCols.has("value")) {
+        const kvRows = await client.execute("SELECT key, value FROM org_settings WHERE key IS NOT NULL;");
+        if (kvRows.rows.length > 0) {
+          const kvMap = new Map<string, string>();
+          for (const r of kvRows.rows as any[]) {
+            if (r.key != null && r.value != null) {
+              kvMap.set(String(r.key), String(r.value));
+            }
+          }
+          await client.execute({
+            sql: `INSERT OR IGNORE INTO org_settings (
+              id, key, value, business_name, tone, welcome_message, rules,
+              business_hours_enabled, business_hours_start, business_hours_end,
+              out_of_hours_message, extra_prompt, bot_objective, transfer_qr_image, updated_at
+            ) VALUES (1, 'singleton_config', 'v1', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            args: [
+              kvMap.get("name") || kvMap.get("business_name") || null,
+              kvMap.get("tone") || null,
+              kvMap.get("welcomeMessage") || kvMap.get("welcome_message") || null,
+              kvMap.get("rules") || null,
+              kvMap.get("businessHoursEnabled") || null,
+              kvMap.get("businessHoursStart") || null,
+              kvMap.get("businessHoursEnd") || null,
+              kvMap.get("outOfHoursMessage") || kvMap.get("out_of_hours_message") || kvMap.get("after_hours_message") || null,
+              kvMap.get("extraPrompt") || kvMap.get("extra_prompt") || null,
+              kvMap.get("botObjective") || kvMap.get("bot_objective") || null,
+              kvMap.get("transferQrImage") || kvMap.get("transfer_qr_image") || null,
+              new Date().toISOString(),
+            ],
+          });
+        } else {
+          await client.execute({
+            sql: `INSERT OR IGNORE INTO org_settings (id, key, value, updated_at) VALUES (1, 'singleton_config', 'v1', ?)`,
+            args: [new Date().toISOString()],
+          });
+        }
+      } else {
+        await client.execute({
+          sql: `INSERT OR IGNORE INTO org_settings (id, business_name, tone, welcome_message, rules, updated_at)
+                VALUES (1, 'BUÑUELANDIA', 'amable, cercano y eficiente', '¡Hola! Bienvenido a Buñuelandia 🥯', 'Horario de 8am a 8pm', ?)`,
+          args: [new Date().toISOString()],
+        });
+      }
+    }
+
+    try {
+      await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_org_settings_id ON org_settings(id);");
+    } catch {}
+
+    // Verificación post-migración: confirmar existencia de id y updated_at si la tabla existe
+    const postOrgCheck = await client.execute("PRAGMA table_info(org_settings);");
+    if (postOrgCheck.rows && postOrgCheck.rows.length > 0) {
+      const postOrgCols = new Set(
+        postOrgCheck.rows.map((r: any) => String(r.name || r[1] || "").toLowerCase())
+      );
+      if (!postOrgCols.has("id") || !postOrgCols.has("updated_at")) {
+        throw new Error("[db][FATAL] La verificación post-migración falló: org_settings carece de columnas obligatorias 'id' o 'updated_at'.");
+      }
     }
 
     // One-time data repair for legacy databases (fix 0/epoch-1969 dates and null phone columns).

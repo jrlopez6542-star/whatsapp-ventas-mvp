@@ -1909,7 +1909,7 @@ export async function getOrgSettings(): Promise<OrgSettings> {
   try {
     await ensureTursoReady();
     const client = getTursoClient();
-    const res = await client.execute("SELECT * FROM org_settings LIMIT 1");
+    const res = await client.execute("SELECT * FROM org_settings ORDER BY CASE WHEN id = 1 THEN 0 ELSE 1 END LIMIT 1");
     if (!res.rows.length) return DEFAULT_SETTINGS;
     const r: any = res.rows[0];
     const settings: OrgSettings = {
@@ -1950,17 +1950,22 @@ export async function updateOrgSettings(patch: Partial<OrgSettings>): Promise<Or
     try {
       await ensureTursoReady();
       const client = getTursoClient();
-      await client.execute({
-        sql: `INSERT OR IGNORE INTO org_settings (id, business_name, tone, welcome_message, rules, updated_at)
-              VALUES (1, ?, ?, ?, ?, ?)`,
-        args: [
-          patch.name || DEFAULT_SETTINGS.name,
-          patch.tone || DEFAULT_SETTINGS.tone,
-          patch.welcomeMessage || DEFAULT_SETTINGS.welcomeMessage,
-          patch.rules || DEFAULT_SETTINGS.rules,
-          new Date().toISOString()
-        ],
-      });
+      try {
+        await client.execute({
+          sql: `INSERT OR IGNORE INTO org_settings (id, business_name, tone, welcome_message, rules, updated_at)
+                VALUES (1, ?, ?, ?, ?, ?)`,
+          args: [
+            patch.name || DEFAULT_SETTINGS.name,
+            patch.tone || DEFAULT_SETTINGS.tone,
+            patch.welcomeMessage || DEFAULT_SETTINGS.welcomeMessage,
+            patch.rules || DEFAULT_SETTINGS.rules,
+            new Date().toISOString()
+          ],
+        });
+      } catch {
+        // En esquemas legados con restricciones NOT NULL en key/value,
+        // ensureTursoReady ya garantizó la creación de la fila singleton id = 1.
+      }
 
       const sets: string[] = ["updated_at = ?"];
       const args: any[] = [new Date().toISOString()];
