@@ -156,3 +156,156 @@ test("org_settings: Actualizaciones repetidas no duplican filas (idempotencia y 
     if (origToken !== undefined) process.env.TURSO_AUTH_TOKEN = origToken; else delete process.env.TURSO_AUTH_TOKEN;
   }
 });
+
+test("org_settings: Falla con error explícito si existen IDs duplicados antes de crear el índice", async () => {
+  const origUrl = process.env.TURSO_DATABASE_URL;
+  const origToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-dup-id-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const client = createClient({ url: ":memory:" });
+  setTursoClientForTesting(client);
+
+  try {
+    // Crear tabla existente con IDs duplicados no nulos
+    await client.execute(`
+      CREATE TABLE org_settings (
+        id INTEGER,
+        key TEXT,
+        value TEXT
+      );
+    `);
+    await client.execute("INSERT INTO org_settings (id, key, value) VALUES (99, 'key1', 'val1'), (99, 'key2', 'val2');");
+
+    resetTursoReadyForTesting();
+    await assert.rejects(
+      async () => {
+        await ensureTursoReady();
+      },
+      /IDs duplicados|idx_org_settings_id/i,
+      "ensureTursoReady debe rechazar la inicialización si existen IDs duplicados"
+    );
+
+    // Confirmar que no se eliminaron filas
+    const countRes = await client.execute("SELECT count(*) as cnt FROM org_settings;");
+    assert.equal(Number(countRes.rows[0]?.cnt || 0), 2, "Los registros duplicados no deben ser borrados automáticamente");
+  } finally {
+    setTursoClientForTesting(null);
+    resetTursoReadyForTesting();
+    if (origUrl !== undefined) process.env.TURSO_DATABASE_URL = origUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (origToken !== undefined) process.env.TURSO_AUTH_TOKEN = origToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});
+
+test("org_settings: Falla con error explícito si colisiona con clave reservada 'singleton_config'", async () => {
+  const origUrl = process.env.TURSO_DATABASE_URL;
+  const origToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-key-collision-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const client = createClient({ url: ":memory:" });
+  setTursoClientForTesting(client);
+
+  try {
+    // Esquema legado con clave única 'singleton_config' preexistente e id incompatible
+    await client.execute(`
+      CREATE TABLE org_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+    await client.execute({
+      sql: "INSERT INTO org_settings (key, value) VALUES ('singleton_config', 'incompatible_preexistente');",
+      args: [],
+    });
+
+    resetTursoReadyForTesting();
+    await assert.rejects(
+      async () => {
+        await ensureTursoReady();
+      },
+      /colisión.*singleton_config|fila singleton obligatoria/i,
+      "ensureTursoReady debe fallar si la clave 'singleton_config' ya existía impidiendo crear id = 1"
+    );
+
+    // Confirmar que los datos originales no fueron eliminados
+    const checkRow = await client.execute("SELECT key, value FROM org_settings WHERE key = 'singleton_config';");
+    assert.equal(checkRow.rows.length, 1);
+    assert.equal(String(checkRow.rows[0]?.value), "incompatible_preexistente");
+  } finally {
+    setTursoClientForTesting(null);
+    resetTursoReadyForTesting();
+    if (origUrl !== undefined) process.env.TURSO_DATABASE_URL = origUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (origToken !== undefined) process.env.TURSO_AUTH_TOKEN = origToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});
+
+test("org_settings: Falla con error explícito si la fila singleton 'id = 1' no existe tras inserción ignorada", async () => {
+  const origUrl = process.env.TURSO_DATABASE_URL;
+  const origToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-missing-row1-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const client = createClient({ url: ":memory:" });
+  setTursoClientForTesting(client);
+
+  try {
+    await client.execute(`
+      CREATE TABLE org_settings (
+        key TEXT,
+        value TEXT
+      );
+    `);
+    // Trigger que silenciosamente descarta inserciones de id = 1 (simulando INSERT OR IGNORE bloqueado)
+    await client.execute(`
+      CREATE TRIGGER prevent_id_1 BEFORE INSERT ON org_settings WHEN NEW.id = 1 BEGIN
+        SELECT RAISE(IGNORE);
+      END;
+    `);
+
+    resetTursoReadyForTesting();
+    await assert.rejects(
+      async () => {
+        await ensureTursoReady();
+      },
+      /no existe la fila singleton obligatoria/i,
+      "ensureTursoReady debe fallar si la fila singleton id = 1 no pudo ser creada"
+    );
+  } finally {
+    setTursoClientForTesting(null);
+    resetTursoReadyForTesting();
+    if (origUrl !== undefined) process.env.TURSO_DATABASE_URL = origUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (origToken !== undefined) process.env.TURSO_AUTH_TOKEN = origToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});
+
+test("org_settings: updateOrgSettings() falla si ninguna fila persistente fue afectada en Turso", async () => {
+  const origUrl = process.env.TURSO_DATABASE_URL;
+  const origToken = process.env.TURSO_AUTH_TOKEN;
+  process.env.TURSO_DATABASE_URL = "libsql://mock-update-zero-rows-db.turso.io";
+  process.env.TURSO_AUTH_TOKEN = "mock-token";
+
+  const client = createClient({ url: ":memory:" });
+  setTursoClientForTesting(client);
+
+  try {
+    resetTursoReadyForTesting();
+    await ensureTursoReady();
+
+    // Eliminar intencionalmente la fila id = 1 para simular que no existe en Turso
+    await client.execute("DELETE FROM org_settings WHERE id = 1;");
+
+    await assert.rejects(
+      async () => {
+        await updateOrgSettings({ botEnabled: "false" });
+      },
+      /fila singleton.*no existe/i,
+      "updateOrgSettings debe rechazar si la fila no existe en la base de datos"
+    );
+  } finally {
+    setTursoClientForTesting(null);
+    resetTursoReadyForTesting();
+    if (origUrl !== undefined) process.env.TURSO_DATABASE_URL = origUrl; else delete process.env.TURSO_DATABASE_URL;
+    if (origToken !== undefined) process.env.TURSO_AUTH_TOKEN = origToken; else delete process.env.TURSO_AUTH_TOKEN;
+  }
+});

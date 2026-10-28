@@ -1950,22 +1950,6 @@ export async function updateOrgSettings(patch: Partial<OrgSettings>): Promise<Or
     try {
       await ensureTursoReady();
       const client = getTursoClient();
-      try {
-        await client.execute({
-          sql: `INSERT OR IGNORE INTO org_settings (id, business_name, tone, welcome_message, rules, updated_at)
-                VALUES (1, ?, ?, ?, ?, ?)`,
-          args: [
-            patch.name || DEFAULT_SETTINGS.name,
-            patch.tone || DEFAULT_SETTINGS.tone,
-            patch.welcomeMessage || DEFAULT_SETTINGS.welcomeMessage,
-            patch.rules || DEFAULT_SETTINGS.rules,
-            new Date().toISOString()
-          ],
-        });
-      } catch {
-        // En esquemas legados con restricciones NOT NULL en key/value,
-        // ensureTursoReady ya garantizó la creación de la fila singleton id = 1.
-      }
 
       const sets: string[] = ["updated_at = ?"];
       const args: any[] = [new Date().toISOString()];
@@ -1995,12 +1979,18 @@ export async function updateOrgSettings(patch: Partial<OrgSettings>): Promise<Or
       if (patch.autoPauseOnMobileReply !== undefined) { sets.push("auto_pause_on_mobile_reply = ?"); args.push(patch.autoPauseOnMobileReply); }
 
       args.push(1);
-      await client.execute({
+      const updateResult = await client.execute({
         sql: `UPDATE org_settings SET ${sets.join(", ")} WHERE id = ?`,
         args,
       });
+      if (typeof updateResult.rowsAffected === "number" && updateResult.rowsAffected === 0) {
+        throw new Error(
+          "[store][FATAL] Falló actualización de org_settings: la fila singleton (id = 1) no existe en la base de datos."
+        );
+      }
     } catch (err) {
       console.error("[store] updateOrgSettings error:", err);
+      throw err;
     }
   }
   return updated;

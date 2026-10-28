@@ -525,6 +525,29 @@ export async function ensureTursoReady(): Promise<void> {
       }
     }
 
+    // Verificación previa de anomalías: IDs duplicados no nulos en org_settings
+    const dupIdCheck = await client.execute(
+      "SELECT id, COUNT(*) as cnt FROM org_settings WHERE id IS NOT NULL GROUP BY id HAVING COUNT(*) > 1 LIMIT 1;"
+    );
+    if (dupIdCheck.rows && dupIdCheck.rows.length > 0) {
+      const dupId = dupIdCheck.rows[0].id ?? dupIdCheck.rows[0][0];
+      throw new Error(
+        `[db][FATAL] Migración abortada: se detectaron IDs duplicados en org_settings (id=${dupId}). Integridad comprometida.`
+      );
+    }
+
+    // Detección de colisión incompatible con clave reservada 'singleton_config'
+    if (existingOrgCols.has("key")) {
+      const keyCollisionCheck = await client.execute(
+        "SELECT id, key FROM org_settings WHERE key = 'singleton_config' AND (id IS NULL OR id != 1) LIMIT 1;"
+      );
+      if (keyCollisionCheck.rows && keyCollisionCheck.rows.length > 0) {
+        throw new Error(
+          "[db][FATAL] Migración abortada: colisión en clave reservada 'singleton_config' con id incompatible en org_settings. Integridad comprometida."
+        );
+      }
+    }
+
     // Homologación y consolidación de esquema legado clave-valor a fila singleton (id = 1)
     const row1Check = await client.execute("SELECT 1 FROM org_settings WHERE id = 1 LIMIT 1;");
     if (row1Check.rows.length === 0) {
@@ -567,7 +590,7 @@ export async function ensureTursoReady(): Promise<void> {
       } else {
         await client.execute({
           sql: `INSERT OR IGNORE INTO org_settings (id, business_name, tone, welcome_message, rules, updated_at)
-                VALUES (1, 'BUÑUELANDIA', 'amable, cercano y eficiente', '¡Hola! Bienvenido a Buñuelandia 🥯', 'Horario de 8am a 8pm', ?)`,
+                VALUES (1, 'BUÑUELANDIA', 'amable, cercano y eficiente', '¡Hola! Bienvenido a Buñuelandia 🥟', 'Horario de 8am a 8pm', ?)`,
           args: [new Date().toISOString()],
         });
       }
@@ -575,9 +598,15 @@ export async function ensureTursoReady(): Promise<void> {
 
     try {
       await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_org_settings_id ON org_settings(id);");
-    } catch {}
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || "").toLowerCase();
+      if (!errMsg.includes("already exists")) {
+        console.error("[db][FATAL] Falló la creación del índice único 'idx_org_settings_id':", err);
+        throw err;
+      }
+    }
 
-    // Verificación post-migración: confirmar existencia de id y updated_at si la tabla existe
+    // Verificación post-migración: confirmar existencia de id, updated_at y la fila singleton id = 1
     const postOrgCheck = await client.execute("PRAGMA table_info(org_settings);");
     if (postOrgCheck.rows && postOrgCheck.rows.length > 0) {
       const postOrgCols = new Set(
@@ -586,8 +615,13 @@ export async function ensureTursoReady(): Promise<void> {
       if (!postOrgCols.has("id") || !postOrgCols.has("updated_at")) {
         throw new Error("[db][FATAL] La verificación post-migración falló: org_settings carece de columnas obligatorias 'id' o 'updated_at'.");
       }
+      const postRow1Check = await client.execute("SELECT 1 FROM org_settings WHERE id = 1 LIMIT 1;");
+      if (postRow1Check.rows.length === 0) {
+        throw new Error(
+          "[db][FATAL] La verificación post-migración falló: no existe la fila singleton obligatoria (id = 1) en org_settings tras la inicialización."
+        );
+      }
     }
-
     // One-time data repair for legacy databases (fix 0/epoch-1969 dates and null phone columns).
     // We track completion in _db_meta so this NEVER runs more than once even across serverless cold starts.
     try {
